@@ -1,38 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use xmip_core::{ExtensionManifest, ModuleManifest};
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct XmipServiceConfiguration {
-    pub service_name: String,
-    pub cluster_name: String,
-    pub node_name: String,
-    pub modules: Vec<ConfiguredModule>,
-    pub xmip_processes: Vec<ConfiguredXmipProcess>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfiguredModule {
-    pub name: String,
-    pub manifest: ModuleManifest,
-    pub start: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfiguredXmipProcess {
-    pub name: String,
-    pub start: bool,
-    pub required_modules: Vec<String>,
-    pub xmip_subprocesses: Vec<ConfiguredXmipSubprocess>,
-    pub extensions: Vec<ExtensionManifest>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfiguredXmipSubprocess {
-    pub name: String,
-    pub required_modules: Vec<String>,
-    pub extensions: Vec<ExtensionManifest>,
-}
+use xmip_abi::{ExtensionManifest, ModuleManifest};
+use xmip_configure::{
+    ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess, XmipServiceConfiguration,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTree {
@@ -299,9 +270,8 @@ fn verified_extension(extension: &ExtensionManifest) -> VerifiedExtensionNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xmip_core::{
+    use xmip_abi::{
         ExecutionHostKind, ExtensionEntrypoint, ModuleCapability, ModuleEntrypoint, ModuleIdentity,
-        ModuleKind,
     };
 
     #[test]
@@ -317,7 +287,6 @@ mod tests {
                     identity: ModuleIdentity {
                         name: "file".to_string(),
                         version: "0.1.0".to_string(),
-                        kind: ModuleKind::TransportHandler,
                     },
                     capabilities: vec![ModuleCapability {
                         capability: "transport:file".to_string(),
