@@ -2,16 +2,25 @@
 [workspace]
 
 [package]
-name = "xmip-template"
+name = "xmip-core-runtime"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/IlleNilsson/xmip-template"
-description = "Starter template for a Rust-based Xmip component repository."
-publish = false
+repository = "https://github.com/IlleNilsson/xmip-core-runtime"
+description = "The Xmip runtime: module registry, host service planning and the startup execution tree."
 
 [lib]
 path = "src/lib.rs"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+xmip-abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main" }
+xmip-core = { git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+xmip-context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
+xmip-journey = { package = "xmip-core-journey", git = "https://github.com/IlleNilsson/xmip-core-journey", branch = "main" }
+xmip-message = { package = "xmip-core-message", git = "https://github.com/IlleNilsson/xmip-core-message", branch = "main" }
+xmip-stream = { package = "xmip-core-stream", git = "https://github.com/IlleNilsson/xmip-core-stream", branch = "main" }
+xmip-configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }

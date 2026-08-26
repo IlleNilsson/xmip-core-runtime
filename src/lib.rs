@@ -1,8 +1,13 @@
 pub mod capability_registry;
 pub mod execution_tree;
+pub mod host;
+pub mod receive;
+pub mod service;
 
 use serde::{Deserialize, Serialize};
-use xmip_core::{ExtensionManifest, HandlerInvocation, HandlerResult, ModuleKind, ModuleManifest};
+use xmip_abi::{
+    ExecutionHostKind, ExtensionManifest, HandlerInvocation, HandlerResult, ModuleManifest,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNode {
@@ -85,7 +90,7 @@ impl ModuleRegistry {
                 .iter()
                 .cloned()
                 .map(|module| HostServicePlan {
-                    host_type: format!("{}-host", module.identity.kind.kind_name()),
+                    host_type: host_type_for(&module),
                     trusted: module.capabilities.iter().any(|c| c.trusted_required),
                     bitness: HostBitness::Native,
                     modules: vec![module],
@@ -100,18 +105,42 @@ pub trait RuntimeDispatcher {
     fn dispatch(&self, invocation: HandlerInvocation) -> HandlerResult;
 }
 
-trait ModuleKindName {
-    fn kind_name(&self) -> &'static str;
+/// Which Host Service a Module needs.
+///
+/// This used to read the Module's `kind`. ADR-0012 clause 5 removed that field,
+/// and reading it here was wrong before it was removed: a Module's kind said
+/// what it *does*, and what decides the host process is what it is *written
+/// in*. A .NET transport and a .NET content handler share a host; a .NET
+/// transport and a Rust transport do not.
+///
+/// A Module whose capabilities disagree about their execution host cannot be
+/// placed in one Host Service. That is a manifest defect, and naming it here
+/// makes it visible at planning time rather than at spawn time.
+fn host_type_for(module: &ModuleManifest) -> String {
+    let mut hosts = module
+        .capabilities
+        .iter()
+        .map(|capability| execution_host_name(&capability.execution_host))
+        .collect::<Vec<_>>();
+    hosts.sort_unstable();
+    hosts.dedup();
+
+    match hosts.as_slice() {
+        [] => "native-rust-host".to_string(),
+        [only] => format!("{only}-host"),
+        many => format!("mixed-host({})", many.join("+")),
+    }
 }
 
-impl ModuleKindName for ModuleKind {
-    fn kind_name(&self) -> &'static str {
-        match self {
-            ModuleKind::TransportHandler => "transport",
-            ModuleKind::ContentHandler => "content",
-            ModuleKind::LogicHandler => "logic",
-            ModuleKind::StoreProvider => "store",
-            ModuleKind::ManagementModule => "management",
-        }
+const fn execution_host_name(host: &ExecutionHostKind) -> &'static str {
+    match host {
+        ExecutionHostKind::NativeRust => "native-rust",
+        ExecutionHostKind::DotNet => "dotnet",
+        ExecutionHostKind::Java => "java",
+        ExecutionHostKind::Python => "python",
+        ExecutionHostKind::CAbi => "c-abi",
+        ExecutionHostKind::Go => "go",
+        ExecutionHostKind::PowerShell => "powershell",
+        ExecutionHostKind::Bash => "bash",
     }
 }

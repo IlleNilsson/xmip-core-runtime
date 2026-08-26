@@ -1,5 +1,5 @@
-use xmip_module_api::ModuleManifest;
-use xmip_runtime::{HostBitness, HostServicePlan};
+use xmip_abi::ModuleManifest;
+use crate::{HostBitness, HostServicePlan};
 
 /// The registered, supervised thing. The System Process it runs as is the
 /// Host Process; this is the service. ADR-0018.
@@ -44,7 +44,7 @@ impl HostService {
 
 #[cfg(feature = "dynamic-loading")]
 pub mod dynamic {
-    use xmip_module_api::{
+    use xmip_abi::{
         validate_module_abi, ModuleAbiDescriptor, ModuleManifest, XMIP_MODULE_ENTRYPOINT,
     };
 
