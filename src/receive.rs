@@ -2,7 +2,7 @@
 //!
 //! Arrived from the platform repository's `src/vertical_slice.rs` on
 //! 2026-08-26. Its own arrival path went on 2026-08-27, superseded by
-//! [`crate::flow`], which consumes the real `ReceivedStream` from
+//! [`crate::arrival`], which consumes the real `ReceivedStream` from
 //! `xmip-core-receive` rather than raw bytes.
 //!
 //! Assignment and Transformation are the two things that end a Message
