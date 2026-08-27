@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use xmip_abi::{ExtensionManifest, ModuleManifest};
-use xmip_configure::{
-    ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess, XmipServiceConfiguration,
-};
+use xmip_configure::XmipServiceConfiguration;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTree {
@@ -273,6 +271,7 @@ mod tests {
     use xmip_abi::{
         ExecutionHostKind, ExtensionEntrypoint, ModuleCapability, ModuleEntrypoint, ModuleIdentity,
     };
+    use xmip_configure::{ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess};
 
     #[test]
     fn verifies_extensions_without_loading_them() {

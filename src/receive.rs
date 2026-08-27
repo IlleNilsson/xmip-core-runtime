@@ -1,15 +1,15 @@
-//! Arrival: a Stream comes in, a Message is made, a Journey opens over it.
+//! What a Message generation is, and the three treatments an artifact declares.
 //!
 //! Arrived from the platform repository's `src/vertical_slice.rs` on
-//! 2026-08-26. That version made its own identifiers with `Uuid::now_v7()`
-//! inline; this one takes an [`IdGenerator`], so a test can produce a run it can
-//! assert on and the runtime still gets UUIDv7 by default.
+//! 2026-08-26. Its own arrival path went on 2026-08-27, superseded by
+//! [`crate::flow`], which consumes the real `ReceivedStream` from
+//! `xmip-core-receive` rather than raw bytes.
 //!
 //! Assignment and Transformation are the two things that end a Message
 //! generation. Assignment changes metadata and keeps the Stream; Transformation
 //! produces a new Stream. Neither edits anything — ADR-0013.
 
-use xmip_core::{IdGenerator, JourneyId, MessageId, SectionId, StreamId};
+use xmip_core::{IdGenerator, MessageId, SectionId, StreamId};
 use xmip_journey::{Journey, JourneyMessageRef};
 use xmip_message::{
     ExecutionProfile, Message, MessageCreationSource, MessageDurability, MessagePriority,
@@ -17,63 +17,11 @@ use xmip_message::{
 };
 use xmip_stream::Stream;
 
-/// Something arriving from outside Xmip.
-///
-/// The transport that produced it is not recorded here. Routing reads promoted
-/// context, and by this point how the bytes arrived is a fact for the audit
-/// trail rather than an input to any decision.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Arrival {
-    File { media_type: Option<String> },
-    HttpRequest { media_type: Option<String> },
-}
-
-impl Arrival {
-    #[must_use]
-    pub fn media_type(&self) -> Option<&str> {
-        match self {
-            Self::File { media_type } | Self::HttpRequest { media_type } => media_type.as_deref(),
-        }
-    }
-}
-
 /// One Message and the Journey opened over it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReceivedWork {
     pub journey: Journey,
     pub message: Message,
-}
-
-/// Take arriving bytes and open a Journey over them.
-pub fn receive(
-    ids: &dyn IdGenerator,
-    arrival: &Arrival,
-    bytes: impl Into<std::sync::Arc<[u8]>>,
-    treatment: MessageTreatment,
-) -> ReceivedWork {
-    let stream_id = StreamId::new(ids.next_u128());
-    let message_id = MessageId::new(ids.next_u128());
-
-    let section = MessageSection {
-        section_id: SectionId::new(ids.next_u128()),
-        name: None,
-        stream: Stream::new(stream_id, bytes, arrival.media_type().map(str::to_string)),
-        contract: None,
-    };
-
-    let message = Message::received(
-        message_id,
-        vec![section],
-        xmip_context::MessageContext::new(),
-        treatment,
-    );
-
-    let journey = Journey::new(JourneyId::new(ids.next_u128())).holding(JourneyMessageRef {
-        message_id,
-        stream_id,
-    });
-
-    ReceivedWork { journey, message }
 }
 
 /// Metadata changed. The Stream did not.
@@ -161,6 +109,8 @@ pub const fn pass_through() -> MessageTreatment {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use xmip_context::MessageContext;
+    use xmip_core::JourneyId;
 
     /// Counts from one. Not UUIDv7, and deliberately so: a test that asserts on
     /// identifiers needs them to be the same on every run.
@@ -175,90 +125,81 @@ mod tests {
         }
     }
 
-    fn arrived() -> ReceivedWork {
-        receive(
-            &Counter::default(),
-            &Arrival::File {
-                media_type: Some("application/xml".to_string()),
-            },
-            b"<order/>".to_vec(),
-            business(),
-        )
-    }
+    fn arrived(ids: &dyn IdGenerator, treatment: MessageTreatment) -> ReceivedWork {
+        let stream_id = StreamId::new(ids.next_u128());
+        let message_id = MessageId::new(ids.next_u128());
 
-    #[test]
-    fn arrival_produces_one_message_the_journey_is_holding() {
-        let work = arrived();
+        let section = MessageSection {
+            section_id: SectionId::new(ids.next_u128()),
+            name: None,
+            stream: Stream::new(
+                stream_id,
+                b"<order/>".to_vec(),
+                Some("application/xml".to_string()),
+            ),
+            contract: None,
+        };
 
-        assert_eq!(work.journey.messages.len(), 1);
-        assert_eq!(work.journey.messages[0].message_id, work.message.message_id());
-        assert_eq!(work.message.generation(), 0);
-        assert_eq!(work.message.created_by(), MessageCreationSource::Receive);
+        ReceivedWork {
+            journey: Journey::new(JourneyId::new(ids.next_u128())).holding(JourneyMessageRef {
+                message_id,
+                stream_id,
+            }),
+            message: Message::received(
+                message_id,
+                vec![section],
+                MessageContext::new(),
+                treatment,
+            ),
+        }
     }
 
     #[test]
     fn assignment_keeps_the_stream_and_transformation_replaces_it() {
         let ids = Counter::default();
-        let received = receive(
-            &ids,
-            &Arrival::HttpRequest { media_type: None },
-            b"<order/>".to_vec(),
-            business(),
-        );
-        let original_stream = received.message.sections()[0].stream.id();
+        let received = arrived(&ids, business());
+        let original = received.message.sections()[0].stream.id();
 
-        let assigned = apply_assignment(&ids, received, xmip_context::MessageContext::new());
-        assert_eq!(assigned.message.sections()[0].stream.id(), original_stream);
+        let assigned = apply_assignment(&ids, received, MessageContext::new());
+        assert_eq!(assigned.message.sections()[0].stream.id(), original);
 
-        let transformed =
-            apply_transformation(&ids, assigned, b"<Order/>".to_vec(), None);
-        assert_ne!(
-            transformed.message.sections()[0].stream.id(),
-            original_stream
-        );
+        let transformed = apply_transformation(&ids, assigned, b"<Order/>".to_vec(), None);
+        assert_ne!(transformed.message.sections()[0].stream.id(), original);
 
         assert_eq!(transformed.message.generation(), 2);
         assert_eq!(transformed.journey.messages.len(), 3);
     }
 
     #[test]
-    fn the_journey_is_active_and_does_not_follow_anything() {
-        let work = arrived();
-
-        assert!(!work.journey.state.is_terminal());
-        assert!(work.journey.previous_journey_id.is_none());
-    }
-
-    #[test]
-    fn the_arriving_media_type_reaches_the_stream() {
-        let work = arrived();
+    fn an_assignment_is_recorded_as_an_assignment() {
+        let ids = Counter::default();
+        let assigned = apply_assignment(&ids, arrived(&ids, business()), MessageContext::new());
 
         assert_eq!(
-            work.message.sections()[0].stream.media_type(),
-            Some("application/xml")
+            assigned.message.created_by(),
+            MessageCreationSource::Assignment
         );
     }
 
     #[test]
     fn treatment_is_a_declaration_not_a_measurement() {
+        // A two-kilobyte order and a two-gigabyte export can both be Immediate.
         let ids = Counter::default();
-        let tiny = receive(
-            &ids,
-            &Arrival::File { media_type: None },
-            b"ok".to_vec(),
-            conversation(),
-        );
-        let large = receive(
-            &ids,
-            &Arrival::File { media_type: None },
-            vec![0_u8; 4096],
-            pass_through(),
-        );
 
-        assert_eq!(tiny.message.treatment().priority, MessagePriority::Immediate);
         assert_eq!(
-            large.message.treatment().priority,
+            arrived(&ids, conversation()).message.treatment().priority,
+            MessagePriority::Immediate
+        );
+        assert_eq!(
+            arrived(&ids, pass_through()).message.treatment().priority,
             MessagePriority::Background
         );
+    }
+
+    #[test]
+    fn the_three_treatments_differ_in_what_survives_a_restart() {
+        assert_eq!(conversation().durability, MessageDurability::Ephemeral);
+        assert_eq!(business().durability, MessageDurability::Recoverable);
+        assert_eq!(pass_through().durability, MessageDurability::Durable);
     }
 }
