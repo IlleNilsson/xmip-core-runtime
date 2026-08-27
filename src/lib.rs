@@ -1,6 +1,6 @@
 pub mod capability_registry;
+pub mod arrival;
 pub mod execution_tree;
-pub mod flow;
 pub mod host;
 pub mod receive;
 pub mod service;
