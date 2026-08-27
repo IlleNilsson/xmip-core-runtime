@@ -1,5 +1,7 @@
-pub mod capability_registry;
 pub mod arrival;
+pub mod capability_registry;
+pub mod departure;
+pub mod engine;
 pub mod execution_tree;
 pub mod host;
 pub mod receive;
