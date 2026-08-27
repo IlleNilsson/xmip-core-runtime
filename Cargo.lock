@@ -244,9 +244,9 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "uuid"
-version = "1.25.0"
+version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f053576934f05a761a402421fbbe3d425d9366f75f978806a037b3ca481abecc"
+checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
  "getrandom",
  "js-sys",
@@ -313,15 +313,16 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 [[package]]
 name = "xmip-core"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core?branch=main#ac579cd3804804ff47cff79b96157d817ed059c5"
+source = "git+https://github.com/IlleNilsson/xmip-core?branch=main#a2e6dbaba253758169abb2d9d59cfda5c8a685f6"
 dependencies = [
+ "serde",
  "uuid",
 ]
 
 [[package]]
 name = "xmip-core-abi"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-abi?branch=main#51c82366507aa4cb386b79c64912072e0b894bb1"
+source = "git+https://github.com/IlleNilsson/xmip-core-abi?branch=main#f503418a4b1daf9f9db4300491e5d2d0e614f546"
 dependencies = [
  "serde",
  "xmip-core",
@@ -330,7 +331,7 @@ dependencies = [
 [[package]]
 name = "xmip-core-configure"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-configure?branch=main#f9b2dd57b5d538f4e68b977bca22b3a3da69e19d"
+source = "git+https://github.com/IlleNilsson/xmip-core-configure?branch=main#28a36abd7878fbecfca8295c53459309ee56d9a1"
 dependencies = [
  "serde",
  "toml",
@@ -340,12 +341,12 @@ dependencies = [
 [[package]]
 name = "xmip-core-context"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-context?branch=main#b5fcc9f6b780141f579749066bcfb6b9862e496c"
+source = "git+https://github.com/IlleNilsson/xmip-core-context?branch=main#8848f731b4d3494ea461c9b348ef7af3afb3af72"
 
 [[package]]
 name = "xmip-core-journey"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-journey?branch=main#9430df1aca217c871696449e81510e60893217da"
+source = "git+https://github.com/IlleNilsson/xmip-core-journey?branch=main#e222e5147bc9232ba53f61491cc59217f727562f"
 dependencies = [
  "xmip-core",
 ]
@@ -353,7 +354,7 @@ dependencies = [
 [[package]]
 name = "xmip-core-message"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-message?branch=main#486a3b5b2860dd6e6973d6a6434ee477a7b51923"
+source = "git+https://github.com/IlleNilsson/xmip-core-message?branch=main#1d12bc1ca53e287d17718f99ec7764f4d1f25924"
 dependencies = [
  "serde",
  "xmip-core",
@@ -378,7 +379,7 @@ dependencies = [
 [[package]]
 name = "xmip-core-stream"
 version = "0.1.0"
-source = "git+https://github.com/IlleNilsson/xmip-core-stream?branch=main#8914b4c946dc3b05a908117c31b98cce2c139fba"
+source = "git+https://github.com/IlleNilsson/xmip-core-stream?branch=main#a848f74bc4bbc4f9c3d86d28b8fd46b3c0828ba0"
 dependencies = [
  "xmip-core",
 ]
