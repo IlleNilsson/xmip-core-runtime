@@ -29,7 +29,7 @@ use xmip_route::{Routing, Subscriber};
 use xmip_send::{SendError, SendLevel, SendRequest};
 
 use crate::engine::Runtime;
-use crate::receive::ReceivedWork;
+use crate::generation::ReceivedWork;
 
 /// What became of one Message on its way out to one destination.
 #[derive(Clone, Debug)]
