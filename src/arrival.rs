@@ -48,7 +48,7 @@ use xmip_route::{publish, Dispatch, Promoted, Routing};
 use std::fmt;
 
 use crate::engine::Runtime;
-use crate::receive::ReceivedWork;
+use crate::generation::ReceivedWork;
 
 /// Why a Stream never became a Journey.
 #[derive(Clone, Debug)]

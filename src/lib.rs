@@ -3,8 +3,8 @@ pub mod capability_registry;
 pub mod departure;
 pub mod engine;
 pub mod execution_tree;
+pub mod generation;
 pub mod host;
-pub mod receive;
 pub mod service;
 
 use serde::{Deserialize, Serialize};
