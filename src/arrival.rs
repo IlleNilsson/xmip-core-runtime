@@ -33,8 +33,8 @@
 //! Transformation is not here yet. What is here is the spine, and nothing in
 //! it is a placeholder: every step is the module that owns it.
 
-use xmip_authenticate::{authenticate, Refusal};
-use xmip_authorize::{authorize, Action, Attempt, Decision};
+use xmip_authenticate::authenticate;
+use xmip_authorize::{authorize, Action, Attempt};
 use xmip_context::{IdentityFacts, MessageContext};
 use xmip_core::{mechanism, Arriving, JourneyId, Layer, MessageId, SectionId};
 use xmip_identify::{
@@ -43,84 +43,12 @@ use xmip_identify::{
 use xmip_journey::{Journey, JourneyMessageRef};
 use xmip_message::{Message, MessageSection};
 use xmip_receive::{ReceiveLocation, ReceivedStream};
-use xmip_route::{publish, Dispatch, Promoted, Routing};
+use xmip_route::{publish, Dispatch, Promoted};
 
-use std::fmt;
 
 use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
-
-/// Why a Stream never became a Journey.
-#[derive(Clone, Debug)]
-pub enum Refused {
-    /// The arrival carried something this mechanism recognises and could not
-    /// read — a malformed certificate, a truncated envelope.
-    ///
-    /// Distinct from carrying nothing, which is ordinary and reaches the
-    /// circumstance instead.
-    Identification(String),
-    /// The credential was not accepted, or not accepted here.
-    Authentication(Refusal),
-    /// Verified, and not permitted to post here.
-    Authorization(Decision),
-}
-
-impl fmt::Display for Refused {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Identification(detail) => write!(f, "{detail}"),
-            Self::Authentication(refusal) => write!(f, "{refusal}"),
-            Self::Authorization(decision) => write!(f, "{decision}"),
-        }
-    }
-}
-
-/// What became of one arrival.
-#[derive(Clone, Debug)]
-pub enum Arrived {
-    /// Refused at a gate.
-    ///
-    /// **No Journey exists.** A Journey does not start until the Stream has
-    /// been identified, authenticated *and* authorized — ADR-0013 puts its
-    /// beginning after Validation, so before that there is nothing to suspend,
-    /// resume or dismiss. The refusal is the whole record.
-    Refused { reason: Refused },
-
-    /// Authenticated, published, and at least one Subscription wanted it.
-    Routed {
-        work: ReceivedWork,
-        facts: IdentityFacts,
-        routing: Routing,
-    },
-
-    /// Authenticated, published, and nobody wanted it.
-    ///
-    /// A disposition rather than a failure: the Stream was valid, it passed its
-    /// gates, and no Subscription matched. That is a statement about
-    /// configuration, and `routing.declines()` says which Subscription passed
-    /// and why. Kept under retention so the question can be answered later.
-    Unroutable {
-        work: ReceivedWork,
-        facts: IdentityFacts,
-        routing: Routing,
-    },
-}
-
-impl Arrived {
-    /// Whether Xmip must keep this because nothing took it.
-    #[must_use]
-    pub const fn retains(&self) -> bool {
-        matches!(self, Self::Unroutable { .. })
-    }
-
-    #[must_use]
-    pub const fn routing(&self) -> Option<&Routing> {
-        match self {
-            Self::Routed { routing, .. } | Self::Unroutable { routing, .. } => Some(routing),
-            Self::Refused { .. } => None,
-        }
-    }
-}
+use crate::outcome::{Arrived, Refused};
 
 /// Drive one arrival from bytes to a dispatch.
 ///
@@ -449,8 +377,8 @@ mod tests {
     use crate::engine::{PartyDirectory, Runtime, SendRegistry};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
-    use xmip_authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry};
-    use xmip_authorize::Authorizer;
+    use xmip_authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
+    use xmip_authorize::{Authorizer, Decision};
     use xmip_context::Verified;
     use xmip_core::{
         Clock, CredentialRef, Departing, Established, IdGenerator, Mechanism, PartyId, Purpose,
