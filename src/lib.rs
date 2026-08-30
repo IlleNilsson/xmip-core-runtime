@@ -5,6 +5,7 @@ pub mod engine;
 pub mod execution_tree;
 pub mod generation;
 pub mod host;
+pub mod outcome;
 pub mod service;
 
 use serde::{Deserialize, Serialize};
