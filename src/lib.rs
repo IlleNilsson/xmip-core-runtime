@@ -5,6 +5,7 @@ pub mod engine;
 pub mod execution_tree;
 pub mod generation;
 pub mod host;
+pub mod operate;
 pub mod outcome;
 pub mod registration;
 pub mod service;
