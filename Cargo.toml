@@ -13,7 +13,10 @@ description = "The Xmip runtime: module registry, host service planning and the 
 path = "src/lib.rs"
 
 [lints.rust]
-unsafe_code = "forbid"
+# deny, not forbid, since 2026-09-04. operate.rs implements the C table in
+# xmip_operate.h and has to write through pointers a surface handed it; it
+# allows the lint at the top of the file with the reason, and nothing else may.
+unsafe_code = "deny"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +33,7 @@ xmip-authenticate = { package = "xmip-core-authenticate", git = "https://github.
 xmip-send = { package = "xmip-core-send", git = "https://github.com/IlleNilsson/xmip-core-send", branch = "main" }
 xmip-authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main" }
 xmip-route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmip-core-route", branch = "main" }
+xmip-observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 xmip-configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
 
 [features]
