@@ -200,6 +200,47 @@ unsafe extern "C" fn destroy_entry(ctx: *mut u8) {
     drop(unsafe { Box::from_raw(ctx.cast::<Operator>()) });
 }
 
+/// What this process has published. The runtime writes it as the node runs; the
+/// export below hands a copy to whichever surface asks. A copy, so a surface
+/// reading a table never blocks the node writing the next one — ADR-0027
+/// clause 6 in one line.
+static PUBLISHED: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
+
+/// Publish the node's current snapshot for surfaces to read.
+pub fn publish(snapshot: Snapshot) {
+    *PUBLISHED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+}
+
+/// The one symbol a surface loads. `XMIP_OPERATE_ENTRYPOINT` in the header.
+///
+/// Fills `out` and returns `XMIP_OK`, or returns a status and leaves `out`
+/// untouched. A version this build does not speak is `XMIP_E_UNSUPPORTED`
+/// here rather than a failure on the first call. A node that has published
+/// nothing yet still answers, with an empty snapshot: every scope is not
+/// found, which is the truth.
+///
+/// # Safety
+/// `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32 {
+    if version != xmip_abi::operate::XMIP_OPERATE_VERSION {
+        return status::UNSUPPORTED;
+    }
+
+    let snapshot = PUBLISHED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .unwrap_or_default();
+
+    // SAFETY: `out` is writable per the contract.
+    unsafe { out.write(Box::new(Operator::new(snapshot)).table()) };
+
+    status::OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +388,49 @@ mod tests {
 
         assert_eq!(missing, status::NOT_FOUND);
         assert_eq!(len, 0);
+
+        // SAFETY: not used after this.
+        unsafe { (table.destroy.expect("destroy"))(table.ctx) };
+    }
+
+    #[test]
+    fn the_export_refuses_a_version_it_does_not_speak_and_leaves_out_alone() {
+        let mut out = std::mem::MaybeUninit::<Operate>::uninit();
+
+        // SAFETY: `out` is writable; on refusal it is not written.
+        let code = unsafe { xmip_operate_v1(99, out.as_mut_ptr()) };
+
+        assert_eq!(code, status::UNSUPPORTED);
+    }
+
+    #[test]
+    fn the_export_hands_out_what_was_published() {
+        publish(snapshot());
+
+        let mut out = std::mem::MaybeUninit::<Operate>::uninit();
+
+        // SAFETY: `out` is writable.
+        let code =
+            unsafe { xmip_operate_v1(xmip_abi::operate::XMIP_OPERATE_VERSION, out.as_mut_ptr()) };
+        assert_eq!(code, status::OK);
+
+        // SAFETY: the export wrote a complete table.
+        let table = unsafe { out.assume_init() };
+        let mut len = 0usize;
+
+        // SAFETY: `cap` is 0, so nothing is written but `len`.
+        let found = unsafe {
+            (table.health.expect("health"))(
+                table.ctx,
+                borrow("xmip:///edge-01"),
+                core::ptr::null_mut(),
+                0,
+                &mut len,
+            )
+        };
+
+        assert_eq!(found, status::OK);
+        assert_eq!(len, 2);
 
         // SAFETY: not used after this.
         unsafe { (table.destroy.expect("destroy"))(table.ctx) };
