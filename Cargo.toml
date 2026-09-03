@@ -11,6 +11,11 @@ description = "The Xmip runtime: module registry, host service planning and the 
 
 [lib]
 path = "src/lib.rs"
+# rlib for the estate, cdylib for the surfaces. ADR-0014: the xmip executable,
+# the PowerShell module and the GUI are .NET and P/Invoke a C ABI, so there
+# has to be a native library that exports xmip_operate_v1 for them to load.
+# This is it.
+crate-type = ["rlib", "cdylib"]
 
 [lints.rust]
 # deny, not forbid, since 2026-09-04. operate.rs implements the C table in
