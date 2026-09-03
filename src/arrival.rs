@@ -34,17 +34,16 @@
 //! it is a placeholder: every step is the module that owns it.
 
 use xmip_authenticate::authenticate;
-use xmip_authorize::{authorize, Action, Attempt};
+use xmip_authorize::{Action, Attempt, authorize};
 use xmip_context::{IdentityFacts, MessageContext};
-use xmip_core::{mechanism, Arriving, JourneyId, Layer, MessageId, SectionId};
+use xmip_core::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 use xmip_identify::{
-    identify_message, identify_transport, IdentifyError, Presented, StreamArrival,
+    IdentifyError, Presented, StreamArrival, identify_message, identify_transport,
 };
 use xmip_journey::{Journey, JourneyMessageRef};
 use xmip_message::{Message, MessageSection};
 use xmip_receive::{ReceiveLocation, ReceivedStream};
-use xmip_route::{publish, Dispatch, Promoted};
-
+use xmip_route::{Dispatch, Promoted, publish};
 
 use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
@@ -95,7 +94,7 @@ pub fn arrive(
         Err(IdentifyError { message }) => {
             return Arrived::Refused {
                 reason: Refused::Identification(message),
-            }
+            };
         }
     };
 
@@ -125,7 +124,7 @@ pub fn arrive(
         Err(refusal) => {
             return Arrived::Refused {
                 reason: Refused::Authentication(refusal),
-            }
+            };
         }
     };
 
@@ -194,13 +193,17 @@ pub fn arrive(
 
     // The Journey opens here and not before. Everything above could have
     // refused, and a refused arrival has no line of execution to record.
-    let journey = Journey::new(JourneyId::new(runtime.ids.next_u128())).holding(JourneyMessageRef {
-        message_id,
-        stream_id,
-    });
+    let journey =
+        Journey::new(JourneyId::new(runtime.ids.next_u128())).holding(JourneyMessageRef {
+            message_id,
+            stream_id,
+        });
 
     let work = ReceivedWork { journey, message };
-    let routing = publish(&Promoted::from_context(work.message.context()), runtime.subscriptions);
+    let routing = publish(
+        &Promoted::from_context(work.message.context()),
+        runtime.subscriptions,
+    );
 
     match routing.dispatch() {
         Dispatch::Routed(_) => Arrived::Routed {
@@ -373,10 +376,10 @@ mod tests {
     // than in isolation: what a Message departs with is decided by what it
     // arrived with, and a test that stubbed the join would not catch the case
     // that matters.
-    use crate::departure::{depart, Departed};
+    use crate::departure::{Departed, depart};
     use crate::engine::{PartyDirectory, Runtime, SendRegistry};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use xmip_authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
     use xmip_authorize::{Authorizer, Decision};
     use xmip_context::Verified;
@@ -445,7 +448,10 @@ mod tests {
             self.0.clone()
         }
 
-        fn identify(&self, arrival: &StreamArrival<'_>) -> Result<Option<Presented>, IdentifyError> {
+        fn identify(
+            &self,
+            arrival: &StreamArrival<'_>,
+        ) -> Result<Option<Presented>, IdentifyError> {
             Ok(arrival
                 .property(self.1)
                 .map(|value| Presented::passed(self.0.clone(), value)))
@@ -544,11 +550,19 @@ mod tests {
 
     impl Recording {
         fn ok(technology: &'static str) -> Self {
-            Self { technology, fail: None, presented: Mutex::new(Vec::new()) }
+            Self {
+                technology,
+                fail: None,
+                presented: Mutex::new(Vec::new()),
+            }
         }
 
         fn failing(technology: &'static str, retryable: bool, why: &'static str) -> Self {
-            Self { technology, fail: Some((retryable, why)), presented: Mutex::new(Vec::new()) }
+            Self {
+                technology,
+                fail: Some((retryable, why)),
+                presented: Mutex::new(Vec::new()),
+            }
         }
     }
 
@@ -565,7 +579,10 @@ mod tests {
             );
 
             if let Some((retryable, message)) = self.fail {
-                return Err(SendError { retryable, message: message.to_string() });
+                return Err(SendError {
+                    retryable,
+                    message: message.to_string(),
+                });
             }
 
             Ok(SendResult {
@@ -585,9 +602,10 @@ mod tests {
     }
 
     fn partner() -> Party {
-        Party::new(PartyId::new(7), PartyKind::Organization, "partner-x").with(
-            Identity::receiving(mechanism::mutual_tls(), "CN=partner-x.example"),
-        )
+        Party::new(PartyId::new(7), PartyKind::Organization, "partner-x").with(Identity::receiving(
+            mechanism::mutual_tls(),
+            "CN=partner-x.example",
+        ))
     }
 
     fn registry() -> Registry {
@@ -650,8 +668,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn a_file_arrives_and_reaches_a_send_port() {
         let ids = Counter::default();
@@ -665,26 +681,40 @@ mod tests {
         let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &location(),
             arriving(),
         );
 
-        let Arrived::Routed { work, facts, routing } = arrived else {
+        let Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } = arrived
+        else {
             panic!("expected a route, got {arrived:?}");
         };
 
         assert_eq!(facts.accountable().party_id, Some(PartyId::new(7)));
         assert_eq!(routing.dispatch(), Dispatch::Routed(1));
-        assert_eq!(
-            routing.destinations()[0].to_string(),
-            "SendPort.Billing"
-        );
+        assert_eq!(routing.destinations()[0].to_string(), "SendPort.Billing");
 
         // One Message, one Journey, and the Journey is holding it.
         assert_eq!(work.message.generation(), 0);
         assert_eq!(work.journey.messages.len(), 1);
-        assert_eq!(work.journey.messages[0].message_id, work.message.message_id());
+        assert_eq!(
+            work.journey.messages[0].message_id,
+            work.message.message_id()
+        );
     }
 
     #[test]
@@ -702,7 +732,16 @@ mod tests {
         let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &location(),
             ReceivedStream::new(
                 Stream::new(StreamId::new(101), b"{}".to_vec(), None),
@@ -744,7 +783,16 @@ mod tests {
         )];
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &location(),
             arriving(),
         );
@@ -755,7 +803,11 @@ mod tests {
 
         assert_eq!(declines.len(), 1);
         assert_eq!(declines[0].0, "invoices");
-        assert!(declines[0].1.contains("xmip.party is"), "got: {}", declines[0].1);
+        assert!(
+            declines[0].1.contains("xmip.party is"),
+            "got: {}",
+            declines[0].1
+        );
     }
 
     #[test]
@@ -786,7 +838,16 @@ mod tests {
         .accepting(Acceptance::closed().accepting(&mechanism::circumstance()));
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &folder,
             ReceivedStream::new(
                 Stream::new(StreamId::new(102), b"ISA*00*".to_vec(), None),
@@ -827,7 +888,16 @@ mod tests {
         )];
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &location(),
             arriving(),
         );
@@ -856,17 +926,40 @@ mod tests {
         let posting: [&dyn SendTransport; 1] = [&sftp];
 
         let arrived = arrive(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             &location(),
             arriving(),
         );
 
-        let Arrived::Routed { work, facts, routing } = &arrived else {
+        let Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } = &arrived
+        else {
             panic!("expected a route, got {arrived:?}");
         };
 
         let departed = depart(
-            &runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock),
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
             work,
             facts,
             routing,
@@ -883,7 +976,10 @@ mod tests {
 
         // And the transport was handed Xmip's key rather than the partner's
         // certificate.
-        assert_eq!(sftp.presented.lock().unwrap().as_slice(), ["SHA256:xmip-outbound"]);
+        assert_eq!(
+            sftp.presented.lock().unwrap().as_slice(),
+            ["SHA256:xmip-outbound"]
+        );
     }
 
     #[test]
@@ -904,10 +1000,24 @@ mod tests {
             Predicate::everything(),
         )];
 
-        let engine = runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock);
+        let engine = runtime(
+            &ids,
+            &authenticators,
+            &parties,
+            &subscriptions,
+            &Sends,
+            &posting,
+            &open,
+            &clock,
+        );
         let arrived = arrive(&engine, &location(), arriving());
 
-        let Arrived::Routed { work, facts, routing } = &arrived else {
+        let Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } = &arrived
+        else {
             panic!("expected a route, got {arrived:?}");
         };
 
@@ -931,16 +1041,33 @@ mod tests {
         let refusing = Recording::failing("ssh-key", true, "connection refused");
         let posting: [&dyn SendTransport; 1] = [&refusing];
 
-        let engine = runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock);
+        let engine = runtime(
+            &ids,
+            &authenticators,
+            &parties,
+            &subscriptions,
+            &Sends,
+            &posting,
+            &open,
+            &clock,
+        );
         let arrived = arrive(&engine, &location(), arriving());
 
-        let Arrived::Routed { work, facts, routing } = &arrived else {
+        let Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } = &arrived
+        else {
             panic!("expected a route, got {arrived:?}");
         };
 
         let departed = depart(&engine, work, facts, routing);
 
-        let Departed::Failed { retryable, detail, .. } = &departed[0] else {
+        let Departed::Failed {
+            retryable, detail, ..
+        } = &departed[0]
+        else {
             panic!("expected a failure, got {:?}", departed[0]);
         };
 
@@ -963,10 +1090,24 @@ mod tests {
         let http = Recording::ok("http");
         let posting: [&dyn SendTransport; 1] = [&http];
 
-        let engine = runtime(&ids, &authenticators, &parties, &subscriptions, &Sends, &posting, &open, &clock);
+        let engine = runtime(
+            &ids,
+            &authenticators,
+            &parties,
+            &subscriptions,
+            &Sends,
+            &posting,
+            &open,
+            &clock,
+        );
         let arrived = arrive(&engine, &location(), arriving());
 
-        let Arrived::Routed { work, facts, routing } = &arrived else {
+        let Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } = &arrived
+        else {
             panic!("expected a route, got {arrived:?}");
         };
 
@@ -1264,7 +1405,10 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "pushed-edi",
             Subscriber::SendPort("Billing".to_string()),
-            Predicate::equals("xmip.message.established", Value::Text("detected".to_string())),
+            Predicate::equals(
+                "xmip.message.established",
+                Value::Text("detected".to_string()),
+            ),
         )];
 
         let envelope = ReadsInterchange;
@@ -1317,7 +1461,11 @@ mod tests {
         // identity. Three separate facts, none inferable from the others.
         assert_eq!(facts.transport.established, Established::Passed);
         assert_eq!(
-            facts.message.as_ref().expect("the envelope named someone").established,
+            facts
+                .message
+                .as_ref()
+                .expect("the envelope named someone")
+                .established,
             Established::Detected
         );
         assert_eq!(routing.dispatch(), Dispatch::Routed(1));

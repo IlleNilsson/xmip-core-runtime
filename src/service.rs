@@ -1,6 +1,6 @@
+use crate::execution_tree::{ExecutionTree, StartupValidationReport, build_execution_tree};
 use serde::{Deserialize, Serialize};
 use xmip_configure::parse_service_configuration;
-use crate::execution_tree::{build_execution_tree, ExecutionTree, StartupValidationReport};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum XmipServiceState {
