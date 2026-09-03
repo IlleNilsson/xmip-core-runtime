@@ -182,8 +182,6 @@ pub fn arrive(
         location,
         transport_facts,
         message,
-        message_id,
-        section_id,
         received.arriving,
         now,
     ) {
@@ -232,11 +230,15 @@ fn settle_message_identity(
     location: &ReceiveLocation,
     transport_facts: IdentityFacts,
     message: Message,
-    message_id: MessageId,
-    section_id: SectionId,
     arriving: Arriving,
     now: i128,
 ) -> Result<(IdentityFacts, Message), Refused> {
+    // Rebuilt under the same identifiers, and those identifiers are on the
+    // Message it was handed. Passing them separately was two chances for the
+    // caller to hand over the wrong ones, and clippy counted eight arguments.
+    let message_id = message.message_id();
+    let section_id = message.sections()[0].section_id;
+
     let claims = identify_message(runtime.message_identifiers, &message)
         .map_err(|failure| Refused::Identification(failure.message))?;
 
@@ -642,6 +644,9 @@ mod tests {
         )]
     }
 
+    // One argument per Runtime field, because that is what this builds. A
+    // builder would be a second copy of the struct for the sake of a lint.
+    #[allow(clippy::too_many_arguments)]
     fn runtime<'a>(
         ids: &'a Counter,
         authenticators: &'a [&'a dyn Authenticator],
