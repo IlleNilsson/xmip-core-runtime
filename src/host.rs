@@ -1,5 +1,5 @@
-use xmip_abi::ModuleManifest;
 use crate::{HostBitness, HostServicePlan};
+use xmip_abi::ModuleManifest;
 
 /// The registered, supervised thing. The System Process it runs as is the
 /// Host Process; this is the service. ADR-0018.
@@ -54,7 +54,7 @@ impl HostService {
 /// declared feature in `Test-XmipModule`.
 #[cfg(feature = "dynamic-loading")]
 pub mod dynamic {
-    use xmip_abi::{validate_module_abi, ModuleDescriptor, ModuleManifest, XMIP_ENTRYPOINT};
+    use xmip_abi::{ModuleDescriptor, ModuleManifest, XMIP_ENTRYPOINT, validate_module_abi};
 
     #[derive(Clone, Debug)]
     pub struct DynamicModuleRequest {
@@ -107,8 +107,7 @@ pub mod dynamic {
     mod tests {
         use super::*;
         use xmip_abi::{
-            ExecutionHostKind, ModuleCapability, ModuleEntrypoint, ModuleIdentity,
-            XMIP_ABI_VERSION,
+            ExecutionHostKind, ModuleCapability, ModuleEntrypoint, ModuleIdentity, XMIP_ABI_VERSION,
         };
 
         fn request(symbol: Option<&str>) -> DynamicModuleRequest {

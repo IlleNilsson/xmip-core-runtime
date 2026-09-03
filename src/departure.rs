@@ -22,7 +22,7 @@
 //! Time has passed — a Process may have waited days for a human — and what was
 //! true then is never a licence to act now.
 
-use xmip_authorize::{authorize, Action, Attempt, Decision};
+use xmip_authorize::{Action, Attempt, Decision, authorize};
 use xmip_context::IdentityFacts;
 use xmip_core::{Departing, Purpose};
 use xmip_route::{Routing, Subscriber};

@@ -30,7 +30,9 @@ pub fn apply_assignment(
     work: ReceivedWork,
     context: xmip_context::MessageContext,
 ) -> ReceivedWork {
-    let assigned = work.message.assigned(MessageId::new(ids.next_u128()), context);
+    let assigned = work
+        .message
+        .assigned(MessageId::new(ids.next_u128()), context);
     let stream_id = assigned.sections()[0].stream.id();
 
     ReceivedWork {
@@ -145,12 +147,7 @@ mod tests {
                 message_id,
                 stream_id,
             }),
-            message: Message::received(
-                message_id,
-                vec![section],
-                MessageContext::new(),
-                treatment,
-            ),
+            message: Message::received(message_id, vec![section], MessageContext::new(), treatment),
         }
     }
 
