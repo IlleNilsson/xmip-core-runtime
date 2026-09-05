@@ -139,6 +139,26 @@ pub fn start(path: &str) -> Snapshot {
         });
     }
 
+    // The other two stages of the message path. xmip:///<node>/<stage>/<name>
+    // is what the GUI groups by, and Receive and Send are what an operator
+    // runs — a node with only Process on the page is two thirds empty.
+    for (stage, locations) in [
+        ("receive", &configuration.receive_locations),
+        ("send", &configuration.send_locations),
+    ] {
+        for location in locations.iter().filter(|l| l.start) {
+            snapshot.record_health(HealthRecord {
+                scope: format!("{node}/{stage}/{}", location.name),
+                health: Health::Yellow,
+                evidence: format!(
+                    "planned, not started; {} at {}",
+                    location.transport, location.address
+                ),
+                observed_unix_nanos: now,
+            });
+        }
+    }
+
     snapshot
 }
 
@@ -218,6 +238,18 @@ start = true
 required_modules = ["file"]
 xmip_subprocesses = []
 extensions = []
+
+[[receive_locations]]
+name = "orders-in"
+start = true
+transport = "file"
+address = "C:/in"
+
+[[send_locations]]
+name = "billing-out"
+start = true
+transport = "file"
+address = "C:/out"
 "#,
         )
         .expect("write fixture");
@@ -225,7 +257,17 @@ extensions = []
         let snapshot = start(path.to_str().expect("utf-8 path"));
 
         let records = snapshot.health("xmip:///edge-01");
-        assert_eq!(records.len(), 3, "node, one module, one process");
+        assert_eq!(records.len(), 5, "node, module, process, receive, send");
+        assert!(
+            records
+                .iter()
+                .any(|r| r.scope == "xmip:///edge-01/receive/orders-in")
+        );
+        assert!(
+            records
+                .iter()
+                .any(|r| r.scope == "xmip:///edge-01/send/billing-out")
+        );
         assert!(
             records.iter().all(|r| r.health == Health::Yellow),
             "planned, not running"
