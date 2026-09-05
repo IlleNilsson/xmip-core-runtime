@@ -279,6 +279,8 @@ mod tests {
             service_name: "xmip".to_string(),
             cluster_name: "home".to_string(),
             node_name: "node-a".to_string(),
+            receive_locations: Vec::new(),
+            send_locations: Vec::new(),
             modules: vec![ConfiguredModule {
                 name: "file".to_string(),
                 start: true,
