@@ -22,11 +22,11 @@
 //! Time has passed — a Process may have waited days for a human — and what was
 //! true then is never a licence to act now.
 
-use xmip_authorize::{Action, Attempt, Decision, authorize};
-use xmip_context::IdentityFacts;
-use xmip_core::{Departing, Purpose};
-use xmip_route::{Routing, Subscriber};
-use xmip_send::{SendError, SendLevel, SendRequest};
+use authorize::{Action, Attempt, Decision, authorize};
+use context::IdentityFacts;
+use route::{Routing, Subscriber};
+use send::{SendError, SendLevel, SendRequest};
+use xcore::{Departing, Purpose};
 
 use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
@@ -126,7 +126,7 @@ fn depart_one(
         runtime.policies,
         facts,
         &Attempt::new(Action::Send, &location.name).at(runtime.clock.unix_timestamp_nanos()),
-        xmip_context::OnMisalignment::Accept,
+        context::OnMisalignment::Accept,
     );
 
     if !permitted.allowed() {

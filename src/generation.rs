@@ -9,13 +9,13 @@
 //! generation. Assignment changes metadata and keeps the Stream; Transformation
 //! produces a new Stream. Neither edits anything — ADR-0013.
 
-use xmip_core::{IdGenerator, MessageId, SectionId, StreamId};
-use xmip_journey::{Journey, JourneyMessageRef};
-use xmip_message::{
+use journey::{Journey, JourneyMessageRef};
+use message::{
     ExecutionProfile, Message, MessageCreationSource, MessageDurability, MessagePriority,
     MessageSection, MessageTreatment,
 };
-use xmip_stream::Stream;
+use stream::Stream;
+use xcore::{IdGenerator, MessageId, SectionId, StreamId};
 
 /// One Message and the Journey opened over it.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +28,7 @@ pub struct ReceivedWork {
 pub fn apply_assignment(
     ids: &dyn IdGenerator,
     work: ReceivedWork,
-    context: xmip_context::MessageContext,
+    context: context::MessageContext,
 ) -> ReceivedWork {
     let assigned = work
         .message
@@ -110,9 +110,9 @@ pub const fn pass_through() -> MessageTreatment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use context::MessageContext;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use xmip_context::MessageContext;
-    use xmip_core::JourneyId;
+    use xcore::JourneyId;
 
     /// Counts from one. Not UUIDv7, and deliberately so: a test that asserts on
     /// identifiers needs them to be the same on every run.

@@ -13,8 +13,8 @@
 //! path a surface handed it — the one reason this file allows `unsafe`.
 #![allow(unsafe_code)]
 
-use xmip_abi::ffi::{Str, status};
-use xmip_observe::{Health, HealthRecord, Snapshot};
+use abi::ffi::{Str, status};
+use observe::{Health, HealthRecord, Snapshot};
 
 use crate::operate::{publish, scope_text};
 
@@ -74,7 +74,7 @@ pub fn start(path: &str) -> Snapshot {
         }
     };
 
-    let configuration = match xmip_configure::parse_service_configuration(&source) {
+    let configuration = match configure::parse_service_configuration(&source) {
         Ok(configuration) => configuration,
         Err(error) => {
             snapshot.record_health(HealthRecord {

@@ -4,14 +4,14 @@
 //! shared thing here keeps `arrival.rs` and `departure.rs` about what happens
 //! rather than about what is wired up.
 
-use xmip_authenticate::{Authenticator, PartyRegistry};
-use xmip_authorize::Authorizer;
-use xmip_core::{Clock, IdGenerator, PartyId};
-use xmip_identify::{MessageIdentifier, TransportIdentifier};
-use xmip_message::MessageTreatment;
-use xmip_party::Party;
-use xmip_route::{Subscriber, Subscription};
-use xmip_send::{SendChain, SendLocation, SendTransport};
+use authenticate::{Authenticator, PartyRegistry};
+use authorize::Authorizer;
+use identify::{MessageIdentifier, TransportIdentifier};
+use message::MessageTreatment;
+use party::Party;
+use route::{Subscriber, Subscription};
+use send::{SendChain, SendLocation, SendTransport};
+use xcore::{Clock, IdGenerator, PartyId};
 
 /// Where a matched Subscriber is configured.
 ///

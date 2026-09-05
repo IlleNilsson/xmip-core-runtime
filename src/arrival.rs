@@ -33,17 +33,15 @@
 //! Transformation is not here yet. What is here is the spine, and nothing in
 //! it is a placeholder: every step is the module that owns it.
 
-use xmip_authenticate::authenticate;
-use xmip_authorize::{Action, Attempt, authorize};
-use xmip_context::{IdentityFacts, MessageContext};
-use xmip_core::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
-use xmip_identify::{
-    IdentifyError, Presented, StreamArrival, identify_message, identify_transport,
-};
-use xmip_journey::{Journey, JourneyMessageRef};
-use xmip_message::{Message, MessageSection};
-use xmip_receive::{ReceiveLocation, ReceivedStream};
-use xmip_route::{Dispatch, Promoted, publish};
+use authenticate::authenticate;
+use authorize::{Action, Attempt, authorize};
+use context::{IdentityFacts, MessageContext};
+use identify::{IdentifyError, Presented, StreamArrival, identify_message, identify_transport};
+use journey::{Journey, JourneyMessageRef};
+use message::{Message, MessageSection};
+use receive::{ReceiveLocation, ReceivedStream};
+use route::{Dispatch, Promoted, publish};
+use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 
 use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
@@ -305,7 +303,7 @@ fn settle_message_identity(
 /// between the two, and they are prefixed so a Contract promoting `Party`
 /// cannot collide with Xmip promoting one.
 fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext {
-    use xmip_context::ContextValue;
+    use context::ContextValue;
 
     let mut context = MessageContext::new()
         .with_value("xmip.arriving", ContextValue::Text(arriving.to_string()))
@@ -380,25 +378,25 @@ mod tests {
     // that matters.
     use crate::departure::{Departed, depart};
     use crate::engine::{PartyDirectory, Runtime, SendRegistry};
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use xmip_authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
-    use xmip_authorize::{Authorizer, Decision};
-    use xmip_context::Verified;
-    use xmip_core::{
-        Clock, CredentialRef, Departing, Established, IdGenerator, Mechanism, PartyId, Purpose,
-        StreamId,
-    };
-    use xmip_identify::{MessageIdentifier, TransportIdentifier};
-    use xmip_message::MessageTreatment;
-    use xmip_party::{Identity, Party, PartyKind};
-    use xmip_receive::ReceiveLocationType;
-    use xmip_route::{Predicate, Subscriber, Subscription, Value};
-    use xmip_send::{
+    use authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
+    use authorize::{Authorizer, Decision};
+    use context::Verified;
+    use identify::{MessageIdentifier, TransportIdentifier};
+    use message::MessageTreatment;
+    use party::{Identity, Party, PartyKind};
+    use receive::ReceiveLocationType;
+    use route::{Predicate, Subscriber, Subscription, Value};
+    use send::{
         SendChain, SendError, SendLevel, SendLocation as Location, SendRequest, SendResult,
         SendTransport,
     };
-    use xmip_stream::Stream;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use stream::Stream;
+    use xcore::{
+        Clock, CredentialRef, Departing, Established, IdGenerator, Mechanism, PartyId, Purpose,
+        StreamId,
+    };
 
     /// A clock that does not move. A test asserting on freshness needs the
     /// gap between two moments to be the one it chose.
@@ -527,7 +525,7 @@ mod tests {
 
             Some((
                 Location {
-                    artifact_id: xmip_core::ArtifactId::new(10),
+                    artifact_id: xcore::ArtifactId::new(10),
                     name: "Billing".to_string(),
                     uri: "sftp://billing.example/in".to_string(),
                     transport: "ssh-key".to_string(),
@@ -616,7 +614,7 @@ mod tests {
 
     fn location() -> ReceiveLocation {
         ReceiveLocation::new(
-            xmip_core::ArtifactId::new(1),
+            xcore::ArtifactId::new(1),
             "partner-x",
             "https://xmip.example/in/partner-x",
             "https",
@@ -834,7 +832,7 @@ mod tests {
         )];
 
         let folder = ReceiveLocation::new(
-            xmip_core::ArtifactId::new(2),
+            xcore::ArtifactId::new(2),
             "drop",
             "file:///in/partner-y",
             "file",
@@ -1217,7 +1215,7 @@ mod tests {
         engine.message_identifiers = &identifiers;
 
         let van = ReceiveLocation::new(
-            xmip_core::ArtifactId::new(3),
+            xcore::ArtifactId::new(3),
             "van",
             "https://xmip.example/in/van",
             "https",
@@ -1346,7 +1344,7 @@ mod tests {
         )];
 
         let nightly = ReceiveLocation::new(
-            xmip_core::ArtifactId::new(4),
+            xcore::ArtifactId::new(4),
             "partner-y-nightly",
             "sftp://partner-y.example/out",
             "sftp",
@@ -1432,7 +1430,7 @@ mod tests {
         engine.message_identifiers = &identifiers;
 
         let van = ReceiveLocation::new(
-            xmip_core::ArtifactId::new(5),
+            xcore::ArtifactId::new(5),
             "van",
             "https://xmip.example/in/van",
             "https",
