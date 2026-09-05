@@ -10,10 +10,10 @@
 
 use std::fmt;
 
-use xmip_authenticate::Refusal;
-use xmip_authorize::Decision;
-use xmip_context::IdentityFacts;
-use xmip_route::Routing;
+use authenticate::Refusal;
+use authorize::Decision;
+use context::IdentityFacts;
+use route::Routing;
 
 use crate::generation::ReceivedWork;
 

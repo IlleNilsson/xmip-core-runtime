@@ -11,10 +11,8 @@ pub mod registration;
 pub mod service;
 pub mod start;
 
+use abi::{ExecutionHostKind, ExtensionManifest, HandlerInvocation, HandlerResult, ModuleManifest};
 use serde::{Deserialize, Serialize};
-use xmip_abi::{
-    ExecutionHostKind, ExtensionManifest, HandlerInvocation, HandlerResult, ModuleManifest,
-};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNode {

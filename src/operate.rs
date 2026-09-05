@@ -10,9 +10,9 @@
 //! runtime needs `unsafe`, so the crate denies it and these two files allow it.
 #![allow(unsafe_code)]
 
-use xmip_abi::ffi::{Str, status};
-use xmip_abi::operate::{HealthEntry, Measurement, Operate, counted, health};
-use xmip_observe::{Count, Counted, Health, HealthRecord, Snapshot};
+use abi::ffi::{Str, status};
+use abi::operate::{HealthEntry, Measurement, Operate, counted, health};
+use observe::{Count, Counted, Health, HealthRecord, Snapshot};
 
 use crate::start::unconfigured;
 
@@ -95,7 +95,7 @@ impl Operator {
     #[must_use]
     pub fn table(self: Box<Self>) -> Operate {
         Operate {
-            abi_version: xmip_abi::operate::XMIP_OPERATE_VERSION,
+            abi_version: abi::operate::XMIP_OPERATE_VERSION,
             ctx: Box::into_raw(self).cast(),
             health: Some(health_entry),
             measure: Some(measure_entry),
@@ -326,7 +326,7 @@ pub fn publish(snapshot: Snapshot) {
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32 {
-    if version != xmip_abi::operate::XMIP_OPERATE_VERSION {
+    if version != abi::operate::XMIP_OPERATE_VERSION {
         return status::UNSUPPORTED;
     }
 
@@ -506,8 +506,7 @@ mod tests {
         let mut out = std::mem::MaybeUninit::<Operate>::uninit();
 
         // SAFETY: `out` is writable.
-        let code =
-            unsafe { xmip_operate_v1(xmip_abi::operate::XMIP_OPERATE_VERSION, out.as_mut_ptr()) };
+        let code = unsafe { xmip_operate_v1(abi::operate::XMIP_OPERATE_VERSION, out.as_mut_ptr()) };
         assert_eq!(code, status::OK);
 
         // SAFETY: the export wrote a complete table.
