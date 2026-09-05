@@ -9,6 +9,7 @@ pub mod operate;
 pub mod outcome;
 pub mod registration;
 pub mod service;
+pub mod start;
 
 use serde::{Deserialize, Serialize};
 use xmip_abi::{
