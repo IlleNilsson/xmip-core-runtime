@@ -40,6 +40,24 @@ enum Source {
     Published,
 }
 
+impl Source {
+    /// Change the snapshot this source reads: in place for `Fixed`, on the
+    /// shared `PUBLISHED` for `Published`. Pause and resume go through here,
+    /// so an operator pausing a live table changes what every table then reads.
+    fn mutate<R>(&mut self, change: impl FnOnce(&mut Snapshot) -> R) -> R {
+        match self {
+            Source::Fixed(snapshot) => change(snapshot),
+            Source::Published => {
+                let mut guard = PUBLISHED
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let snapshot = guard.get_or_insert_with(unconfigured);
+                change(snapshot)
+            }
+        }
+    }
+}
+
 impl Operator {
     /// A table over one fixed snapshot.
     #[must_use]
@@ -81,6 +99,8 @@ impl Operator {
             ctx: Box::into_raw(self).cast(),
             health: Some(health_entry),
             measure: Some(measure_entry),
+            pause: Some(pause_entry),
+            resume: Some(resume_entry),
             destroy: Some(destroy_entry),
         }
     }
@@ -160,6 +180,7 @@ unsafe extern "C" fn health_entry(
         let entry = HealthEntry {
             scope: borrow(&record.scope),
             health: wire_health(record.health),
+            severity: record.severity,
             evidence: borrow(&record.evidence),
             observed_unix_nanos: record.observed_unix_nanos,
         };
@@ -223,6 +244,54 @@ unsafe extern "C" fn measure_entry(
     status::OK
 }
 
+/// `pause` in the table. Pause everything at and beneath the scope, by `who`.
+///
+/// The first operation on this boundary that acts rather than reads. It
+/// changes the published snapshot, so the next read — by this table or any
+/// other — sees the pause. `XMIP_E_NOT_FOUND` when the scope names nothing.
+///
+/// # Safety
+/// `ctx` came from [`Operator::table`]; `scope` and `who` each point at their
+/// stated length of readable bytes.
+unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
+    // SAFETY: per the contract above.
+    let operator = unsafe { &mut *ctx.cast::<Operator>() };
+    let (Some(text), Some(who)) = (unsafe { scope_text(scope) }, unsafe { scope_text(who) }) else {
+        return status::MALFORMED;
+    };
+
+    let now = crate::start::now_unix_nanos();
+    let paused = operator
+        .source
+        .mutate(|snapshot| snapshot.pause(text, who, now));
+
+    if paused == 0 {
+        status::NOT_FOUND
+    } else {
+        status::OK
+    }
+}
+
+/// `resume` in the table. Resume everything at and beneath the scope.
+///
+/// # Safety
+/// As for [`pause_entry`], without `who`.
+unsafe extern "C" fn resume_entry(ctx: *mut u8, scope: Str) -> i32 {
+    // SAFETY: per the contract above.
+    let operator = unsafe { &mut *ctx.cast::<Operator>() };
+    let Some(text) = (unsafe { scope_text(scope) }) else {
+        return status::MALFORMED;
+    };
+
+    let resumed = operator.source.mutate(|snapshot| snapshot.resume(text));
+
+    if resumed == 0 {
+        status::NOT_FOUND
+    } else {
+        status::OK
+    }
+}
+
 /// `destroy` in the table. After this nothing borrowed from it is valid.
 ///
 /// # Safety
@@ -277,12 +346,14 @@ mod tests {
         snapshot.record_health(HealthRecord {
             scope: "xmip:///edge-01/transport/ftp".into(),
             health: Health::Green,
+            severity: 0,
             evidence: String::new(),
             observed_unix_nanos: 10,
         });
         snapshot.record_health(HealthRecord {
             scope: "xmip:///edge-01/transport/sftp".into(),
             health: Health::Red,
+            severity: 90,
             evidence: "refused by partner-x".into(),
             observed_unix_nanos: 11,
         });
@@ -324,6 +395,7 @@ mod tests {
         let mut out = [HealthEntry {
             scope: Str::empty(),
             health: 0,
+            severity: 0,
             evidence: Str::empty(),
             observed_unix_nanos: 0,
         }; 4];
