@@ -4,15 +4,17 @@
 //! surface through the C table in `xmip-core-abi`. Every call reads that
 //! snapshot and nothing else — no call here makes execution wait.
 //!
-//! The one place in this crate that dereferences a pointer, and it says so:
+//! One of two places in this crate that dereference a pointer, and it says so:
 //! a surface hands over `out` and `out_len` and the header promises they are
-//! written. Nothing else in the runtime needs `unsafe`, so the crate denies it
-//! and this file alone allows it.
+//! written. The other is `start.rs`, for the same reason. Nothing else in the
+//! runtime needs `unsafe`, so the crate denies it and these two files allow it.
 #![allow(unsafe_code)]
 
 use xmip_abi::ffi::{Str, status};
 use xmip_abi::operate::{HealthEntry, Measurement, Operate, counted, health};
 use xmip_observe::{Count, Counted, Health, HealthRecord, Snapshot};
+
+use crate::start::unconfigured;
 
 /// What sits behind `ctx`: the snapshot, and what the last call handed out.
 ///
@@ -20,24 +22,54 @@ use xmip_observe::{Count, Counted, Health, HealthRecord, Snapshot};
 /// until the next call on this table. Replacing `held` is what invalidates
 /// them, and that is the whole lifetime rule.
 pub struct Operator {
-    snapshot: Snapshot,
+    source: Source,
     held_health: Vec<HealthRecord>,
     held_count: Option<Count>,
 }
 
+/// Where a table's snapshot comes from.
+///
+/// `Published` reads what the node has most recently published, on every
+/// call — so a table handed out before a node started sees the node once it
+/// has. The first build copied the snapshot at creation and the GUI read
+/// "unconfigured" forever while the log said the node had started
+/// (2026-09-05). `Fixed` is for tests and for a surface that wants one
+/// consistent view.
+enum Source {
+    Fixed(Snapshot),
+    Published,
+}
+
 impl Operator {
+    /// A table over one fixed snapshot.
     #[must_use]
     pub fn new(snapshot: Snapshot) -> Self {
         Self {
-            snapshot,
+            source: Source::Fixed(snapshot),
             held_health: Vec::new(),
             held_count: None,
         }
     }
 
-    /// Replace the published snapshot. The next call reads the new one.
-    pub fn publish(&mut self, snapshot: Snapshot) {
-        self.snapshot = snapshot;
+    /// A table over whatever is published, read at each call.
+    #[must_use]
+    pub fn live() -> Self {
+        Self {
+            source: Source::Published,
+            held_health: Vec::new(),
+            held_count: None,
+        }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        match &self.source {
+            Source::Fixed(snapshot) => snapshot.clone(),
+            Source::Published => PUBLISHED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .unwrap_or_else(unconfigured),
+        }
     }
 
     /// The C table over this operator. The surface holds the table and calls
@@ -86,7 +118,7 @@ const fn from_wire_counted(value: i32) -> Option<Counted> {
 ///
 /// # Safety
 /// `scope` must point at `scope.len` readable bytes, as the header requires.
-unsafe fn scope_text<'a>(scope: Str) -> Option<&'a str> {
+pub(crate) unsafe fn scope_text<'a>(scope: Str) -> Option<&'a str> {
     if scope.ptr.is_null() {
         return Some("");
     }
@@ -115,7 +147,7 @@ unsafe extern "C" fn health_entry(
         return status::MALFORMED;
     };
 
-    operator.held_health = operator.snapshot.health(text);
+    operator.held_health = operator.snapshot().health(text);
 
     // SAFETY: `out_len` is writable per the contract.
     unsafe { *out_len = operator.held_health.len() };
@@ -160,7 +192,7 @@ unsafe extern "C" fn measure_entry(
         return status::INVALID;
     };
 
-    operator.held_count = operator.snapshot.measure(text, kind);
+    operator.held_count = operator.snapshot().measure(text, kind);
 
     let Some(count) = &operator.held_count else {
         // SAFETY: `out_len` is writable per the contract.
@@ -213,159 +245,6 @@ pub fn publish(snapshot: Snapshot) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
 }
 
-/// What a runtime says about itself before any node has published: it is
-/// here, and it has nothing to run. Yellow, not red — nothing is failing —
-/// and not green, because an operator who sees green over an unconfigured
-/// runtime has been told something false. The one line of evidence is the one
-/// they need.
-fn unconfigured() -> Snapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
-        });
-
-    let mut snapshot = Snapshot::new();
-
-    snapshot.record_health(HealthRecord {
-        scope: "xmip:///".into(),
-        health: Health::Yellow,
-        evidence: "runtime loaded, no node started — give xmip_start_v1 a node TOML".into(),
-        observed_unix_nanos: now,
-    });
-
-    snapshot
-}
-
-/// Start a node from its configuration file, as far as the runtime can today:
-/// read it, build the execution tree, validate it, and publish what it plans.
-///
-/// ADR-0018 gives startup nine phases. This performs the first three and says
-/// so in every record it publishes — an operator reading green over a node
-/// that has not loaded a module has been told something false, so the
-/// evidence names what happened and what did not. Phases four to nine are not
-/// built yet.
-///
-/// Red when the file cannot be read or does not validate, with the errors as
-/// evidence. A refusal that names the fault is the point of validating first.
-#[must_use]
-pub fn start(path: &str) -> Snapshot {
-    let now = now_unix_nanos();
-    let mut snapshot = Snapshot::new();
-
-    let source = match std::fs::read_to_string(path) {
-        Ok(source) => source,
-        Err(error) => {
-            snapshot.record_health(HealthRecord {
-                scope: "xmip:///".into(),
-                health: Health::Red,
-                evidence: format!("cannot read {path}: {error}"),
-                observed_unix_nanos: now,
-            });
-
-            return snapshot;
-        }
-    };
-
-    let configuration = match xmip_configure::parse_service_configuration(&source) {
-        Ok(configuration) => configuration,
-        Err(error) => {
-            snapshot.record_health(HealthRecord {
-                scope: "xmip:///".into(),
-                health: Health::Red,
-                evidence: format!("{path} does not parse: {error}"),
-                observed_unix_nanos: now,
-            });
-
-            return snapshot;
-        }
-    };
-
-    let node = format!("xmip:///{}", configuration.node_name);
-
-    if let Err(report) = crate::service::plan_startup_from_toml(&source) {
-        snapshot.record_health(HealthRecord {
-            scope: node,
-            health: Health::Red,
-            evidence: format!("configuration refused: {}", report.errors.join("; ")),
-            observed_unix_nanos: now,
-        });
-
-        return snapshot;
-    }
-
-    let modules: Vec<_> = configuration.modules.iter().filter(|m| m.start).collect();
-    let processes: Vec<_> = configuration
-        .xmip_processes
-        .iter()
-        .filter(|p| p.start)
-        .collect();
-
-    snapshot.record_health(HealthRecord {
-        scope: node.clone(),
-        health: Health::Yellow,
-        evidence: format!(
-            "{} module(s), {} process(es) validated and planned; not running \u{2014} \
-             phases 4\u{2013}9 (start, load, accept work) are not built yet",
-            modules.len(),
-            processes.len()
-        ),
-        observed_unix_nanos: now,
-    });
-
-    for module in modules {
-        snapshot.record_health(HealthRecord {
-            scope: format!("{node}/module/{}", module.name),
-            health: Health::Yellow,
-            evidence: format!("planned, not loaded ({})", module.manifest.identity.version),
-            observed_unix_nanos: now,
-        });
-    }
-
-    for process in processes {
-        snapshot.record_health(HealthRecord {
-            scope: format!("{node}/process/{}", process.name),
-            health: Health::Yellow,
-            evidence: format!(
-                "planned, not started; needs {}",
-                process.required_modules.join(", ")
-            ),
-            observed_unix_nanos: now,
-        });
-    }
-
-    snapshot
-}
-
-fn now_unix_nanos() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
-        })
-}
-
-/// `xmip_start_v1`: [`start`] from a surface. Publishes whatever it found and
-/// returns `XMIP_OK` when the node validated, `XMIP_E_INVALID` when it did
-/// not, `XMIP_E_MALFORMED` when the path is not UTF-8. The snapshot says why
-/// either way, so a surface reads the table rather than the status.
-///
-/// # Safety
-/// `path` must point at `path.len` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_start_v1(path: Str) -> i32 {
-    let Some(text) = (unsafe { scope_text(path) }) else {
-        return status::MALFORMED;
-    };
-
-    let snapshot = start(text);
-    let valid = snapshot.worst("xmip:///") != Some(Health::Red);
-
-    publish(snapshot);
-
-    if valid { status::OK } else { status::INVALID }
-}
-
 /// The one symbol a surface loads. `XMIP_OPERATE_ENTRYPOINT` in the header.
 ///
 /// Fills `out` and returns `XMIP_OK`, or returns a status and leaves `out`
@@ -382,14 +261,8 @@ pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32
         return status::UNSUPPORTED;
     }
 
-    let snapshot = PUBLISHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
-        .unwrap_or_else(unconfigured);
-
     // SAFETY: `out` is writable per the contract.
-    unsafe { out.write(Box::new(Operator::new(snapshot)).table()) };
+    unsafe { out.write(Box::new(Operator::live()).table()) };
 
     status::OK
 }
@@ -557,9 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn the_export_hands_out_what_was_published() {
-        publish(snapshot());
-
+    fn a_table_handed_out_before_a_node_started_sees_it_afterwards() {
         let mut out = std::mem::MaybeUninit::<Operate>::uninit();
 
         // SAFETY: `out` is writable.
@@ -569,6 +440,12 @@ mod tests {
 
         // SAFETY: the export wrote a complete table.
         let table = unsafe { out.assume_init() };
+
+        // Published *after* the surface took its table — the order the GUI
+        // does it in: load the library, then start the node. The first build
+        // copied the snapshot at creation and never saw the node.
+        publish(snapshot());
+
         let mut len = 0usize;
 
         // SAFETY: `cap` is 0, so nothing is written but `len`.
@@ -587,74 +464,6 @@ mod tests {
 
         // SAFETY: not used after this.
         unsafe { (table.destroy.expect("destroy"))(table.ctx) };
-    }
-
-    #[test]
-    fn starting_from_a_missing_file_is_red_and_says_which_file() {
-        let snapshot = start("Z:/no/such/node.toml");
-
-        assert_eq!(snapshot.worst("xmip:///"), Some(Health::Red));
-        assert!(
-            snapshot.health("xmip:///")[0]
-                .evidence
-                .contains("no/such/node.toml")
-        );
-    }
-
-    #[test]
-    fn starting_from_a_valid_file_plans_the_node_and_says_it_is_not_running() {
-        let path = std::env::temp_dir().join("xmip-operate-start-test.toml");
-        std::fs::write(
-            &path,
-            r#"
-[service]
-name = "xmip-edge-01"
-cluster_name = "lab"
-node_name = "edge-01"
-
-[[modules]]
-name = "file"
-start = true
-[modules.manifest.identity]
-name = "file"
-version = "0.1.0"
-[[modules.manifest.capabilities]]
-capability = "transport:file"
-execution_host = "native-rust"
-trusted_required = true
-[modules.manifest.entrypoint]
-library_path = "xmip_core_transport_file"
-symbol = "xmip_create_module_v1"
-
-[[xmip_processes]]
-name = "approval"
-start = true
-required_modules = ["file"]
-xmip_subprocesses = []
-extensions = []
-"#,
-        )
-        .expect("write fixture");
-
-        let snapshot = start(path.to_str().expect("utf-8 path"));
-
-        let records = snapshot.health("xmip:///edge-01");
-        assert_eq!(records.len(), 3, "node, one module, one process");
-        assert!(
-            records.iter().all(|r| r.health == Health::Yellow),
-            "planned, not running"
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/module/file")
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/process/approval")
-        );
-        assert!(records[0].evidence.contains("not built yet"));
     }
 
     #[test]

@@ -19,8 +19,9 @@ crate-type = ["rlib", "cdylib"]
 
 [lints.rust]
 # deny, not forbid, since 2026-09-04. operate.rs implements the C table in
-# xmip_operate.h and has to write through pointers a surface handed it; it
-# allows the lint at the top of the file with the reason, and nothing else may.
+# xmip_operate.h and start.rs exports xmip_start_v1; both read or write through
+# pointers a surface handed them, both allow the lint at the top of the file
+# with the reason, and nothing else may.
 unsafe_code = "deny"
 
 [dependencies]
