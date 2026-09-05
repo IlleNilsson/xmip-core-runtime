@@ -35,6 +35,7 @@ pub(crate) fn unconfigured() -> Snapshot {
     snapshot.record_health(HealthRecord {
         scope: "xmip:///".into(),
         health: Health::Yellow,
+        severity: 50,
         evidence: "runtime loaded, no node started — give xmip_start_v1 a node TOML".into(),
         observed_unix_nanos: now,
     });
@@ -64,6 +65,7 @@ pub fn start(path: &str) -> Snapshot {
             snapshot.record_health(HealthRecord {
                 scope: "xmip:///".into(),
                 health: Health::Red,
+                severity: 90,
                 evidence: format!("cannot read {path}: {error}"),
                 observed_unix_nanos: now,
             });
@@ -78,6 +80,7 @@ pub fn start(path: &str) -> Snapshot {
             snapshot.record_health(HealthRecord {
                 scope: "xmip:///".into(),
                 health: Health::Red,
+                severity: 90,
                 evidence: format!("{path} does not parse: {error}"),
                 observed_unix_nanos: now,
             });
@@ -92,6 +95,7 @@ pub fn start(path: &str) -> Snapshot {
         snapshot.record_health(HealthRecord {
             scope: node,
             health: Health::Red,
+            severity: 90,
             evidence: format!("configuration refused: {}", report.errors.join("; ")),
             observed_unix_nanos: now,
         });
@@ -109,6 +113,7 @@ pub fn start(path: &str) -> Snapshot {
     snapshot.record_health(HealthRecord {
         scope: node.clone(),
         health: Health::Yellow,
+        severity: 50,
         evidence: format!(
             "{} module(s), {} process(es) validated and planned; not running \u{2014} \
              phases 4\u{2013}9 (start, load, accept work) are not built yet",
@@ -122,6 +127,7 @@ pub fn start(path: &str) -> Snapshot {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/module/{}", module.name),
             health: Health::Yellow,
+            severity: 50,
             evidence: format!("planned, not loaded ({})", module.manifest.identity.version),
             observed_unix_nanos: now,
         });
@@ -131,6 +137,7 @@ pub fn start(path: &str) -> Snapshot {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/process/{}", process.name),
             health: Health::Yellow,
+            severity: 50,
             evidence: format!(
                 "planned, not started; needs {}",
                 process.required_modules.join(", ")
@@ -150,6 +157,7 @@ pub fn start(path: &str) -> Snapshot {
             snapshot.record_health(HealthRecord {
                 scope: format!("{node}/{stage}/{}", location.name),
                 health: Health::Yellow,
+                severity: 50,
                 evidence: format!(
                     "planned, not started; {} at {}",
                     location.transport, location.address
@@ -162,7 +170,7 @@ pub fn start(path: &str) -> Snapshot {
     snapshot
 }
 
-fn now_unix_nanos() -> i64 {
+pub(crate) fn now_unix_nanos() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
