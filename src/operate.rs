@@ -213,13 +213,37 @@ pub fn publish(snapshot: Snapshot) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
 }
 
+/// What a runtime says about itself before any node has published: it is
+/// here, and it has nothing to run. Yellow, not red — nothing is failing —
+/// and not green, because an operator who sees green over an unconfigured
+/// runtime has been told something false. The one line of evidence is the one
+/// they need.
+fn unconfigured() -> Snapshot {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        });
+
+    let mut snapshot = Snapshot::new();
+
+    snapshot.record_health(HealthRecord {
+        scope: "xmip:///".into(),
+        health: Health::Yellow,
+        evidence: "runtime loaded, no node configured".into(),
+        observed_unix_nanos: now,
+    });
+
+    snapshot
+}
+
 /// The one symbol a surface loads. `XMIP_OPERATE_ENTRYPOINT` in the header.
 ///
 /// Fills `out` and returns `XMIP_OK`, or returns a status and leaves `out`
 /// untouched. A version this build does not speak is `XMIP_E_UNSUPPORTED`
-/// here rather than a failure on the first call. A node that has published
-/// nothing yet still answers, with an empty snapshot: every scope is not
-/// found, which is the truth.
+/// here rather than a failure on the first call. A runtime that has published
+/// nothing yet still answers — with [`unconfigured`], which is the truth about
+/// it — rather than with an empty tree a surface would have to guess at.
 ///
 /// # Safety
 /// `out` must be writable.
@@ -233,7 +257,7 @@ pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
-        .unwrap_or_default();
+        .unwrap_or_else(unconfigured);
 
     // SAFETY: `out` is writable per the contract.
     unsafe { out.write(Box::new(Operator::new(snapshot)).table()) };
