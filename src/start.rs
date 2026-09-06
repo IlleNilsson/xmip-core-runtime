@@ -30,7 +30,7 @@ pub(crate) fn unconfigured() -> Snapshot {
 
     snapshot.record_health(HealthRecord {
         scope: "xmip:///".into(),
-        health: Health::Yellow,
+        health: Health::Average,
         severity: 50,
         evidence: "runtime loaded, no node started — give xmip_start_v1 a node TOML".into(),
         observed_unix_nanos: now,
@@ -60,7 +60,7 @@ pub fn start(path: &str) -> Snapshot {
         Err(error) => {
             snapshot.record_health(HealthRecord {
                 scope: "xmip:///".into(),
-                health: Health::Red,
+                health: Health::Done,
                 severity: 90,
                 evidence: format!("cannot read {path}: {error}"),
                 observed_unix_nanos: now,
@@ -75,7 +75,7 @@ pub fn start(path: &str) -> Snapshot {
         Err(error) => {
             snapshot.record_health(HealthRecord {
                 scope: "xmip:///".into(),
-                health: Health::Red,
+                health: Health::Done,
                 severity: 90,
                 evidence: format!("{path} does not parse: {error}"),
                 observed_unix_nanos: now,
@@ -90,7 +90,7 @@ pub fn start(path: &str) -> Snapshot {
     if let Err(report) = crate::service::plan_startup_from_toml(&source) {
         snapshot.record_health(HealthRecord {
             scope: node,
-            health: Health::Red,
+            health: Health::Done,
             severity: 90,
             evidence: format!("configuration refused: {}", report.errors.join("; ")),
             observed_unix_nanos: now,
@@ -108,7 +108,7 @@ pub fn start(path: &str) -> Snapshot {
 
     snapshot.record_health(HealthRecord {
         scope: node.clone(),
-        health: Health::Yellow,
+        health: Health::Average,
         severity: 50,
         evidence: format!(
             "{} module(s), {} process(es) validated and planned; not running \u{2014} \
@@ -122,7 +122,7 @@ pub fn start(path: &str) -> Snapshot {
     for module in modules {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/module/{}", module.name),
-            health: Health::Yellow,
+            health: Health::Average,
             severity: 50,
             evidence: format!("planned, not loaded ({})", module.manifest.identity.version),
             observed_unix_nanos: now,
@@ -132,7 +132,7 @@ pub fn start(path: &str) -> Snapshot {
     for process in processes {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/process/{}", process.name),
-            health: Health::Yellow,
+            health: Health::Average,
             severity: 50,
             evidence: format!(
                 "planned, not started; needs {}",
@@ -152,7 +152,7 @@ pub fn start(path: &str) -> Snapshot {
         for location in locations.iter().filter(|l| l.start) {
             snapshot.record_health(HealthRecord {
                 scope: format!("{node}/{stage}/{}", location.name),
-                health: Health::Yellow,
+                health: Health::Average,
                 severity: 50,
                 evidence: format!(
                     "planned, not started; {} at {}",
@@ -188,7 +188,13 @@ pub unsafe extern "C" fn xmip_start_v1(path: Str) -> i32 {
     };
 
     let snapshot = start(text);
-    let valid = snapshot.worst("xmip:///") != Some(Health::Red);
+    // Validation asks whether any leaf is red, not what the root rolls up to:
+    // a red no longer propagates (ADR-0041), so the root would read orange, but
+    // one red leaf still means the configuration is invalid.
+    let valid = !snapshot
+        .health("xmip:///")
+        .iter()
+        .any(|record| record.health == Health::Done);
 
     publish(snapshot);
 
@@ -259,7 +265,7 @@ mod tests {
     fn starting_from_a_missing_file_is_red_and_says_which_file() {
         let snapshot = start("Z:/no/such/node.toml");
 
-        assert_eq!(snapshot.worst("xmip:///"), Some(Health::Red));
+        assert_eq!(snapshot.worst("xmip:///"), Some(Health::Done));
         assert!(
             snapshot.health("xmip:///")[0]
                 .evidence
@@ -329,7 +335,7 @@ address = "C:/out"
                 .any(|r| r.scope == "xmip:///edge-01/send/billing-out")
         );
         assert!(
-            records.iter().all(|r| r.health == Health::Yellow),
+            records.iter().all(|r| r.health == Health::Average),
             "planned, not running"
         );
         assert!(
