@@ -116,9 +116,10 @@ fn borrow(text: &str) -> Str {
 /// The header's `int` for an observe `Health`.
 const fn wire_health(value: Health) -> i32 {
     match value {
-        Health::Green => health::GREEN,
-        Health::Yellow => health::YELLOW,
-        Health::Red => health::RED,
+        Health::Fine => health::FINE,
+        Health::Average => health::AVERAGE,
+        Health::Holding => health::HOLDING,
+        Health::Done => health::DONE,
     }
 }
 
@@ -345,14 +346,14 @@ mod tests {
 
         snapshot.record_health(HealthRecord {
             scope: "xmip:///edge-01/transport/ftp".into(),
-            health: Health::Green,
+            health: Health::Fine,
             severity: 0,
             evidence: String::new(),
             observed_unix_nanos: 10,
         });
         snapshot.record_health(HealthRecord {
             scope: "xmip:///edge-01/transport/sftp".into(),
-            health: Health::Red,
+            health: Health::Done,
             severity: 90,
             evidence: "refused by partner-x".into(),
             observed_unix_nanos: 11,
@@ -414,7 +415,7 @@ mod tests {
 
         assert_eq!(code, status::OK);
         assert_eq!(len, 2);
-        assert_eq!(out[0].health, health::RED);
+        assert_eq!(out[0].health, health::DONE);
         assert_eq!(text(out[0].evidence), "refused by partner-x");
 
         // SAFETY: not used after this.
