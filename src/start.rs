@@ -3,7 +3,7 @@
 //! ADR-0018 gives startup nine phases. What is here performs the first three
 //! — read, build the execution tree, validate — and publishes what it planned
 //! through `operate.rs`, saying in every record that phases four to nine are
-//! not built. An operator reading green over a node that has not loaded a
+//! not built. An operator reading `Fine` over a node that has not loaded a
 //! module has been told something false.
 //!
 //! Split from `operate.rs` on 2026-09-05 when that file passed 400 lines:
@@ -19,8 +19,8 @@ use observe::{Health, HealthRecord, Snapshot};
 use crate::operate::{publish, scope_text};
 
 /// What a runtime says about itself before any node has published: it is
-/// here, and it has nothing to run. Yellow, not red — nothing is failing —
-/// and not green, because an operator who sees green over an unconfigured
+/// here, and it has nothing to run. `Stressed`, not `Done` — nothing is failing
+/// — and not `Fine`, because an operator who sees `Fine` over an unconfigured
 /// runtime has been told something false. The one line of evidence is the one
 /// they need.
 pub(crate) fn unconfigured() -> Snapshot {
@@ -43,7 +43,7 @@ pub(crate) fn unconfigured() -> Snapshot {
 /// read it, build the execution tree, validate it, and publish what it plans.
 ///
 /// ADR-0018 gives startup nine phases. This performs the first three and says
-/// so in every record it publishes — an operator reading green over a node
+/// so in every record it publishes — an operator reading `Fine` over a node
 /// that has not loaded a module has been told something false, so the
 /// evidence names what happened and what did not. Phases four to nine are not
 /// built yet.
@@ -188,9 +188,9 @@ pub unsafe extern "C" fn xmip_start_v1(path: Str) -> i32 {
     };
 
     let snapshot = start(text);
-    // Validation asks whether any leaf is red, not what the root rolls up to:
-    // a red no longer propagates (ADR-0041), so the root would read orange, but
-    // one red leaf still means the configuration is invalid.
+    // Validation asks whether any leaf is Done, not what the root rolls up to:
+    // a Done no longer propagates (ADR-0041), so the root would read Holding, but
+    // one Done leaf still means the configuration is invalid.
     let valid = !snapshot
         .health("xmip:///")
         .iter()
@@ -262,7 +262,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starting_from_a_missing_file_is_red_and_says_which_file() {
+    fn starting_from_a_missing_file_is_done_and_says_which_file() {
         let snapshot = start("Z:/no/such/node.toml");
 
         assert_eq!(snapshot.worst("xmip:///"), Some(Health::Done));
