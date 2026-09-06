@@ -117,6 +117,7 @@ fn borrow(text: &str) -> Str {
 const fn wire_health(value: Health) -> i32 {
     match value {
         Health::Fine => health::FINE,
+        Health::Paused => health::PAUSED,
         Health::Working => health::WORKING,
         Health::Stressed => health::STRESSED,
         Health::Exhausted => health::EXHAUSTED,
