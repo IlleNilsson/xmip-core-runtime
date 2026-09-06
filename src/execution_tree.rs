@@ -271,7 +271,9 @@ mod tests {
     use abi::{
         ExecutionHostKind, ExtensionEntrypoint, ModuleCapability, ModuleEntrypoint, ModuleIdentity,
     };
-    use configure::{ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess};
+    use configure::{
+        ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess, ExecutionStyle,
+    };
 
     #[test]
     fn verifies_extensions_without_loading_them() {
@@ -304,6 +306,7 @@ mod tests {
             xmip_processes: vec![ConfiguredXmipProcess {
                 name: "inbound".to_string(),
                 start: true,
+                execution_style: ExecutionStyle::default(),
                 required_modules: vec!["file".to_string()],
                 xmip_subprocesses: vec![ConfiguredXmipSubprocess {
                     name: "normalize".to_string(),
