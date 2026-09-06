@@ -117,9 +117,11 @@ fn borrow(text: &str) -> Str {
 const fn wire_health(value: Health) -> i32 {
     match value {
         Health::Fine => health::FINE,
-        Health::Average => health::AVERAGE,
-        Health::Holding => health::HOLDING,
+        Health::Working => health::WORKING,
+        Health::Stressed => health::STRESSED,
+        Health::Exhausted => health::EXHAUSTED,
         Health::Done => health::DONE,
+        Health::Holding => health::HOLDING,
     }
 }
 

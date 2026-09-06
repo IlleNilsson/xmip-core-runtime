@@ -30,7 +30,7 @@ pub(crate) fn unconfigured() -> Snapshot {
 
     snapshot.record_health(HealthRecord {
         scope: "xmip:///".into(),
-        health: Health::Average,
+        health: Health::Stressed,
         severity: 50,
         evidence: "runtime loaded, no node started — give xmip_start_v1 a node TOML".into(),
         observed_unix_nanos: now,
@@ -108,7 +108,7 @@ pub fn start(path: &str) -> Snapshot {
 
     snapshot.record_health(HealthRecord {
         scope: node.clone(),
-        health: Health::Average,
+        health: Health::Stressed,
         severity: 50,
         evidence: format!(
             "{} module(s), {} process(es) validated and planned; not running \u{2014} \
@@ -122,7 +122,7 @@ pub fn start(path: &str) -> Snapshot {
     for module in modules {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/module/{}", module.name),
-            health: Health::Average,
+            health: Health::Stressed,
             severity: 50,
             evidence: format!("planned, not loaded ({})", module.manifest.identity.version),
             observed_unix_nanos: now,
@@ -132,7 +132,7 @@ pub fn start(path: &str) -> Snapshot {
     for process in processes {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/process/{}", process.name),
-            health: Health::Average,
+            health: Health::Stressed,
             severity: 50,
             evidence: format!(
                 "planned, not started; needs {}",
@@ -152,7 +152,7 @@ pub fn start(path: &str) -> Snapshot {
         for location in locations.iter().filter(|l| l.start) {
             snapshot.record_health(HealthRecord {
                 scope: format!("{node}/{stage}/{}", location.name),
-                health: Health::Average,
+                health: Health::Stressed,
                 severity: 50,
                 evidence: format!(
                     "planned, not started; {} at {}",
@@ -335,7 +335,7 @@ address = "C:/out"
                 .any(|r| r.scope == "xmip:///edge-01/send/billing-out")
         );
         assert!(
-            records.iter().all(|r| r.health == Health::Average),
+            records.iter().all(|r| r.health == Health::Stressed),
             "planned, not running"
         );
         assert!(
