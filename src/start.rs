@@ -24,11 +24,7 @@ use crate::operate::{publish, scope_text};
 /// runtime has been told something false. The one line of evidence is the one
 /// they need.
 pub(crate) fn unconfigured() -> Snapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
-        });
+    let now = now_unix_nanos();
 
     let mut snapshot = Snapshot::new();
 
