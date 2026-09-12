@@ -4,4 +4,4 @@ The Xmip Service and the Xmip Host Services it supervises: configuration, execut
 
 The runtime composes capabilities and invokes Handlers through the application binary interface (ABI). Technology implementations remain in their capability repositories.
 
-Status: planned, with the initial runtime and host-planning model already present.
+`architecture.toml` carries the maturity; this file does not repeat it.
