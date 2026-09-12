@@ -13,6 +13,8 @@
 use abi::ffi::{Str, status};
 use abi::operate::{HealthEntry, Measurement, Operate, counted, health};
 use observe::{Count, Counted, Health, HealthRecord, Snapshot};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::start::unconfigured;
 
@@ -272,6 +274,7 @@ unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
     if paused == 0 {
         status::NOT_FOUND
     } else {
+        announce_change();
         status::OK
     }
 }
@@ -292,6 +295,7 @@ unsafe extern "C" fn resume_entry(ctx: *mut u8, scope: Str) -> i32 {
     if resumed == 0 {
         status::NOT_FOUND
     } else {
+        announce_change();
         status::OK
     }
 }
@@ -309,13 +313,68 @@ unsafe extern "C" fn destroy_entry(ctx: *mut u8) {
 /// export below hands a copy to whichever surface asks. A copy, so a surface
 /// reading a table never blocks the node writing the next one — ADR-0027
 /// clause 6 in one line.
-static PUBLISHED: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
+static PUBLISHED: Mutex<Option<Snapshot>> = Mutex::new(None);
+
+/// The monotonic publication revision and the wake-up primitive shared by all
+/// operator surfaces in this process. It is separate from PUBLISHED so a
+/// sleeping observer never holds the snapshot lock a publisher needs.
+static CHANGE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
+
+fn change_clock() -> &'static (Mutex<u64>, Condvar) {
+    CHANGE.get_or_init(|| (Mutex::new(0), Condvar::new()))
+}
+
+fn announce_change() {
+    let (revision, changed) = change_clock();
+    let mut revision = revision
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *revision = revision.wrapping_add(1).max(1);
+    changed.notify_all();
+}
 
 /// Publish the node's current snapshot for surfaces to read.
 pub fn publish(snapshot: Snapshot) {
     *PUBLISHED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+    announce_change();
+}
+
+/// Wait for the immutable operator snapshot to advance.
+///
+/// A surface blocks its own background observer here; execution only replaces
+/// PUBLISHED and signals the condition variable. Timeout is a successful
+/// unchanged answer, which lets a caller notice cancellation without inventing
+/// a change.
+///
+/// # Safety
+/// out_revision must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_wait_change_v1(
+    after_revision: u64,
+    timeout_ms: u32,
+    out_revision: *mut u64,
+) -> i32 {
+    if out_revision.is_null() {
+        return status::INVALID;
+    }
+
+    let (revision, changed) = change_clock();
+    let revision = revision
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (revision, _) = changed
+        .wait_timeout_while(
+            revision,
+            Duration::from_millis(u64::from(timeout_ms)),
+            |current| *current <= after_revision,
+        )
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // SAFETY: checked for null above; the caller promises writable storage.
+    unsafe { out_revision.write(*revision) };
+    status::OK
 }
 
 /// The one symbol a surface loads. `XMIP_OPERATE_ENTRYPOINT` in the header.
