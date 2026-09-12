@@ -135,6 +135,8 @@ const fn from_wire_counted(value: i32) -> Option<Counted> {
         counted::MESSAGES => Some(Counted::Messages),
         counted::JOURNEYS => Some(Counted::Journeys),
         counted::BYTES => Some(Counted::Bytes),
+        counted::RETRYING => Some(Counted::Retrying),
+        counted::FAILED => Some(Counted::Failed),
         _ => None,
     }
 }
