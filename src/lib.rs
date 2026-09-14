@@ -12,24 +12,27 @@ pub mod service;
 pub mod start;
 mod wire;
 
+use std::collections::BTreeSet;
+
 use abi::{ExecutionHostKind, ExtensionManifest, HandlerInvocation, HandlerResult, ModuleManifest};
+use node::NodeRole;
 use serde::{Deserialize, Serialize};
 
+/// The runtime's plan for one node: which Host Services it spawns, under which
+/// roles.
+///
+/// The roles are `xmip-core-node`'s; this crate carried its own copy of the
+/// four until 2026-09-14 (ADR-0044). The node is still named, not typed as
+/// `node::Node`: configuration names a cluster and a node (`[service]` in
+/// `start.rs`), and `Node` carries an identifier, a capability set and a trust
+/// flag the plan does not know at planning time. Wrapping the names in a
+/// `Node` would mean inventing those.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNode {
     pub cluster_name: String,
     pub node_name: String,
-    pub roles: Vec<NodeRole>,
+    pub roles: BTreeSet<NodeRole>,
     pub host_services: Vec<HostServicePlan>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NodeRole {
-    Operational,
-    Monitoring,
-    Executing,
-    Development,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +93,9 @@ impl ModuleRegistry {
         RuntimeNode {
             cluster_name: cluster_name.to_string(),
             node_name: node_name.to_string(),
-            roles: vec![NodeRole::Operational, NodeRole::Executing],
+            roles: [NodeRole::Operational, NodeRole::Executing]
+                .into_iter()
+                .collect(),
             host_services: self
                 .manifests
                 .iter()
