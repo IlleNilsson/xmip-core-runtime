@@ -10,6 +10,7 @@ pub mod outcome;
 pub mod registration;
 pub mod service;
 pub mod start;
+mod wire;
 
 use abi::{ExecutionHostKind, ExtensionManifest, HandlerInvocation, HandlerResult, ModuleManifest};
 use serde::{Deserialize, Serialize};

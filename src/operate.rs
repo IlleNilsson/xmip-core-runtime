@@ -11,12 +11,13 @@
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
-use abi::operate::{HealthEntry, Measurement, Operate, counted, health};
-use observe::{Count, Counted, Health, HealthRecord, Snapshot};
+use abi::operate::{HealthEntry, Measurement, Operate};
+use observe::{Count, HealthRecord, Snapshot};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::start::unconfigured;
+use crate::wire::{from_wire_counted, wire_health};
 
 /// What sits behind `ctx`: the snapshot, and what the last call handed out.
 ///
@@ -112,32 +113,6 @@ fn borrow(text: &str) -> Str {
     Str {
         ptr: text.as_ptr(),
         len: text.len(),
-    }
-}
-
-/// The header's `int` for an observe `Health`.
-const fn wire_health(value: Health) -> i32 {
-    match value {
-        Health::Fine => health::FINE,
-        Health::Paused => health::PAUSED,
-        Health::Working => health::WORKING,
-        Health::Stressed => health::STRESSED,
-        Health::Exhausted => health::EXHAUSTED,
-        Health::Done => health::DONE,
-        Health::Holding => health::HOLDING,
-    }
-}
-
-/// An observe `Counted` for the header's `int`, or `None`.
-const fn from_wire_counted(value: i32) -> Option<Counted> {
-    match value {
-        counted::STREAMS => Some(Counted::Streams),
-        counted::MESSAGES => Some(Counted::Messages),
-        counted::JOURNEYS => Some(Counted::Journeys),
-        counted::BYTES => Some(Counted::Bytes),
-        counted::RETRYING => Some(Counted::Retrying),
-        counted::FAILED => Some(Counted::Failed),
-        _ => None,
     }
 }
 
@@ -404,6 +379,8 @@ pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abi::operate::{counted, health};
+    use observe::{Counted, Health};
 
     fn snapshot() -> Snapshot {
         let mut snapshot = Snapshot::new();
