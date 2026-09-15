@@ -13,7 +13,7 @@
 use abi::ffi::{Str, status};
 use abi::operate::{HealthEntry, Measurement, Operate};
 use observe::{Count, HealthRecord, Snapshot};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::start::unconfigured;
@@ -39,7 +39,7 @@ pub struct Operator {
 /// (2026-09-05). `Fixed` is for tests and for a surface that wants one
 /// consistent view.
 enum Source {
-    Fixed(Snapshot),
+    Fixed(Arc<Snapshot>),
     Published,
 }
 
@@ -49,13 +49,13 @@ impl Source {
     /// so an operator pausing a live table changes what every table then reads.
     fn mutate<R>(&mut self, change: impl FnOnce(&mut Snapshot) -> R) -> R {
         match self {
-            Source::Fixed(snapshot) => change(snapshot),
+            Source::Fixed(snapshot) => change(Arc::make_mut(snapshot)),
             Source::Published => {
                 let mut guard = PUBLISHED
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let snapshot = guard.get_or_insert_with(unconfigured);
-                change(snapshot)
+                let snapshot = guard.get_or_insert_with(|| Arc::new(unconfigured()));
+                change(Arc::make_mut(snapshot))
             }
         }
     }
@@ -66,7 +66,7 @@ impl Operator {
     #[must_use]
     pub fn new(snapshot: Snapshot) -> Self {
         Self {
-            source: Source::Fixed(snapshot),
+            source: Source::Fixed(Arc::new(snapshot)),
             held_health: Vec::new(),
             held_count: None,
         }
@@ -82,14 +82,19 @@ impl Operator {
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
+    /// The snapshot to answer from: a shared handle, never a copy. Every
+    /// surface call used to clone the whole publication under the lock the
+    /// publisher needs — eight copies of eleven thousand records per board
+    /// render (2026-09-15). A publication is immutable once published, so
+    /// the handle is enough.
+    fn snapshot(&self) -> Arc<Snapshot> {
         match &self.source {
-            Source::Fixed(snapshot) => snapshot.clone(),
+            Source::Fixed(snapshot) => Arc::clone(snapshot),
             Source::Published => PUBLISHED
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone()
-                .unwrap_or_else(unconfigured),
+                .unwrap_or_else(|| Arc::new(unconfigured())),
         }
     }
 
@@ -290,7 +295,7 @@ unsafe extern "C" fn destroy_entry(ctx: *mut u8) {
 /// export below hands a copy to whichever surface asks. A copy, so a surface
 /// reading a table never blocks the node writing the next one — ADR-0027
 /// clause 6 in one line.
-static PUBLISHED: Mutex<Option<Snapshot>> = Mutex::new(None);
+static PUBLISHED: Mutex<Option<Arc<Snapshot>>> = Mutex::new(None);
 
 /// The monotonic publication revision and the wake-up primitive shared by all
 /// operator surfaces in this process. It is separate from PUBLISHED so a
@@ -314,7 +319,7 @@ fn announce_change() {
 pub fn publish(snapshot: Snapshot) {
     *PUBLISHED
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(snapshot));
     announce_change();
 }
 
