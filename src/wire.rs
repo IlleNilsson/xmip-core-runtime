@@ -4,6 +4,11 @@
 //! `xmip-core-observe` keeps them as enums. The two conversions live here so
 //! `operate.rs` holds the table and nothing else. A value the header does not
 //! name is `None`, which the table answers with `XMIP_E_MALFORMED`.
+//!
+//! It stays in the runtime under ADR-0058: this is the only crate that has
+//! both the header's constants and observe's enums, and neither of those two
+//! may depend on the other — `xmip-core-abi` is Foundation and
+//! `xmip-core-observe` is Operation.
 
 use abi::operate::{counted, health};
 use observe::{Counted, Health};

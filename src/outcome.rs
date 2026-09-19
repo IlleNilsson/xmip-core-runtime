@@ -7,15 +7,23 @@
 //!
 //! **A refusal is the whole record.** ADR-0013 puts a Journey's beginning after
 //! Validation, so before that there is nothing to suspend, resume or dismiss.
+//!
+//! This is a definition and not a lifecycle, so ADR-0058's test would send it
+//! to Foundation — and it stays here deliberately. `Arrived` quotes three
+//! Capabilities' verdicts at once (`authenticate::Refusal`,
+//! `authorize::Decision`, `route::Routing`), and a Foundation crate depends
+//! only on Foundation. `xmip-core-context` cannot hold it without a cycle,
+//! since all three already depend on context; `xmip-core-journey` could, and
+//! only by inverting the estate's direction. So it lives in the crate that
+//! already composes the three, which is ADR-0044's rule read upward.
 
 use std::fmt;
 
+use crate::generation::ReceivedWork;
 use authenticate::Refusal;
 use authorize::Decision;
 use context::IdentityFacts;
 use route::Routing;
-
-use crate::generation::ReceivedWork;
 
 /// Why a Stream never became a Journey.
 #[derive(Clone, Debug)]
