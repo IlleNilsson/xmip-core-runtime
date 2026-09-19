@@ -46,6 +46,12 @@ impl HostService {
 /// it, and this is the verification that load performs — ADR-0018 phase 6's
 /// check, run late for the delayed set.
 ///
+/// It checks a request an operator's configuration composed, before anything
+/// is opened. The load itself is `loaded_module.rs` since 2026-09-19
+/// (ADR-0057 clause 8 step 2): that file opens the library, resolves the
+/// symbol and reads the descriptor the module actually filled, which is the
+/// only descriptor worth believing. Nothing wires the two together yet.
+///
 /// Written before `xmip-core-abi` exported any of this and never compiled
 /// until 2026-08-30: the imports named symbols nobody had written
 /// (`ModuleAbiDescriptor`, `XMIP_MODULE_ENTRYPOINT`), and the call below moved
