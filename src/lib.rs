@@ -1,10 +1,17 @@
 pub mod arrival;
 pub mod capability_registry;
+pub mod compatibility;
 pub mod departure;
 pub mod engine;
 pub mod execution_tree;
 pub mod generation;
 pub mod host;
+/// The contract trait of a loaded module (ADR-0057 clause 8 step 2).
+#[cfg(feature = "dynamic-loading")]
+pub mod loaded_contract;
+/// Opening a module for real. Behind the feature that has always named it.
+#[cfg(feature = "dynamic-loading")]
+pub mod loaded_module;
 pub mod operate;
 pub mod outcome;
 pub mod registration;

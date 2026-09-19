@@ -4,10 +4,13 @@
 //! surface through the C table in `xmip-core-abi`. Every call reads that
 //! snapshot and nothing else — no call here makes execution wait.
 //!
-//! One of two places in this crate that dereference a pointer, and it says so:
-//! a surface hands over `out` and `out_len` and the header promises they are
-//! written. The other is `start.rs`, for the same reason. Nothing else in the
-//! runtime needs `unsafe`, so the crate denies it and these two files allow it.
+//! One of four places in this crate that dereference a pointer, and it says
+//! so: a surface hands over `out` and `out_len` and the header promises they
+//! are written. `start.rs` is the same boundary for the same reason.
+//! `loaded_module.rs` and `loaded_contract.rs` are the boundary facing the
+//! other way, where the pointer comes out of a module the host opened
+//! (ADR-0057). Nothing else in the runtime needs `unsafe`, so the crate
+//! denies it and those four files allow it.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};

@@ -18,14 +18,23 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [lints.rust]
-# deny, not forbid, since 2026-09-04. operate.rs implements the C table in
-# xmip_operate.h and start.rs exports xmip_start_v1; both read or write through
-# pointers a surface handed them, both allow the lint at the top of the file
-# with the reason, and nothing else may.
+# deny, not forbid, since 2026-09-04. Four files allow it at the top with
+# their reason, and nothing else may. operate.rs implements the C table in
+# xmip_operate.h and start.rs exports xmip_start_v1; both read or write
+# through pointers a surface handed them (ADR-0027, the boundary facing out).
+# loaded_module.rs and loaded_contract.rs open somebody else's library and
+# call through its table (ADR-0012, the boundary facing in) — the loader
+# ADR-0057 clause 8 step 2 asks for, and the only two files in the crate that
+# cross inward.
 unsafe_code = "deny"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Optional: only a node that loads modules links a loader, and only the
+# dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
+# nothing more — the flags specification section 3 requires are passed by
+# loaded_module.rs, which does not take the crate's defaults on Windows.
+libloading = { version = "0.8", optional = true }
 abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main" }
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main" }
@@ -44,6 +53,7 @@ observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
 
 [features]
-# host.rs guards the loader on this. Declared so the cfg is a real switch
-# rather than a condition that is silently always false.
-dynamic-loading = []
+# host.rs, loaded_module.rs and loaded_contract.rs are guarded on this.
+# Declared so the cfg is a real switch rather than a condition that is
+# silently always false.
+dynamic-loading = ["dep:libloading"]
