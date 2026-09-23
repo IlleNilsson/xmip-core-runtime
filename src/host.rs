@@ -159,9 +159,9 @@ pub mod dynamic {
         #[test]
         fn a_declared_symbol_is_kept() {
             let verified =
-                verify_dynamic_module(&request(Some("acme_create_v1"))).expect("verifies");
+                verify_dynamic_module(&request(Some("partner_create_v1"))).expect("verifies");
 
-            assert_eq!(verified.entrypoint_symbol, "acme_create_v1");
+            assert_eq!(verified.entrypoint_symbol, "partner_create_v1");
         }
 
         #[test]
