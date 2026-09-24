@@ -1,6 +1,7 @@
 pub mod arrival;
 pub mod capability_registry;
 pub mod compatibility;
+pub mod curve;
 pub mod departure;
 pub mod engine;
 pub mod execution_tree;
@@ -14,6 +15,7 @@ pub mod loaded_contract;
 pub mod loaded_module;
 pub mod operate;
 pub mod outcome;
+pub mod publication;
 pub mod registration;
 pub mod rule;
 pub mod service;

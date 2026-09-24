@@ -17,6 +17,7 @@ use std::ffi::c_void;
 
 use abi::ModuleDescriptor;
 use abi::ffi::{ContractVtable, Diagnostic, Reader, Str, status};
+use codec::cursor::Cursor;
 
 use crate::loaded_module::{LoadedModule, read_str};
 
@@ -200,34 +201,30 @@ impl<'a> LoadedContract<'a> {
     }
 }
 
-/// What a byte slice looks like to a module reading an `XmipReader`.
-struct Source<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-/// The host's side of header section 5. Returns bytes written, 0 at end of
-/// stream, or a negative status; a short read is not end of stream.
+/// The host's side of header section 5, reading the content through the
+/// estate's one byte cursor (`codec::cursor`). Returns bytes written, 0 at
+/// end of stream, or a negative status; a short read is not end of stream.
 unsafe extern "C" fn read_source(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
     if ctx.is_null() || (buf.is_null() && len > 0) {
         return i64::from(status::INVALID);
     }
 
-    // SAFETY: `ctx` is the `Source` that `validate` below keeps on its own
+    // SAFETY: `ctx` is the `Cursor` that `validate` below keeps on its own
     // stack across the one call it passes this reader to; the module may not
     // keep the reader past that call, so nothing else can be behind this
     // pointer. `buf` is the module's, writable for `len` bytes for this call.
-    let source = unsafe { &mut *ctx.cast::<Source<'_>>() };
-    let taken = (source.bytes.len() - source.at).min(len);
+    let source = unsafe { &mut *ctx.cast::<Cursor<'_>>() };
+    let Ok(taken) = source.take(source.remaining().len().min(len)) else {
+        return i64::from(status::INVALID);
+    };
 
-    // SAFETY: `taken` bytes exist in both, and the two cannot overlap — one
-    // is the host's slice, the other the module's buffer. Nothing in this
-    // function can panic, so nothing can unwind out of an `extern "C"` frame.
-    unsafe { std::ptr::copy_nonoverlapping(source.bytes[source.at..].as_ptr(), buf, taken) };
+    // SAFETY: `taken.len()` bytes exist in both, and the two cannot overlap
+    // — one is the host's slice, the other the module's buffer. Nothing in
+    // this function can panic, so nothing can unwind out of an `extern "C"`
+    // frame.
+    unsafe { std::ptr::copy_nonoverlapping(taken.as_ptr(), buf, taken.len()) };
 
-    source.at += taken;
-
-    i64::try_from(taken).unwrap_or(i64::MAX)
+    i64::try_from(taken.len()).unwrap_or(i64::MAX)
 }
 
 /// One bound contract. Released through the module that produced it — an
@@ -251,10 +248,7 @@ impl BoundContract<'_> {
             .table
             .validate
             .ok_or_else(|| format!("{} carries no validate", self.of.descriptor()))?;
-        let mut source = Source {
-            bytes: content,
-            at: 0,
-        };
+        let mut source = Cursor::new(content);
         let reader = Reader {
             ctx: (&raw mut source).cast(),
             read: Some(read_source),

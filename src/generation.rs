@@ -1,4 +1,4 @@
-//! What a Message generation is, and the three treatments an artifact declares.
+//! What a Message generation is.
 //!
 //! Arrived from the platform repository's `src/vertical_slice.rs` on
 //! 2026-08-26. Its own arrival path went on 2026-08-27, superseded by
@@ -10,10 +10,7 @@
 //! produces a new Stream. Neither edits anything — ADR-0013.
 
 use journey::{Journey, JourneyMessageRef};
-use message::{
-    ExecutionProfile, Message, MessageCreationSource, MessageDurability, MessagePriority,
-    MessageSection, MessageTreatment,
-};
+use message::{Message, MessageCreationSource, MessageSection};
 use stream::Stream;
 use xcore::{IdGenerator, MessageId, SectionId, StreamId};
 
@@ -77,40 +74,11 @@ pub fn apply_transformation(
     }
 }
 
-/// A caller is waiting. Latency over history.
-#[must_use]
-pub const fn conversation() -> MessageTreatment {
-    MessageTreatment {
-        priority: MessagePriority::Immediate,
-        execution_profile: ExecutionProfile::Conversation,
-        durability: MessageDurability::Ephemeral,
-    }
-}
-
-/// The default. Full history, full recovery.
-#[must_use]
-pub const fn business() -> MessageTreatment {
-    MessageTreatment {
-        priority: MessagePriority::Normal,
-        execution_profile: ExecutionProfile::Business,
-        durability: MessageDurability::Recoverable,
-    }
-}
-
-/// Moved, not understood.
-#[must_use]
-pub const fn pass_through() -> MessageTreatment {
-    MessageTreatment {
-        priority: MessagePriority::Background,
-        execution_profile: ExecutionProfile::PassThrough,
-        durability: MessageDurability::Durable,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use context::MessageContext;
+    use message::MessageTreatment;
     use std::sync::atomic::{AtomicU64, Ordering};
     use xcore::JourneyId;
 
@@ -154,7 +122,7 @@ mod tests {
     #[test]
     fn assignment_keeps_the_stream_and_transformation_replaces_it() {
         let ids = Counter::default();
-        let received = arrived(&ids, business());
+        let received = arrived(&ids, MessageTreatment::BUSINESS);
         let original = received.message.sections()[0].stream.id();
 
         let assigned = apply_assignment(&ids, received, MessageContext::new());
@@ -170,33 +138,15 @@ mod tests {
     #[test]
     fn an_assignment_is_recorded_as_an_assignment() {
         let ids = Counter::default();
-        let assigned = apply_assignment(&ids, arrived(&ids, business()), MessageContext::new());
+        let assigned = apply_assignment(
+            &ids,
+            arrived(&ids, MessageTreatment::BUSINESS),
+            MessageContext::new(),
+        );
 
         assert_eq!(
             assigned.message.created_by(),
             MessageCreationSource::Assignment
         );
-    }
-
-    #[test]
-    fn treatment_is_a_declaration_not_a_measurement() {
-        // A two-kilobyte order and a two-gigabyte export can both be Immediate.
-        let ids = Counter::default();
-
-        assert_eq!(
-            arrived(&ids, conversation()).message.treatment().priority,
-            MessagePriority::Immediate
-        );
-        assert_eq!(
-            arrived(&ids, pass_through()).message.treatment().priority,
-            MessagePriority::Background
-        );
-    }
-
-    #[test]
-    fn the_three_treatments_differ_in_what_survives_a_restart() {
-        assert_eq!(conversation().durability, MessageDurability::Ephemeral);
-        assert_eq!(business().durability, MessageDurability::Recoverable);
-        assert_eq!(pass_through().durability, MessageDurability::Durable);
     }
 }
