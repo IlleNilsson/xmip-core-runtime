@@ -70,8 +70,8 @@ pub fn start(path: &str) -> Snapshot {
         }
     };
 
-    let configuration = match configure::parse_service_configuration(&source) {
-        Ok(configuration) => configuration,
+    let document = match configure::parse_toml(&source) {
+        Ok(document) => document,
         Err(error) => {
             snapshot.record_health(HealthRecord {
                 scope: "xmip:///".into(),
@@ -85,26 +85,22 @@ pub fn start(path: &str) -> Snapshot {
         }
     };
 
-    let node = format!("xmip:///{}", configuration.node_name);
+    let node = format!("xmip:///{}", document.service.node_name);
 
-    if let Err(report) = crate::service::plan_startup_from_toml(&source) {
-        snapshot.record_health(HealthRecord {
-            scope: node,
-            health: Health::Done,
-            severity: 90,
-            evidence: format!("configuration refused: {}", report.errors.join("; ")),
-            observed_unix_nanos: now,
-        });
+    let tree = match crate::execution_tree::build_execution_tree(document) {
+        Ok((tree, _)) => tree,
+        Err(report) => {
+            snapshot.record_health(HealthRecord {
+                scope: node,
+                health: Health::Done,
+                severity: 90,
+                evidence: format!("configuration refused: {}", report.errors.join("; ")),
+                observed_unix_nanos: now,
+            });
 
-        return snapshot;
-    }
-
-    let modules: Vec<_> = configuration.modules.iter().filter(|m| m.start).collect();
-    let processes: Vec<_> = configuration
-        .xmip_processes
-        .iter()
-        .filter(|p| p.start)
-        .collect();
+            return snapshot;
+        }
+    };
 
     snapshot.record_health(HealthRecord {
         scope: node.clone(),
@@ -113,13 +109,13 @@ pub fn start(path: &str) -> Snapshot {
         evidence: format!(
             "{} module(s), {} process(es) validated and planned; not running \u{2014} \
              phases 4\u{2013}9 (start, load, accept work) are not built yet",
-            modules.len(),
-            processes.len()
+            tree.modules_to_start.len(),
+            tree.xmip_processes_to_start.len()
         ),
         observed_unix_nanos: now,
     });
 
-    for module in modules {
+    for module in &tree.modules_to_start {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/module/{}", module.name),
             health: Health::Stressed,
@@ -129,7 +125,7 @@ pub fn start(path: &str) -> Snapshot {
         });
     }
 
-    for process in processes {
+    for process in &tree.xmip_processes_to_start {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/process/{}", process.name),
             health: Health::Stressed,
@@ -146,10 +142,10 @@ pub fn start(path: &str) -> Snapshot {
     // is what the GUI groups by, and Receive and Send are what an operator
     // runs — a node with only Process on the page is two thirds empty.
     for (stage, locations) in [
-        ("receive", &configuration.receive_locations),
-        ("send", &configuration.send_locations),
+        ("receive", &tree.receive_locations_to_start),
+        ("send", &tree.send_locations_to_start),
     ] {
-        for location in locations.iter().filter(|l| l.start) {
+        for location in locations {
             snapshot.record_health(HealthRecord {
                 scope: format!("{node}/{stage}/{}", location.name),
                 health: Health::Stressed,
@@ -378,6 +374,32 @@ symbol = "xmip_create_module_v1"
             validate(source).is_empty(),
             "a well-formed node has no problems"
         );
+    }
+
+    #[test]
+    fn a_minimal_process_validates() {
+        // ADR-0031, amendment 2026-09-24: a Process that needs no module and
+        // has no Subprocess or Extension need not say so.
+        let source = "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n\
+                      [[xmip_processes]]\nname = \"minimal\"\nstart = true\n";
+
+        assert!(validate(source).is_empty(), "{:?}", validate(source));
+    }
+
+    #[test]
+    fn a_location_missing_start_or_transport_is_refused_not_defaulted() {
+        let head = "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n";
+        let no_start = format!(
+            "{head}[[receive_locations]]\nname = \"in\"\ntransport = \"file\"\naddress = \"a\"\n"
+        );
+        let no_transport =
+            format!("{head}[[send_locations]]\nname = \"out\"\nstart = true\naddress = \"a\"\n");
+
+        for (source, key) in [(no_start, "start"), (no_transport, "transport")] {
+            let problems = validate(&source);
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains(key), "names `{key}`: {}", problems[0]);
+        }
     }
 
     #[test]
