@@ -367,7 +367,7 @@ mod tests {
         };
 
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../capability/contract/rust/target/debug")
+            .join("../../core/capability/contract/rust/target/debug")
             .join(name)
     }
 
@@ -377,7 +377,7 @@ mod tests {
         assert!(
             library.exists(),
             "no module library at {}. Build one — cargo build in \
-             module/capability/contract/rust — or set XMIP_MODULE_LIBRARY to \
+             module/core/capability/contract/rust — or set XMIP_MODULE_LIBRARY to \
              a conforming contract module.",
             library.display()
         );
