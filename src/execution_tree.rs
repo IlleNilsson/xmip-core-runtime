@@ -1,39 +1,32 @@
-use abi::{ExtensionManifest, ModuleManifest};
-use configure::XmipServiceConfiguration;
+//! Startup phases 2 and 3 (ADR-0018): build the execution tree from the
+//! node's configuration document and validate it.
+//!
+//! The tree is derived from `configure::XmipConfigurationDocument` and holds
+//! the document's own types — what starts, in the document's words — plus
+//! the one thing only the runtime knows, which extensions it verified. Until
+//! 2026-09-24 it read a second model of the configuration and restated a
+//! subset of it in startup node types of its own (open problem 25, row b).
+
+use abi::ExtensionManifest;
+use configure::{
+    ConfiguredLocation, ModuleConfiguration, ServiceConfiguration, XmipConfigurationDocument,
+    XmipProcessConfiguration,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// What a node starts, taken from its configuration document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTree {
-    pub service_name: String,
-    pub cluster_name: String,
-    pub node_name: String,
-    pub modules_to_start: Vec<ModuleStartupNode>,
-    pub xmip_processes_to_start: Vec<XmipProcessStartupNode>,
+    pub service: ServiceConfiguration,
+    pub modules_to_start: Vec<ModuleConfiguration>,
+    pub xmip_processes_to_start: Vec<XmipProcessConfiguration>,
+    pub receive_locations_to_start: Vec<ConfiguredLocation>,
+    pub send_locations_to_start: Vec<ConfiguredLocation>,
     pub verified_extensions: Vec<VerifiedExtensionNode>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModuleStartupNode {
-    pub name: String,
-    pub manifest: ModuleManifest,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct XmipProcessStartupNode {
-    pub name: String,
-    pub required_modules: Vec<String>,
-    pub xmip_subprocesses: Vec<XmipSubprocessStartupNode>,
-    pub extension_names: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct XmipSubprocessStartupNode {
-    pub name: String,
-    pub required_modules: Vec<String>,
-    pub extension_names: Vec<String>,
-}
-
+/// An extension the runtime checked at startup, and whether it loaded it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedExtensionNode {
     pub name: String,
@@ -48,105 +41,92 @@ pub struct StartupValidationReport {
 }
 
 impl StartupValidationReport {
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
 }
 
+/// Validate the document and take from it what starts.
+///
+/// # Errors
+/// The validation report, when it holds an error.
 pub fn build_execution_tree(
-    configuration: XmipServiceConfiguration,
+    document: XmipConfigurationDocument,
 ) -> Result<(ExecutionTree, StartupValidationReport), StartupValidationReport> {
-    let report = validate_startup_configuration(&configuration);
+    let report = validate_startup_configuration(&document);
     if !report.is_valid() {
         return Err(report);
     }
 
-    let modules_to_start = configuration
+    let modules_to_start = document
         .modules
-        .iter()
+        .into_iter()
         .filter(|module| module.start)
-        .map(|module| ModuleStartupNode {
-            name: module.name.clone(),
-            manifest: module.manifest.clone(),
-        })
+        .collect();
+
+    let xmip_processes_to_start = document
+        .xmip_processes
+        .into_iter()
+        .filter(|xmip_process| xmip_process.start)
         .collect::<Vec<_>>();
 
-    let mut verified_extensions = Vec::new();
-    let xmip_processes_to_start = configuration
-        .xmip_processes
+    let verified_extensions = xmip_processes_to_start
         .iter()
-        .filter(|xmip_process| xmip_process.start)
-        .map(|xmip_process| {
-            for extension in &xmip_process.extensions {
-                verified_extensions.push(verified_extension(extension));
-            }
-
-            let xmip_subprocesses = xmip_process
-                .xmip_subprocesses
-                .iter()
-                .map(|xmip_subprocess| {
-                    for extension in &xmip_subprocess.extensions {
-                        verified_extensions.push(verified_extension(extension));
-                    }
-
-                    XmipSubprocessStartupNode {
-                        name: xmip_subprocess.name.clone(),
-                        required_modules: xmip_subprocess.required_modules.clone(),
-                        extension_names: xmip_subprocess
-                            .extensions
-                            .iter()
-                            .map(|extension| extension.name.clone())
-                            .collect(),
-                    }
-                })
-                .collect();
-
-            XmipProcessStartupNode {
-                name: xmip_process.name.clone(),
-                required_modules: xmip_process.required_modules.clone(),
-                xmip_subprocesses,
-                extension_names: xmip_process
-                    .extensions
+        .flat_map(|xmip_process| {
+            xmip_process.extensions.iter().chain(
+                xmip_process
+                    .xmip_subprocesses
                     .iter()
-                    .map(|extension| extension.name.clone())
-                    .collect(),
-            }
+                    .flat_map(|xmip_subprocess| xmip_subprocess.extensions.iter()),
+            )
         })
+        .map(verified_extension)
         .collect();
+
+    let starting = |locations: Vec<ConfiguredLocation>| {
+        locations
+            .into_iter()
+            .filter(|location| location.start)
+            .collect()
+    };
 
     Ok((
         ExecutionTree {
-            service_name: configuration.service_name,
-            cluster_name: configuration.cluster_name,
-            node_name: configuration.node_name,
+            service: document.service,
             modules_to_start,
             xmip_processes_to_start,
+            receive_locations_to_start: starting(document.receive_locations),
+            send_locations_to_start: starting(document.send_locations),
             verified_extensions,
         },
         report,
     ))
 }
 
+/// Everything in the document that would stop the node starting, as errors,
+/// and what would start it degraded, as warnings.
+#[must_use]
 pub fn validate_startup_configuration(
-    configuration: &XmipServiceConfiguration,
+    document: &XmipConfigurationDocument,
 ) -> StartupValidationReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    let configured_modules = configuration
+    let configured_modules = document
         .modules
         .iter()
         .map(|module| module.name.as_str())
         .collect::<BTreeSet<_>>();
 
-    let started_modules = configuration
+    let started_modules = document
         .modules
         .iter()
         .filter(|module| module.start)
         .map(|module| module.name.as_str())
         .collect::<BTreeSet<_>>();
 
-    for module in &configuration.modules {
+    for module in &document.modules {
         if module.name.trim().is_empty() {
             errors.push("configured module requires a name".to_string());
         }
@@ -156,11 +136,12 @@ pub fn validate_startup_configuration(
         }
     }
 
-    for xmip_process in &configuration.xmip_processes {
+    for xmip_process in &document.xmip_processes {
         if xmip_process.name.trim().is_empty() {
             errors.push("configured Xmip Process requires a name".to_string());
         }
 
+        let owner = format!("Xmip Process '{}'", xmip_process.name);
         for required_module in &xmip_process.required_modules {
             validate_required_module(
                 required_module,
@@ -168,16 +149,12 @@ pub fn validate_startup_configuration(
                 &started_modules,
                 &mut errors,
                 &mut warnings,
-                &format!("Xmip Process '{}'", xmip_process.name),
+                &owner,
             );
         }
 
         for extension in &xmip_process.extensions {
-            verify_extension_manifest(
-                extension,
-                &mut errors,
-                &format!("Xmip Process '{}'", xmip_process.name),
-            );
+            verify_extension_manifest(extension, &mut errors, &owner);
         }
 
         for xmip_subprocess in &xmip_process.xmip_subprocesses {
@@ -188,6 +165,10 @@ pub fn validate_startup_configuration(
                 ));
             }
 
+            let owner = format!(
+                "Xmip Subprocess '{}' of Xmip Process '{}'",
+                xmip_subprocess.name, xmip_process.name
+            );
             for required_module in &xmip_subprocess.required_modules {
                 validate_required_module(
                     required_module,
@@ -195,27 +176,39 @@ pub fn validate_startup_configuration(
                     &started_modules,
                     &mut errors,
                     &mut warnings,
-                    &format!(
-                        "Xmip Subprocess '{}' of Xmip Process '{}'",
-                        xmip_subprocess.name, xmip_process.name
-                    ),
+                    &owner,
                 );
             }
 
             for extension in &xmip_subprocess.extensions {
-                verify_extension_manifest(
-                    extension,
-                    &mut errors,
-                    &format!(
-                        "Xmip Subprocess '{}' of Xmip Process '{}'",
-                        xmip_subprocess.name, xmip_process.name
-                    ),
-                );
+                verify_extension_manifest(extension, &mut errors, &owner);
             }
         }
     }
 
+    for (stage, locations) in [
+        ("Receive Location", &document.receive_locations),
+        ("Send Location", &document.send_locations),
+    ] {
+        for location in locations {
+            validate_location(stage, location, &mut errors);
+        }
+    }
+
     StartupValidationReport { errors, warnings }
+}
+
+/// A location the document names but leaves empty. The document already
+/// refuses one without a `transport` key; this refuses one whose value says
+/// nothing, which is what an editor writes when nobody chose.
+fn validate_location(stage: &str, location: &ConfiguredLocation, errors: &mut Vec<String>) {
+    if location.name.trim().is_empty() {
+        errors.push(format!("configured {stage} requires a name"));
+    }
+
+    if location.transport.trim().is_empty() {
+        errors.push(format!("{stage} '{}' requires a transport", location.name));
+    }
 }
 
 fn validate_required_module(
@@ -268,71 +261,85 @@ fn verified_extension(extension: &ExtensionManifest) -> VerifiedExtensionNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abi::{
-        ExecutionHostKind, ExtensionEntrypoint, ModuleCapability, ModuleEntrypoint, ModuleIdentity,
-    };
-    use configure::{
-        ConfiguredModule, ConfiguredXmipProcess, ConfiguredXmipSubprocess, ExecutionStyle,
-    };
+
+    const NODE: &str = r#"
+[service]
+name = "xmip"
+cluster_name = "home"
+node_name = "node-a"
+
+[[modules]]
+name = "file"
+start = true
+[modules.manifest.identity]
+name = "file"
+version = "0.1.0"
+[[modules.manifest.capabilities]]
+capability = "transport:file"
+execution_host = "native-rust"
+trusted_required = true
+[modules.manifest.entrypoint]
+library_path = "xmip_handler_file"
+symbol = "xmip_create_module"
+
+[[xmip_processes]]
+name = "inbound"
+start = true
+required_modules = ["file"]
+extensions = []
+
+[[xmip_processes.xmip_subprocesses]]
+name = "normalize"
+required_modules = ["file"]
+[[xmip_processes.xmip_subprocesses.extensions]]
+name = "normalize-text"
+version = "0.1.0"
+execution_host = "native-rust"
+required_capabilities = []
+[xmip_processes.xmip_subprocesses.extensions.entrypoint]
+path = "extensions/normalize_text"
+symbol_or_command = "run"
+
+[[receive_locations]]
+name = "orders-in"
+start = true
+transport = "file"
+address = "C:/in"
+
+[[send_locations]]
+name = "billing-out"
+start = false
+transport = "file"
+address = "C:/out"
+"#;
 
     #[test]
-    fn verifies_extensions_without_loading_them() {
-        let configuration = XmipServiceConfiguration {
-            service_name: "xmip".to_string(),
-            cluster_name: "home".to_string(),
-            node_name: "node-a".to_string(),
-            online: false,
-            receive_locations: Vec::new(),
-            send_locations: Vec::new(),
-            modules: vec![ConfiguredModule {
-                name: "file".to_string(),
-                start: true,
-                manifest: ModuleManifest {
-                    identity: ModuleIdentity {
-                        name: "file".to_string(),
-                        version: "0.1.0".to_string(),
-                    },
-                    capabilities: vec![ModuleCapability {
-                        capability: "transport:file".to_string(),
-                        execution_host: ExecutionHostKind::NativeRust,
-                        trusted_required: true,
-                    }],
-                    entrypoint: ModuleEntrypoint {
-                        library_path: Some("xmip_handler_file".to_string()),
-                        executable_path: None,
-                        symbol: Some("xmip_create_module".to_string()),
-                    },
-                },
-            }],
-            xmip_processes: vec![ConfiguredXmipProcess {
-                name: "inbound".to_string(),
-                start: true,
-                execution_style: ExecutionStyle::default(),
-                required_modules: vec!["file".to_string()],
-                xmip_subprocesses: vec![ConfiguredXmipSubprocess {
-                    name: "normalize".to_string(),
-                    required_modules: vec!["file".to_string()],
-                    extensions: vec![ExtensionManifest {
-                        name: "normalize-text".to_string(),
-                        version: "0.1.0".to_string(),
-                        execution_host: ExecutionHostKind::NativeRust,
-                        entrypoint: ExtensionEntrypoint {
-                            path: "extensions/normalize_text".to_string(),
-                            symbol_or_command: Some("run".to_string()),
-                        },
-                        required_capabilities: Vec::new(),
-                    }],
-                }],
-                extensions: Vec::new(),
-            }],
-        };
-
-        let (tree, report) = build_execution_tree(configuration).expect("valid tree");
+    fn the_tree_is_what_the_document_starts_and_extensions_are_verified_not_loaded() {
+        let document = configure::parse_toml(NODE).expect("parses");
+        let (tree, report) = build_execution_tree(document.clone()).expect("valid tree");
 
         assert!(report.is_valid());
-        assert_eq!(tree.modules_to_start.len(), 1);
-        assert_eq!(tree.xmip_processes_to_start.len(), 1);
+        assert_eq!(tree.service, document.service);
+        assert_eq!(tree.modules_to_start, document.modules);
+        assert_eq!(tree.xmip_processes_to_start, document.xmip_processes);
+        assert_eq!(tree.receive_locations_to_start, document.receive_locations);
+        assert!(tree.send_locations_to_start.is_empty(), "start = false");
         assert_eq!(tree.verified_extensions.len(), 1);
         assert!(!tree.verified_extensions[0].loaded_during_startup);
+    }
+
+    #[test]
+    fn a_location_with_an_empty_transport_is_refused() {
+        let source = NODE.replace(
+            "transport = \"file\"\naddress = \"C:/in\"",
+            "transport = \"\"\naddress = \"C:/in\"",
+        );
+        let document = configure::parse_toml(&source).expect("parses");
+        let report = build_execution_tree(document).expect_err("refused");
+
+        assert_eq!(
+            report.errors,
+            ["Receive Location 'orders-in' requires a transport"]
+        );
     }
 }

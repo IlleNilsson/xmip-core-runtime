@@ -1,5 +1,5 @@
 use crate::execution_tree::{ExecutionTree, StartupValidationReport, build_execution_tree};
-use configure::parse_service_configuration;
+use configure::parse_toml;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,16 +50,20 @@ pub struct XmipServiceStartupPlan {
     pub validation_report: StartupValidationReport,
 }
 
+/// Startup phases 1 to 3 over a node configuration's text: read it as
+/// `configure`'s one document, build the execution tree, validate it.
+///
+/// # Errors
+/// The report, when the text does not parse or the document does not validate.
 pub fn plan_startup_from_toml(
     source: &str,
 ) -> Result<XmipServiceStartupPlan, StartupValidationReport> {
-    let configuration =
-        parse_service_configuration(source).map_err(|error| StartupValidationReport {
-            errors: vec![format!("configuration parse failed: {error}")],
-            warnings: Vec::new(),
-        })?;
+    let document = parse_toml(source).map_err(|error| StartupValidationReport {
+        errors: vec![format!("configuration parse failed: {error}")],
+        warnings: Vec::new(),
+    })?;
 
-    let (execution_tree, validation_report) = build_execution_tree(configuration)?;
+    let (execution_tree, validation_report) = build_execution_tree(document)?;
 
     Ok(XmipServiceStartupPlan {
         state: XmipServiceState::ReadyToStartHostServices,
