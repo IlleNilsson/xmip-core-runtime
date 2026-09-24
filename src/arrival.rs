@@ -35,6 +35,7 @@
 
 use authenticate::authenticate;
 use authorize::{Action, Attempt, authorize};
+use context::property::PARTY;
 use context::{IdentityFacts, MessageContext};
 use identify::{IdentifyError, Presented, StreamArrival, identify_message, identify_transport};
 use journey::{Journey, JourneyMessageRef};
@@ -362,7 +363,7 @@ fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext
     );
 
     if let Some(party) = facts.accountable().party_id {
-        context = context.with_value("xmip.party", ContextValue::Text(party.to_string()));
+        context = context.with_value(PARTY, ContextValue::Text(party.to_string()));
     }
 
     context

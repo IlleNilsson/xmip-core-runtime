@@ -3,10 +3,13 @@
 //!
 //! The owner, 2026-09-24: *Code shall be uniquely placed, used by others,
 //! whom in turn has unique code used by others.* Scope containment is
-//! `observe::Scope`'s, the stage words and their parse are `node::Stage`'s,
-//! and a mood's word, its color name and the worst-first order are
-//! `observe::Health`'s and `observe::Standing`'s. The .NET surfaces cannot
-//! link those crates, so the runtime's cdylib — the one native library they
+//! `observe::Scope`'s; a mood's word, its color name, the rollup and the
+//! worst-first order are `observe::Health`'s and `observe::Standing`'s; a
+//! counted kind's word and the kind a stage counts are `observe::Counted`'s;
+//! where a node's capability record sits is `observe::capability`'s. The
+//! stage words, their parse and the other facts of a stage, and a run's node
+//! entry, are `node`'s, forwarded by [`node`]. The .NET surfaces cannot link
+//! those crates, so the runtime's cdylib — the one native library they
 //! already load — forwards each: one call into the owner per export, the
 //! pointers read and written, and no rule of its own (ADR-0027 and ADR-0052,
 //! amendments 2026-09-24).
@@ -14,32 +17,25 @@
 //! Nothing here reads the snapshot or a table; every export is pure and may
 //! be called from any thread, before any node started.
 //!
-//! One of five files in this crate that dereference a pointer, for the reason
+//! One of the files in this crate that dereference a pointer, for the reason
 //! `operate.rs` gives: a surface hands over where to write.
 #![allow(unsafe_code)]
 
+pub mod node;
+
 use abi::ffi::{Str, status};
 use abi::operate::HealthEntry;
-use node::Stage;
-use observe::{Health, Scope, Standing};
+use observe::{Counted, Health, Scope, Standing};
 
-use crate::operate::scope_text;
-use crate::wire::{from_wire_health, wire_health};
-
-/// A static or borrowed `&str` as the header's `XmipStr`.
-fn borrow(text: &str) -> Str {
-    Str {
-        ptr: text.as_ptr(),
-        len: text.len(),
-    }
-}
+use crate::operate::{borrow, scope_text};
+use crate::wire::{from_wire_counted, from_wire_health, wire_counted, wire_health};
 
 /// The header's fill shape: up to `cap` entries into `out`, the true count
 /// in `out_len`.
 ///
 /// # Safety
 /// `out` has room for `cap` entries; `out_len` is writable.
-unsafe fn fill<'a>(
+pub(crate) unsafe fn fill<'a>(
     items: impl Iterator<Item = &'a str>,
     out: *mut Str,
     cap: usize,
@@ -57,6 +53,24 @@ unsafe fn fill<'a>(
 
     // SAFETY: `out_len` is writable per the contract.
     unsafe { *out_len = count };
+}
+
+/// A refusal sentence written as UTF-8 into the caller's buffer, its true
+/// length in `said_len` whether or not it fit — the way `xmip_validate_v1`
+/// writes its report.
+///
+/// # Safety
+/// `said` has room for `cap` bytes; `said_len` is writable.
+pub(crate) unsafe fn refuse(sentence: &str, said: *mut u8, cap: usize, said_len: *mut usize) {
+    let bytes = sentence.as_bytes();
+
+    // SAFETY: per the contract above; at most `cap` bytes are copied.
+    unsafe {
+        *said_len = bytes.len();
+        if cap > 0 {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), said, bytes.len().min(cap));
+        }
+    }
 }
 
 /// `observe::Scope::contains`, forwarded.
@@ -104,70 +118,6 @@ pub unsafe extern "C" fn xmip_scope_parts_v1(
     // SAFETY: per the contract above.
     unsafe { fill(Scope::new(scope).segments(), out, cap, out_len) };
     status::OK
-}
-
-/// `node::Stage::WORDS`, forwarded. Static.
-///
-/// # Safety
-/// `out` has room for `cap` entries; `out_len` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_stage_words_v1(
-    out: *mut Str,
-    cap: usize,
-    out_len: *mut usize,
-) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { fill(Stage::WORDS.into_iter(), out, cap, out_len) };
-    status::OK
-}
-
-/// `node::Stage::declared`, forwarded: the stages in the fill shape, or
-/// `XMIP_E_INVALID` and the refusal written as UTF-8.
-///
-/// # Safety
-/// `declared` points at its stated length of readable bytes; `stages` has
-/// room for `cap` entries and `refusal` for `refusal_cap` bytes; `out_len`
-/// and `refusal_len` are writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_stage_declared_v1(
-    declared: Str,
-    stages: *mut Str,
-    cap: usize,
-    out_len: *mut usize,
-    refusal: *mut u8,
-    refusal_cap: usize,
-    refusal_len: *mut usize,
-) -> i32 {
-    // SAFETY: the caller upholds the header's contract on `declared`.
-    let Some(declared) = (unsafe { scope_text(declared) }) else {
-        return status::MALFORMED;
-    };
-
-    match Stage::declared(declared) {
-        Ok(read) => {
-            // SAFETY: per the contract above.
-            unsafe {
-                fill(read.into_iter().map(Stage::name), stages, cap, out_len);
-                *refusal_len = 0;
-            }
-            status::OK
-        }
-        Err(said) => {
-            let bytes = said.as_bytes();
-
-            // SAFETY: per the contract above; at most `refusal_cap` bytes are
-            // copied into `refusal`.
-            unsafe {
-                *out_len = 0;
-                *refusal_len = bytes.len();
-                if refusal_cap > 0 {
-                    let n = bytes.len().min(refusal_cap);
-                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), refusal, n);
-                }
-            }
-            status::INVALID
-        }
-    }
 }
 
 /// A mood's static text, by the owner's function.
@@ -221,6 +171,106 @@ pub unsafe extern "C" fn xmip_health_named_v1(word: Str, out: *mut i32) -> i32 {
     // SAFETY: `out` is writable per the contract.
     unsafe { *out = wire_health(health) };
     status::OK
+}
+
+/// `observe::Health::rolled`, forwarded.
+///
+/// # Safety
+/// `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_health_rolled_v1(health: i32, out: *mut i32) -> i32 {
+    let Some(health) = from_wire_health(health) else {
+        return status::INVALID;
+    };
+
+    // SAFETY: `out` is writable per the contract.
+    unsafe { *out = wire_health(health.rolled()) };
+    status::OK
+}
+
+/// `observe::Counted::word`, forwarded. Static.
+///
+/// # Safety
+/// `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_counted_word_v1(counted: i32, out: *mut Str) -> i32 {
+    let Some(counted) = from_wire_counted(counted) else {
+        return status::INVALID;
+    };
+
+    // SAFETY: `out` is writable per the contract.
+    unsafe { out.write(borrow(counted.word())) };
+    status::OK
+}
+
+/// `observe::Counted::at`, forwarded, for the stage a word names.
+///
+/// # Safety
+/// `stage` points at its stated length of readable bytes; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_stage_counted_v1(stage: Str, out: *mut i32) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `stage`.
+    let Some(word) = (unsafe { scope_text(stage) }) else {
+        return status::MALFORMED;
+    };
+    let Some(stage) = ::node::Stage::named(word) else {
+        return status::NOT_FOUND;
+    };
+
+    // SAFETY: `out` is writable per the contract.
+    unsafe { *out = wire_counted(Counted::at(stage)) };
+    status::OK
+}
+
+/// `observe::capability::declared`, forwarded: the node a capability record
+/// sits beneath, and what its evidence declares or why it is refused.
+///
+/// # Safety
+/// `scope` and `evidence` point at their stated length of readable bytes;
+/// `stages` has room for `cap` entries and `refusal` for `refusal_cap`
+/// bytes; every other out is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_capability_published_v1(
+    scope: Str,
+    evidence: Str,
+    out_node: *mut Str,
+    stages: *mut Str,
+    cap: usize,
+    out_len: *mut usize,
+    out_online: *mut u8,
+    refusal: *mut u8,
+    refusal_cap: usize,
+    refusal_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on both.
+    let (Some(scope), Some(evidence)) = (unsafe { scope_text(scope) }, unsafe {
+        scope_text(evidence)
+    }) else {
+        return status::MALFORMED;
+    };
+    let Some((node, said)) = observe::capability::declared(scope, evidence) else {
+        return status::NOT_FOUND;
+    };
+
+    // SAFETY: per the contract above.
+    unsafe {
+        out_node.write(borrow(node));
+        match node::write_declared(
+            said,
+            stages,
+            cap,
+            out_len,
+            refusal,
+            refusal_cap,
+            refusal_len,
+        ) {
+            Some(online) => {
+                *out_online = u8::from(online);
+                status::OK
+            }
+            None => status::INVALID,
+        }
+    }
 }
 
 /// `observe::Standing::worst_first`, forwarded: `out_order` receives the
@@ -308,32 +358,6 @@ mod tests {
         )
     }
 
-    fn declared(raw: &str) -> (i32, Vec<String>, String) {
-        let mut stages = [Str::empty(); 3];
-        let mut len = 0usize;
-        let mut refusal = [0u8; 256];
-        let mut refusal_len = 0usize;
-        // SAFETY: the buffers have the capacities passed; lengths writable.
-        let code = unsafe {
-            xmip_stage_declared_v1(
-                borrow(raw),
-                stages.as_mut_ptr(),
-                stages.len(),
-                &raw mut len,
-                refusal.as_mut_ptr(),
-                refusal.len(),
-                &raw mut refusal_len,
-            )
-        };
-        let words = stages[..len.min(3)]
-            .iter()
-            .map(|word| text(*word))
-            .collect();
-        let said = String::from_utf8(refusal[..refusal_len.min(256)].to_vec()).expect("UTF-8");
-
-        (code, words, said)
-    }
-
     fn entry(health: i32, severity: u8, scope: &str) -> HealthEntry {
         HealthEntry {
             scope: borrow(scope),
@@ -351,12 +375,101 @@ mod tests {
         // A signature that drifted from xmip-core-abi's fails to compile here.
         let _: rule::ScopeContainsFn = xmip_scope_contains_v1;
         let _: rule::ScopePartsFn = xmip_scope_parts_v1;
-        let _: rule::StageWordsFn = xmip_stage_words_v1;
-        let _: rule::StageDeclaredFn = xmip_stage_declared_v1;
         let _: rule::HealthTextFn = xmip_health_word_v1;
         let _: rule::HealthTextFn = xmip_health_color_v1;
         let _: rule::HealthNamedFn = xmip_health_named_v1;
         let _: rule::HealthOrderFn = xmip_health_order_v1;
+        let _: rule::HealthRolledFn = xmip_health_rolled_v1;
+        let _: rule::CountedWordFn = xmip_counted_word_v1;
+        let _: rule::StageCountedFn = xmip_stage_counted_v1;
+        let _: rule::CapabilityPublishedFn = xmip_capability_published_v1;
+    }
+
+    #[test]
+    fn a_parent_rolls_up_as_observe_says_and_a_stranger_is_refused() {
+        for mood in Health::ALL {
+            let mut out = -1;
+            // SAFETY: `out` is writable.
+            let code = unsafe { xmip_health_rolled_v1(wire_health(mood), &raw mut out) };
+
+            assert_eq!(code, status::OK);
+            assert_eq!(out, wire_health(mood.rolled()));
+        }
+        let mut out = -1;
+        // SAFETY: `out` is writable.
+        assert_eq!(
+            unsafe { xmip_health_rolled_v1(99, &raw mut out) },
+            status::INVALID
+        );
+    }
+
+    #[test]
+    fn every_counted_kind_crosses_with_its_word_and_each_stage_with_its_kind() {
+        for counted in Counted::ALL {
+            let mut word = Str::empty();
+            // SAFETY: `word` is writable.
+            let code = unsafe { xmip_counted_word_v1(wire_counted(counted), &raw mut word) };
+
+            assert_eq!(code, status::OK);
+            assert_eq!(text(word), counted.word());
+        }
+        for stage in ::node::Stage::ALL {
+            let mut out = -1;
+            // SAFETY: the word is static; `out` is writable.
+            let code = unsafe { xmip_stage_counted_v1(borrow(stage.name()), &raw mut out) };
+
+            assert_eq!(code, status::OK);
+            assert_eq!(out, wire_counted(Counted::at(stage)));
+        }
+        let mut out = -1;
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { xmip_stage_counted_v1(borrow("capability"), &raw mut out) },
+            status::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn a_capability_record_crosses_as_observe_reads_it() {
+        let evidence = ::node::Capability::of(&[::node::Stage::Send])
+            .with_online(true)
+            .evidence();
+        let published = |scope: &str, evidence: &str| {
+            let (mut node, mut stages) = (Str::empty(), [Str::empty(); 3]);
+            let (mut len, mut online, mut said_len) = (0usize, 9u8, 0usize);
+            let mut said = [0u8; 256];
+            // SAFETY: every buffer has the capacity passed; every out writable.
+            let code = unsafe {
+                xmip_capability_published_v1(
+                    borrow(scope),
+                    borrow(evidence),
+                    &raw mut node,
+                    stages.as_mut_ptr(),
+                    3,
+                    &raw mut len,
+                    &raw mut online,
+                    said.as_mut_ptr(),
+                    said.len(),
+                    &raw mut said_len,
+                )
+            };
+            let words: Vec<String> = stages[..len.min(3)].iter().map(|s| text(*s)).collect();
+            let sentence = String::from_utf8(said[..said_len.min(256)].to_vec()).expect("UTF-8");
+            (code, text(node), words, online, sentence)
+        };
+
+        let (code, node, words, online, said) = published("xmip:///C1/R1/capability", &evidence);
+        assert_eq!((code, node.as_str(), online), (status::OK, "R1", 1));
+        assert_eq!((words, said), (vec!["send".to_string()], String::new()));
+
+        let (code, node, _, _, said) = published("xmip:///C1/R1/capability", "declares relay;");
+        assert_eq!((code, node.as_str()), (status::INVALID, "R1"));
+        assert!(said.starts_with("REFUSED"), "{said}");
+
+        assert_eq!(
+            published("xmip:///C1/R1/receive", &evidence).0,
+            status::NOT_FOUND
+        );
     }
 
     #[test]
@@ -425,35 +538,6 @@ mod tests {
 
         assert_eq!(code, status::OK);
         assert_eq!(len, 3);
-    }
-
-    #[test]
-    fn the_stage_words_are_the_node_crates() {
-        let mut out = [Str::empty(); 3];
-        let mut len = 0usize;
-        // SAFETY: `out` has 3 entries.
-        let code = unsafe { xmip_stage_words_v1(out.as_mut_ptr(), 3, &raw mut len) };
-
-        assert_eq!(code, status::OK);
-        assert_eq!(out.map(text), Stage::WORDS);
-    }
-
-    #[test]
-    fn a_declaration_reads_as_stage_declared_says_and_a_refusal_crosses_whole() {
-        assert_eq!(
-            declared(" send + receive "),
-            (
-                status::OK,
-                vec!["receive".into(), "send".into()],
-                String::new()
-            )
-        );
-        assert_eq!(declared(""), (status::OK, vec![], String::new()));
-
-        let (code, words, said) = declared("Send+relay");
-        assert_eq!(code, status::INVALID);
-        assert!(words.is_empty());
-        assert_eq!(said, Stage::declared("Send+relay").expect_err("refused"));
     }
 
     #[test]

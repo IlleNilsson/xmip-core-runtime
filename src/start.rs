@@ -258,6 +258,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn both_exports_have_the_shape_the_binding_declares() {
+        // A signature that drifted from xmip-core-abi's fails to compile here,
+        // and the language server calls through that same declaration.
+        let _: abi::operate::StartFn = xmip_start_v1;
+        let _: abi::operate::ValidateFn = xmip_validate_v1;
+    }
+
+    #[test]
     fn starting_from_a_missing_file_is_done_and_says_which_file() {
         let snapshot = start("Z:/no/such/node.toml");
 

@@ -18,11 +18,13 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [lints.rust]
-# deny, not forbid, since 2026-09-04. Five files allow it at the top with
+# deny, not forbid, since 2026-09-04. Eight files allow it at the top with
 # their reason, and nothing else may. operate.rs implements the C table in
-# xmip_operate.h, start.rs exports xmip_start_v1 and rule.rs forwards the
-# section 7 rules; all three read or write through pointers a surface handed
-# them (ADR-0027, the boundary facing out).
+# xmip_operate.h, start.rs exports xmip_start_v1 and xmip_validate_v1,
+# rule.rs and rule/node.rs forward the section 7 rules, and publication.rs
+# and curve.rs read a publication and a curve for section 8; all six read or
+# write through pointers a surface handed them (ADR-0027, the boundary
+# facing out).
 # loaded_module.rs and loaded_contract.rs open somebody else's library and
 # call through its table (ADR-0012, the boundary facing in) — the loader
 # ADR-0057 clause 8 step 2 asks for, and the only two files in the crate that
@@ -52,6 +54,8 @@ authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNil
 route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmip-core-route", branch = "main" }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
+# The one byte cursor a loaded contract reads the content through.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [features]
 # host.rs, loaded_module.rs and loaded_contract.rs are guarded on this.

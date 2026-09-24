@@ -117,7 +117,7 @@ impl Operator {
     }
 }
 
-fn borrow(text: &str) -> Str {
+pub(crate) fn borrow(text: &str) -> Str {
     Str {
         ptr: text.as_ptr(),
         len: text.len(),
