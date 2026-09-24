@@ -15,6 +15,7 @@ pub mod loaded_module;
 pub mod operate;
 pub mod outcome;
 pub mod registration;
+pub mod rule;
 pub mod service;
 pub mod start;
 mod wire;

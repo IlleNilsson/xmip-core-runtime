@@ -26,6 +26,21 @@ pub(crate) const fn wire_health(value: Health) -> i32 {
     }
 }
 
+/// An observe `Health` for the header's `int`, or `None` for a value section
+/// 3 does not define.
+pub(crate) const fn from_wire_health(value: i32) -> Option<Health> {
+    match value {
+        health::FINE => Some(Health::Fine),
+        health::PAUSED => Some(Health::Paused),
+        health::WORKING => Some(Health::Working),
+        health::STRESSED => Some(Health::Stressed),
+        health::EXHAUSTED => Some(Health::Exhausted),
+        health::DONE => Some(Health::Done),
+        health::HOLDING => Some(Health::Holding),
+        _ => None,
+    }
+}
+
 /// An observe `Counted` for the header's `int`, or `None`.
 pub(crate) const fn from_wire_counted(value: i32) -> Option<Counted> {
     match value {
@@ -58,5 +73,14 @@ mod tests {
     fn health_crosses_as_the_header_says() {
         assert_eq!(wire_health(Health::Fine), health::FINE);
         assert_eq!(wire_health(Health::Holding), health::HOLDING);
+    }
+
+    #[test]
+    fn every_mood_comes_back_from_its_wire_value_and_nothing_else_does() {
+        for mood in Health::ALL {
+            assert_eq!(from_wire_health(wire_health(mood)), Some(mood));
+        }
+        assert_eq!(from_wire_health(7), None);
+        assert_eq!(from_wire_health(-1), None);
     }
 }
