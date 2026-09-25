@@ -110,9 +110,50 @@ pub(crate) const fn wire_pattern(value: Pattern) -> i32 {
     }
 }
 
+/// An observe `NodeKind` for the header's `XmipTopologyKind`, or `None`.
+pub(crate) fn from_wire_kind(value: i32) -> Option<NodeKind> {
+    NodeKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| wire_kind(*kind) == value)
+}
+
+/// An observe `Origin` for the header's `XmipTopologyOrigin`, or `None`.
+pub(crate) fn from_wire_origin(value: i32) -> Option<Origin> {
+    Origin::ALL
+        .iter()
+        .copied()
+        .find(|origin| wire_origin(*origin) == value)
+}
+
+/// An observe `Pattern` for the header's `XmipCommunicationPattern`, or
+/// `None`.
+pub(crate) fn from_wire_pattern(value: i32) -> Option<Pattern> {
+    Pattern::ALL
+        .iter()
+        .copied()
+        .find(|pattern| wire_pattern(*pattern) == value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_topology_value_comes_back_and_nothing_else_does() {
+        for kind in NodeKind::ALL {
+            assert_eq!(from_wire_kind(wire_kind(*kind)), Some(*kind));
+        }
+        for origin in Origin::ALL {
+            assert_eq!(from_wire_origin(wire_origin(*origin)), Some(*origin));
+        }
+        for pattern in Pattern::ALL {
+            assert_eq!(from_wire_pattern(wire_pattern(*pattern)), Some(*pattern));
+        }
+        assert_eq!(from_wire_kind(15), None);
+        assert_eq!(from_wire_origin(-1), None);
+        assert_eq!(from_wire_pattern(7), None);
+    }
 
     #[test]
     fn every_counted_thing_the_header_names_comes_back() {
