@@ -56,6 +56,11 @@ configure = { package = "xmip-core-configure", git = "https://github.com/IlleNil
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
+[dev-dependencies]
+# One real route technology, so a test proves arrival reads a prefixed
+# property through what a node loads rather than through a stand-in.
+route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
+
 [features]
 # host.rs, ffi/loaded_module.rs and ffi/loaded_contract.rs are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is

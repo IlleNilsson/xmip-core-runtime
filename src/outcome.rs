@@ -23,7 +23,7 @@ use crate::generation::ReceivedWork;
 use authenticate::Refusal;
 use authorize::Decision;
 use context::IdentityFacts;
-use route::Routing;
+use route::{Routing, SourceError};
 
 /// Why a Stream never became a Journey.
 #[derive(Clone, Debug)]
@@ -38,6 +38,10 @@ pub enum Refused {
     Authentication(Refusal),
     /// Verified, and not permitted to post here.
     Authorization(Decision),
+    /// Verified and permitted, and a property a Subscription's filter names
+    /// cannot be read: bytes where text is compared, or a prefix no loaded
+    /// route technology provides (ADR-0046, amended 2026-09-24).
+    Promotion(SourceError),
 }
 
 impl fmt::Display for Refused {
@@ -46,6 +50,7 @@ impl fmt::Display for Refused {
             Self::Identification(detail) => write!(f, "{detail}"),
             Self::Authentication(refusal) => write!(f, "{refusal}"),
             Self::Authorization(decision) => write!(f, "{decision}"),
+            Self::Promotion(error) => write!(f, "{error}"),
         }
     }
 }

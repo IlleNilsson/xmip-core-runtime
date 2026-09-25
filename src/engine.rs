@@ -9,7 +9,7 @@ use authorize::Authorizer;
 use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
 use party::Party;
-use route::{Subscriber, Subscription};
+use route::{Source, Subscriber, Subscription};
 use send::{SendChain, SendLocation, SendTransport};
 use xcore::{Clock, IdGenerator, PartyId};
 
@@ -42,6 +42,11 @@ pub struct Runtime<'a> {
     pub parties: &'a dyn PartyRegistry,
     pub directory: &'a dyn PartyDirectory,
     pub subscriptions: &'a [Subscription],
+
+    /// The route technologies loaded: each reads the properties its prefix
+    /// names in a filter, `header:`, `party:` and the rest (ADR-0046). A bare
+    /// name is context and needs none of them.
+    pub route_sources: &'a [&'a dyn Source],
     pub treatment: MessageTreatment,
     pub sends: &'a dyn SendRegistry,
     pub transports: &'a [&'a dyn SendTransport],
