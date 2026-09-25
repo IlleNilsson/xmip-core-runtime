@@ -458,16 +458,16 @@ mod tests {
             (code, text(node), words, online, sentence)
         };
 
-        let (code, node, words, online, said) = published("xmip:///C1/R1/capability", &evidence);
-        assert_eq!((code, node.as_str(), online), (status::OK, "R1", 1));
+        let (code, node, words, online, said) = published("xmip:///C1/alpha/capability", &evidence);
+        assert_eq!((code, node.as_str(), online), (status::OK, "alpha", 1));
         assert_eq!((words, said), (vec!["send".to_string()], String::new()));
 
-        let (code, node, _, _, said) = published("xmip:///C1/R1/capability", "declares relay;");
-        assert_eq!((code, node.as_str()), (status::INVALID, "R1"));
+        let (code, node, _, _, said) = published("xmip:///C1/alpha/capability", "declares relay;");
+        assert_eq!((code, node.as_str()), (status::INVALID, "alpha"));
         assert!(said.starts_with("REFUSED"), "{said}");
 
         assert_eq!(
-            published("xmip:///C1/R1/receive", &evidence).0,
+            published("xmip:///C1/alpha/receive", &evidence).0,
             status::NOT_FOUND
         );
     }

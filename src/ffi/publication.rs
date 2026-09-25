@@ -344,14 +344,14 @@ source = "playground — xmip:///C1"
 node = "xmip:///C1"
 
 [[records]]
-scope = "xmip:///C1/node/R1/receive/tcp"
+scope = "xmip:///C1/node/alpha/receive/tcp"
 state = "done"
 severity = 90
 evidence = "refused"
 observed_unix_nanos = 9
 
 [[records]]
-scope = "xmip:///C1/node/R1/capability"
+scope = "xmip:///C1/node/alpha/capability"
 state = "sulking"
 severity = 0
 evidence = "declares receive; online; x"
@@ -368,9 +368,9 @@ value = 1
 [run]
 cluster = "C1"
 tests = ["RoundTrip"]
-nodes = ["R1"]
-capabilities = ["R1=receive"]
-online = ["R1"]
+nodes = ["alpha"]
+capabilities = ["alpha=receive"]
+online = ["alpha"]
 stress = "harsh"
 
 [topology]
@@ -386,9 +386,9 @@ origin = "configured"
 activity = 0.5
 
 [[topology.links]]
-id = "handoff/R1/P1"
-from = "node/R1/receive"
-to = "node/P1/process"
+id = "handoff/alpha/beta"
+from = "node/alpha/receive"
+to = "node/beta/process"
 pattern = "retry"
 origin = "observed"
 state = "stressed"
@@ -561,7 +561,7 @@ attempts = 2
         };
         assert_eq!(
             (code, len, text(words[0])),
-            (status::OK, 1, "R1=receive".to_string())
+            (status::OK, 1, "alpha=receive".to_string())
         );
         // SAFETY: as above.
         let unknown =
@@ -574,7 +574,7 @@ attempts = 2
 
     #[test]
     fn a_node_file_has_no_run_and_a_stranger_is_refused_with_the_readers_words() {
-        let (code, handle, _) = read("node = 'xmip:///R1'");
+        let (code, handle, _) = read("node = 'xmip:///alpha'");
         assert_eq!(code, status::OK);
         let mut len = 9usize;
         // SAFETY: a live handle; nothing is written for no room.
