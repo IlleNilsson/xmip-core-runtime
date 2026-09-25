@@ -2,9 +2,10 @@
 //! its own.
 //!
 //! The owner, 2026-09-24: *Code shall be uniquely placed, used by others,
-//! whom in turn has unique code used by others.* Scope containment is
-//! `observe::Scope`'s; a mood's word, its color name, the rollup and the
-//! worst-first order are `observe::Health`'s and `observe::Standing`'s; a
+//! whom in turn has unique code used by others.* Scope containment, and the
+//! node and stage a scope is on, are `observe::Scope`'s; a mood's word, its
+//! color name, the rollup and the worst-first order are `observe::Health`'s
+//! and `observe::Standing`'s; a
 //! counted kind's word and the kind a stage counts are `observe::Counted`'s;
 //! where a node's capability record sits is `observe::capability`'s. The
 //! stage words, their parse and the other facts of a stage, and a run's node
@@ -117,6 +118,37 @@ pub unsafe extern "C" fn xmip_scope_parts_v1(
 
     // SAFETY: per the contract above.
     unsafe { fill(Scope::new(scope).segments(), out, cap, out_len) };
+    status::OK
+}
+
+/// `observe::Scope::node` and `observe::Scope::stage`, forwarded: the node a
+/// scope is on, borrowed from `scope`, and its stage's static word, each
+/// empty where there is none.
+///
+/// # Safety
+/// `scope` points at its stated length of readable bytes; `out_node` and
+/// `out_stage` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_scope_node_v1(
+    scope: Str,
+    out_node: *mut Str,
+    out_stage: *mut Str,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `scope`.
+    let Some(scope) = (unsafe { scope_text(scope) }) else {
+        return status::MALFORMED;
+    };
+    let scope = Scope::new(scope);
+
+    // SAFETY: both outs are writable per the contract.
+    unsafe {
+        out_node.write(scope.node().map_or(Str::empty(), borrow));
+        out_stage.write(
+            scope
+                .stage()
+                .map_or(Str::empty(), |stage| borrow(stage.name())),
+        );
+    }
     status::OK
 }
 
@@ -375,6 +407,7 @@ mod tests {
         // A signature that drifted from xmip-core-abi's fails to compile here.
         let _: rule::ScopeContainsFn = xmip_scope_contains_v1;
         let _: rule::ScopePartsFn = xmip_scope_parts_v1;
+        let _: rule::ScopeNodeFn = xmip_scope_node_v1;
         let _: rule::HealthTextFn = xmip_health_word_v1;
         let _: rule::HealthTextFn = xmip_health_color_v1;
         let _: rule::HealthNamedFn = xmip_health_named_v1;
@@ -521,6 +554,40 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(read, ["edge-01", "receive", "orders"]);
         assert!(parts("xmip:///").1.is_empty());
+    }
+
+    #[test]
+    fn the_node_and_stage_are_observe_scopes_and_the_cluster_is_none() {
+        let node = |scope: &str| {
+            let (mut node, mut stage) = (Str::empty(), Str::empty());
+            // SAFETY: `scope` borrows a live string; both outs are writable.
+            let code = unsafe { xmip_scope_node_v1(borrow(scope), &raw mut node, &raw mut stage) };
+            assert_eq!(code, status::OK);
+            (text(node), text(stage))
+        };
+
+        for scope in [
+            "xmip:///C1/node/alpha/receive/tcp",
+            "xmip:///C1/node/send/process/x",
+            "xmip:///C1/round-trip/send/tcp/json",
+            "xmip:///C1/node",
+            "xmip:///",
+        ] {
+            let read = Scope::new(scope);
+            assert_eq!(
+                node(scope),
+                (
+                    read.node().unwrap_or_default().to_string(),
+                    read.stage().map_or("", ::node::Stage::name).to_string()
+                ),
+                "{scope}"
+            );
+        }
+        assert_eq!(
+            node("xmip:///C1/node/alpha/receive/tcp"),
+            ("alpha".to_string(), "receive".to_string())
+        );
+        assert_eq!(node("xmip:///C1/x"), (String::new(), String::new()));
     }
 
     #[test]

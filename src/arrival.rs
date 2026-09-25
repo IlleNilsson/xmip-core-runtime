@@ -21,8 +21,8 @@
 //!   -> authenticate       the message layer, against the same closed set
 //!   -> authorize          alignment settled here, never by preferring a layer
 //!   -> IdentityFacts      both layers recorded
+//!   -> Promoted           the names the filters use, through route::promote
 //!   -> Journey            a Journey exists only now, not before
-//!   -> Promoted           context read as text
 //!   -> publish            every Subscription asked, declines kept
 //!   -> Dispatch           routed, or unroutable and retained
 //! ```
@@ -41,7 +41,7 @@ use identify::{IdentifyError, Presented, StreamArrival, identify_message, identi
 use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
 use receive::{ReceiveLocation, ReceivedStream};
-use route::{Dispatch, Promoted, publish};
+use route::{Dispatch, Promoted, promote, publish};
 use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 
 use crate::engine::Runtime;
@@ -188,6 +188,13 @@ pub fn arrive(
         Err(reason) => return Arrived::Refused { reason },
     };
 
+    // Before the Journey, where ADR-0013 puts default promotion: a filter that
+    // cannot be read refuses the Message rather than declining it.
+    let promoted = match promoted(runtime, &message) {
+        Ok(promoted) => promoted,
+        Err(reason) => return Arrived::Refused { reason },
+    };
+
     // The Journey opens here and not before. Everything above could have
     // refused, and a refused arrival has no line of execution to record.
     let journey =
@@ -197,10 +204,7 @@ pub fn arrive(
         });
 
     let work = ReceivedWork { journey, message };
-    let routing = publish(
-        &Promoted::from_context(work.message.context()),
-        runtime.subscriptions,
-    );
+    let routing = publish(&promoted, runtime.subscriptions);
 
     match routing.dispatch() {
         Dispatch::Routed(_) => Arrived::Routed {
@@ -214,6 +218,21 @@ pub fn arrive(
             routing,
         },
     }
+}
+
+/// What routing reads: every name the Subscriptions' filters use, each
+/// through `route::promote` and the route technology its prefix names. A
+/// `Null` is absent and bytes are refused, bare or prefixed (ADR-0046,
+/// amended 2026-09-24).
+fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refused> {
+    let mut names: Vec<&str> = runtime
+        .subscriptions
+        .iter()
+        .flat_map(|subscription| subscription.filter.referenced_names())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    promote(message, runtime.route_sources, &names).map_err(Refused::Promotion)
 }
 
 /// The second pass of the three gates, over the Message this time.
@@ -662,6 +681,7 @@ mod tests {
             parties,
             directory: parties,
             subscriptions,
+            route_sources: &[],
             treatment: MessageTreatment::default(),
             sends,
             transports,
@@ -1473,5 +1493,95 @@ mod tests {
             Established::Detected
         );
         assert_eq!(routing.dispatch(), Dispatch::Routed(1));
+    }
+
+    fn subscribed_on(filter: Predicate) -> Vec<Subscription> {
+        vec![Subscription::new(
+            "billing",
+            Subscriber::SendPort("Billing".to_string()),
+            filter,
+        )]
+    }
+
+    #[test]
+    fn a_prefixed_property_is_read_at_arrival_through_the_loaded_technology() {
+        let ids = Counter::default();
+        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
+        let authenticators: [&dyn Authenticator; 1] = [&proves];
+        let parties = registry();
+        let open: [&dyn Authorizer; 1] = [&Open];
+        let clock = Fixed(NOW);
+        let subscriptions = subscribed_on(Predicate::equals(
+            "party:sender",
+            Value::Text(PartyId::new(7).to_string()),
+        ));
+        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let bare = runtime(
+            &ids,
+            &authenticators,
+            &parties,
+            &subscriptions,
+            &Sends,
+            &posting,
+            &open,
+            &clock,
+        );
+        let party: [&dyn route::Source; 1] = [&route_party::PartySource];
+        let loaded = Runtime {
+            route_sources: &party,
+            ..bare
+        };
+
+        let arrived = arrive(&loaded, &location(), arriving());
+        let Arrived::Routed { routing, .. } = arrived else {
+            panic!("expected a route, got {arrived:?}");
+        };
+        assert_eq!(routing.dispatch(), Dispatch::Routed(1));
+
+        // Nothing loaded reads `party:`: a filter that cannot be read is a
+        // configuration mistake, refused, not a decline (ADR-0046).
+        let unloaded = Runtime {
+            route_sources: &[],
+            ..loaded
+        };
+        let arrived = arrive(&unloaded, &location(), arriving());
+        let Arrived::Refused {
+            reason: Refused::Promotion(error),
+        } = arrived
+        else {
+            panic!("expected a refusal, got {arrived:?}");
+        };
+        assert_eq!(error.technology, "party");
+        assert!(error.reason.contains("no route technology"));
+    }
+
+    #[test]
+    fn a_bare_name_holding_bytes_is_refused_and_a_null_is_absent() {
+        let ids = Counter::default();
+        let parties = registry();
+        let clock = Fixed(NOW);
+        let context = context::MessageContext::new()
+            .with_value("Blob", context::ContextValue::Binary(vec![0, 1, 2]))
+            .with_value("Note", context::ContextValue::Null);
+        let message = Message::received(
+            MessageId::new(1),
+            Vec::new(),
+            context,
+            MessageTreatment::default(),
+        );
+
+        let on_bytes = subscribed_on(Predicate::exists("Blob"));
+        let reading = runtime(&ids, &[], &parties, &on_bytes, &Sends, &[], &[], &clock);
+        let Err(Refused::Promotion(error)) = promoted(&reading, &message) else {
+            panic!("bytes under a bare name are refused");
+        };
+        assert_eq!(error.technology, "context");
+        assert_eq!(error.property, "Blob");
+
+        let on_null = subscribed_on(Predicate::exists("Note"));
+        let reading = runtime(&ids, &[], &parties, &on_null, &Sends, &[], &[], &clock);
+        let set = promoted(&reading, &message).expect("a Null is readable");
+        assert_eq!(set.get("Note"), None);
+        assert_eq!(publish(&set, &on_null).dispatch(), Dispatch::Unroutable);
     }
 }
