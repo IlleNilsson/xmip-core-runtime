@@ -12,8 +12,8 @@
 //! A handle owns what it read and everything borrowed from it; one call frees
 //! it. Nothing here touches a running node.
 //!
-//! One of the files in this crate that dereference a pointer, for the reason
-//! `operate.rs` gives: a surface hands over where to write.
+//! In `ffi/`, the one folder of the runtime that may hold unsafe code
+//! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
@@ -23,8 +23,8 @@ use abi::operate::publication::{
 use abi::operate::{HealthEntry, Measurement};
 use observe::{Publication, RunList};
 
-use crate::operate::{borrow, scope_text};
-use crate::rule::{fill, refuse};
+use crate::ffi::operate::{borrow, scope_text};
+use crate::ffi::rule::{fill, refuse};
 use crate::wire::{wire_counted, wire_health, wire_kind, wire_origin, wire_pattern};
 
 /// A read publication and its values laid out as the header's, each string

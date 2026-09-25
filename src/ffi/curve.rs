@@ -8,8 +8,8 @@
 //! borrowing every string from the curve it holds; the cmdlet reads it
 //! through `Xmip.Abi`'s `PublicationReader` and walks no TOML.
 //!
-//! One of the files in this crate that dereference a pointer, for the reason
-//! `operate.rs` gives: a surface hands over where to write.
+//! In `ffi/`, the one folder of the runtime that may hold unsafe code
+//! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
@@ -17,9 +17,9 @@ use abi::operate::Measurement;
 use abi::operate::publication::Curve as Handle;
 use observe::Curve;
 
-use crate::operate::{borrow, scope_text};
-use crate::publication::fill_copied;
-use crate::rule::refuse;
+use crate::ffi::operate::{borrow, scope_text};
+use crate::ffi::publication::fill_copied;
+use crate::ffi::rule::refuse;
 use crate::wire::wire_counted;
 
 /// A read curve and its points laid out as the header's, each string borrowed

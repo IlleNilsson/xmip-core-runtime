@@ -17,8 +17,8 @@
 //! Nothing here reads the snapshot or a table; every export is pure and may
 //! be called from any thread, before any node started.
 //!
-//! One of the files in this crate that dereference a pointer, for the reason
-//! `operate.rs` gives: a surface hands over where to write.
+//! In `ffi/`, the one folder of the runtime that may hold unsafe code
+//! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
 #![allow(unsafe_code)]
 
 pub mod node;
@@ -27,7 +27,7 @@ use abi::ffi::{Str, status};
 use abi::operate::HealthEntry;
 use observe::{Counted, Health, Scope, Standing};
 
-use crate::operate::{borrow, scope_text};
+use crate::ffi::operate::{borrow, scope_text};
 use crate::wire::{from_wire_counted, from_wire_health, wire_counted, wire_health};
 
 /// The header's fill shape: up to `cap` entries into `out`, the true count

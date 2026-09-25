@@ -18,17 +18,13 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [lints.rust]
-# deny, not forbid, since 2026-09-04. Eight files allow it at the top with
-# their reason, and nothing else may. operate.rs implements the C table in
-# xmip_operate.h, start.rs exports xmip_start_v1 and xmip_validate_v1,
-# rule.rs and rule/node.rs forward the section 7 rules, and publication.rs
-# and curve.rs read a publication and a curve for section 8; all six read or
-# write through pointers a surface handed them (ADR-0027, the boundary
-# facing out).
-# loaded_module.rs and loaded_contract.rs open somebody else's library and
-# call through its table (ADR-0012, the boundary facing in) — the loader
-# ADR-0057 clause 8 step 2 asks for, and the only two files in the crate that
-# cross inward.
+# deny, not forbid, because forbid cannot be lowered anywhere. The runtime's
+# C boundary is one folder, src/ffi/ (ADR-0050, refined 2026-09-25): the
+# operator's table and the exports of xmip_operate.h sections 5 to 9
+# (ADR-0027, the boundary facing out), and the loader that opens somebody
+# else's library and calls through its table (ADR-0057, the boundary facing
+# in). Each file there allows unsafe at its top with its reason; nothing
+# outside the folder may, and test/Unsafe.Test.ps1 holds it.
 unsafe_code = "deny"
 
 [dependencies]
@@ -36,7 +32,7 @@ serde = { version = "1", features = ["derive"] }
 # Optional: only a node that loads modules links a loader, and only the
 # dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
 # nothing more — the flags specification section 3 requires are passed by
-# loaded_module.rs, which does not take the crate's defaults on Windows.
+# ffi/loaded_module.rs, which does not take the crate's defaults on Windows.
 libloading = { version = "0.8", optional = true }
 abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main" }
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
@@ -52,13 +48,16 @@ authenticate = { package = "xmip-core-authenticate", git = "https://github.com/I
 send = { package = "xmip-core-send", git = "https://github.com/IlleNilsson/xmip-core-send", branch = "main" }
 authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main" }
 route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmip-core-route", branch = "main" }
+# Section 9: a program's audit record, forwarded to the capability that owns
+# it (ADR-0062). xaudit, as xcore, because the export's own file is ffi/audit.rs.
+xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [features]
-# host.rs, loaded_module.rs and loaded_contract.rs are guarded on this.
+# host.rs, ffi/loaded_module.rs and ffi/loaded_contract.rs are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
 # silently always false.
 dynamic-loading = ["dep:libloading"]
