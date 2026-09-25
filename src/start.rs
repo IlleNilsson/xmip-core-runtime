@@ -2,21 +2,20 @@
 //!
 //! ADR-0018 gives startup nine phases. What is here performs the first three
 //! — read, build the execution tree, validate — and publishes what it planned
-//! through `operate.rs`, saying in every record that phases four to nine are
+//! through `operator.rs`, saying in every record that phases four to nine are
 //! not built. An operator reading `Fine` over a node that has not loaded a
 //! module has been told something false.
 //!
 //! Split from `operate.rs` on 2026-09-05 when that file passed 400 lines:
 //! the table a surface calls and the act of starting a node are two subjects.
 //!
-//! One `extern "C"` entrypoint lives here, `xmip_start_v1`, and it reads a
-//! path a surface handed it — the one reason this file allows `unsafe`.
-#![allow(unsafe_code)]
+//! Its two exports, `xmip_start_v1` and `xmip_validate_v1`, are the
+//! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
+//! they do is here.
 
-use abi::ffi::{Str, status};
 use observe::{Health, HealthRecord, Snapshot};
 
-use crate::operate::{publish, scope_text};
+use crate::operator::publish;
 
 /// What a runtime says about itself before any node has published: it is
 /// here, and it has nothing to run. `Stressed`, not `Done` — nothing is failing
@@ -170,31 +169,19 @@ pub(crate) fn now_unix_nanos() -> i64 {
         })
 }
 
-/// `xmip_start_v1`: [`start`] from a surface. Publishes whatever it found and
-/// returns `XMIP_OK` when the node validated, `XMIP_E_INVALID` when it did
-/// not, `XMIP_E_MALFORMED` when the path is not UTF-8. The snapshot says why
-/// either way, so a surface reads the table rather than the status.
-///
-/// # Safety
-/// `path` must point at `path.len` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_start_v1(path: Str) -> i32 {
-    let Some(text) = (unsafe { scope_text(path) }) else {
-        return status::MALFORMED;
-    };
-
-    let snapshot = start(text);
-    // Validation asks whether any leaf is Done, not what the root rolls up to:
-    // a Done no longer propagates (ADR-0041), so the root would read Holding, but
-    // one Done leaf still means the configuration is invalid.
+/// [`start`], then publish what it found: true when the node validated.
+/// Validation asks whether any leaf is Done, not what the root rolls up to: a
+/// Done no longer propagates (ADR-0041), so the root would read Holding, but
+/// one Done leaf still means the configuration is invalid.
+pub(crate) fn start_published(path: &str) -> bool {
+    let snapshot = start(path);
     let valid = !snapshot
         .health("xmip:///")
         .iter()
         .any(|record| record.health == Health::Done);
 
     publish(snapshot);
-
-    if valid { status::OK } else { status::INVALID }
+    valid
 }
 
 /// Validate a node configuration without starting anything: parse it, build and
@@ -211,59 +198,9 @@ pub fn validate(source: &str) -> Vec<String> {
     }
 }
 
-/// `xmip_validate_v1`: [`validate`] from a surface. The report is written into
-/// `report` as UTF-8, one problem per line, and `out_len` is the true byte
-/// length whether or not it fit — a surface that passed too small a buffer
-/// asks again. `XMIP_OK` and `out_len` 0 means the configuration is good;
-/// `XMIP_E_INVALID` with a report means it is not; `XMIP_E_MALFORMED` when the
-/// configuration is not UTF-8.
-///
-/// # Safety
-/// `configuration` points at its stated length of readable bytes; `report`
-/// has room for `cap` bytes; `out_len` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_validate_v1(
-    configuration: Str,
-    report: *mut u8,
-    cap: usize,
-    out_len: *mut usize,
-) -> i32 {
-    let Some(text) = (unsafe { scope_text(configuration) }) else {
-        return status::MALFORMED;
-    };
-
-    let problems = validate(text);
-    let joined = problems.join("\n");
-    let bytes = joined.as_bytes();
-
-    // SAFETY: `out_len` is writable per the contract.
-    unsafe { *out_len = bytes.len() };
-
-    if !bytes.is_empty() && cap > 0 {
-        let n = bytes.len().min(cap);
-
-        // SAFETY: `report` has room for `cap` >= `n` bytes.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), report, n) };
-    }
-
-    if problems.is_empty() {
-        status::OK
-    } else {
-        status::INVALID
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn both_exports_have_the_shape_the_binding_declares() {
-        // A signature that drifted from xmip-core-abi's fails to compile here,
-        // and the language server calls through that same declaration.
-        let _: abi::operate::StartFn = xmip_start_v1;
-        let _: abi::operate::ValidateFn = xmip_validate_v1;
-    }
 
     #[test]
     fn starting_from_a_missing_file_is_done_and_says_which_file() {

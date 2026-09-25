@@ -17,7 +17,9 @@
 //! the trait: `loaded_contract.rs` for creation wave one's contract table.
 //!
 //! **This file and `loaded_contract.rs` are the only two in the runtime that
-//! cross the module boundary inward.** `operate.rs` and `start.rs` allow
+//! cross the module boundary inward**, both in `ffi/`, the one folder of the
+//! runtime that may hold unsafe code (ADR-0050, refined 2026-09-25).
+//! `operate.rs` and `start.rs` beside them allow
 //! `unsafe` for the boundary that faces the other way (ADR-0027): a surface
 //! handing this process a pointer. Here the process is the host and the
 //! pointer comes out of somebody else's library, so every block below says

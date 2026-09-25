@@ -3,15 +3,15 @@
 //! `node::Stage`'s or `node::Capability`'s, forwarded with no rule of its
 //! own (ADR-0027 and ADR-0052, amendments 2026-09-24).
 //!
-//! One of the files in this crate that dereference a pointer, for the reason
-//! `operate.rs` gives: a surface hands over where to write.
+//! In `ffi/`, the one folder of the runtime that may hold unsafe code
+//! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
 use node::{Capability, Stage};
 
 use super::{fill, refuse};
-use crate::operate::{borrow, scope_text};
+use crate::ffi::operate::{borrow, scope_text};
 
 /// `node::Stage::WORDS`, forwarded. Static.
 ///

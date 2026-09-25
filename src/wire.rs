@@ -2,7 +2,7 @@
 //!
 //! `xmip_operate.h` carries health, the counted thing and a topology's kind,
 //! origin and pattern as `int`, and `xmip-core-observe` keeps them as enums. The two conversions live here so
-//! `operate.rs` holds the table and nothing else. A value the header does not
+//! `ffi/operate.rs` holds the table and nothing else. A value the header does not
 //! name is `None`, which the table answers with `XMIP_E_MALFORMED`.
 //!
 //! It stays in the runtime under ADR-0058: this is the only crate that has

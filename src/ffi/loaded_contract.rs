@@ -19,7 +19,7 @@ use abi::ModuleDescriptor;
 use abi::ffi::{ContractVtable, Diagnostic, Reader, Str, status};
 use codec::cursor::Cursor;
 
-use crate::loaded_module::{LoadedModule, read_str};
+use crate::ffi::loaded_module::{LoadedModule, read_str};
 
 /// The trait this file drives, as `descriptor.module` spells it (ADR-0011).
 pub const CONTRACT: &str = "contract";
