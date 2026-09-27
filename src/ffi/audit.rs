@@ -5,9 +5,8 @@
 //! already load for section 7 — forwards `xmip_audit_v1` to
 //! `audit::program_audit::ProgramAudit` and nothing else: the record, its
 //! policy, the file sink and the fallback to the operating system's log are
-//! the capability's. The header's phase and severity integers are read here,
-//! the one place that has both them and the capability's enums, as
-//! `wire.rs` reads observe's.
+//! the capability's. The header's phase and severity integers are read by
+//! `crate::wire`, with every other enum that crosses the header.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
@@ -17,13 +16,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use abi::ffi::{Str, status};
-use abi::operate::audit::{kept, phase, severity};
+use abi::operate::audit::kept;
 use xaudit::emit::AuditOutcome;
 use xaudit::program_audit::ProgramAudit;
-use xcore::{ExecutionPhase, Severity};
 
 use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::wire::{from_wire_phase, from_wire_severity};
 
 /// `audit::program_audit::ProgramAudit::record`, forwarded.
 ///
@@ -136,31 +135,11 @@ pub(crate) unsafe fn pairs<Kept: FromIterator<(String, String)>>(
         .collect()
 }
 
-/// The capability's phase for the header's `XmipPhase`, or `None`.
-const fn from_wire_phase(value: i32) -> Option<ExecutionPhase> {
-    match value {
-        phase::BEGIN => Some(ExecutionPhase::Begin),
-        phase::EXECUTE => Some(ExecutionPhase::Execute),
-        phase::FINISHED => Some(ExecutionPhase::Finished),
-        phase::FAILURE => Some(ExecutionPhase::Failure),
-        _ => None,
-    }
-}
-
-/// The capability's severity for the header's `XmipSeverity`, or `None`.
-const fn from_wire_severity(value: i32) -> Option<Severity> {
-    match value {
-        severity::INFORMATION => Some(Severity::Information),
-        severity::WARNING => Some(Severity::Warning),
-        severity::ERROR => Some(Severity::Error),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ffi::operate::borrow;
+    use abi::operate::audit::{phase, severity};
     use std::fs;
 
     fn call(directory: &str, phase: i32, properties: &[Str]) -> (i32, i32, String) {

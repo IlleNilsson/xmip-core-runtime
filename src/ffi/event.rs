@@ -30,9 +30,9 @@ use xevent::listener::Listener;
 
 use crate::ffi::rule::refuse;
 
-mod header;
+mod crossing;
 
-use header::{Texts, asked, event_of, texts_of, view_of};
+use crossing::{Texts, asked, event_of, texts_of, view_of};
 
 /// What a subscription handle holds: a queue the program drains, or a
 /// listener calling it back, which is held only to be dropped.
@@ -297,7 +297,7 @@ fn handle(drained: Option<Subscription>, listening: Option<Listener>) -> *mut Ha
 
 #[cfg(test)]
 mod tests {
-    use super::header::slice;
+    use super::crossing::slice;
     use super::*;
     use crate::ffi::operate::{borrow, scope_text};
     use abi::operate::event::{action, outcome};

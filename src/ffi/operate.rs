@@ -170,7 +170,7 @@ unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
         return status::MALFORMED;
     };
 
-    let now = crate::start::now_unix_nanos();
+    let now = observe::now_unix_nanos();
     let paused = operator
         .source
         .mutate(|snapshot| snapshot.pause(text, who, now));

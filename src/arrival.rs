@@ -28,7 +28,7 @@
 //! ```
 //!
 //! Departure is the mirror half and lives in [`crate::departure`]. What both
-//! halves are wired up with is in [`crate::engine`].
+//! halves are wired up with is in [`crate::message_path`].
 //!
 //! Transformation is not here yet. What is here is the spine, and nothing in
 //! it is a placeholder: every step is the module that owns it.
@@ -44,8 +44,8 @@ use receive::{ReceiveLocation, ReceivedStream};
 use route::{Dispatch, Promoted, publish};
 use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 
-use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
+use crate::message_path::Runtime;
 use crate::outcome::{Arrived, Refused};
 
 /// Drive one arrival from bytes to a dispatch.
@@ -319,29 +319,29 @@ fn settle_message_identity(
 /// between the two, and they are prefixed so a Contract promoting `Party`
 /// cannot collide with Xmip promoting one.
 fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext {
-    use context::ContextValue;
+    use xcore::ScalarValue;
 
     let mut context = MessageContext::new()
-        .with_value("xmip.arriving", ContextValue::Text(arriving.to_string()))
+        .with_value("xmip.arriving", ScalarValue::Text(arriving.to_string()))
         .with_value(
             "xmip.transport.mechanism",
-            ContextValue::Text(facts.transport.mechanism.name().to_string()),
+            ScalarValue::Text(facts.transport.mechanism.name().to_string()),
         )
         .with_value(
             "xmip.transport.identity",
-            ContextValue::Text(facts.transport.value.clone()),
+            ScalarValue::Text(facts.transport.value.clone()),
         )
         .with_value(
             "xmip.transport.class",
-            ContextValue::Text(facts.transport.class().to_string()),
+            ScalarValue::Text(facts.transport.class().to_string()),
         )
         .with_value(
             "xmip.transport.proven",
-            ContextValue::Bool(facts.transport.mechanism.authenticates()),
+            ScalarValue::Bool(facts.transport.mechanism.authenticates()),
         )
         .with_value(
             "xmip.transport.established",
-            ContextValue::Text(facts.transport.established.to_string()),
+            ScalarValue::Text(facts.transport.established.to_string()),
         );
 
     // Promoted under its own names rather than overwriting the transport's. The
@@ -352,33 +352,33 @@ fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext
         context = context
             .with_value(
                 "xmip.message.mechanism",
-                ContextValue::Text(message.mechanism.name().to_string()),
+                ScalarValue::Text(message.mechanism.name().to_string()),
             )
             .with_value(
                 "xmip.message.identity",
-                ContextValue::Text(message.value.clone()),
+                ScalarValue::Text(message.value.clone()),
             )
             .with_value(
                 "xmip.message.class",
-                ContextValue::Text(message.class().to_string()),
+                ScalarValue::Text(message.class().to_string()),
             )
             .with_value(
                 "xmip.message.proven",
-                ContextValue::Bool(message.mechanism.authenticates()),
+                ScalarValue::Bool(message.mechanism.authenticates()),
             )
             .with_value(
                 "xmip.message.established",
-                ContextValue::Text(message.established.to_string()),
+                ScalarValue::Text(message.established.to_string()),
             );
     }
 
     context = context.with_value(
         "xmip.identity.misaligned",
-        ContextValue::Bool(facts.alignment.is_misaligned()),
+        ScalarValue::Bool(facts.alignment.is_misaligned()),
     );
 
     if let Some(party) = facts.accountable().party_id {
-        context = context.with_value(PARTY, ContextValue::Text(party.to_string()));
+        context = context.with_value(PARTY, ScalarValue::Text(party.to_string()));
     }
 
     context
@@ -393,7 +393,7 @@ mod tests {
     // arrived with, and a test that stubbed the join would not catch the case
     // that matters.
     use crate::departure::{Departed, depart};
-    use crate::engine::{PartyDirectory, Runtime, SendRegistry};
+    use crate::message_path::{PartyDirectory, Runtime, SendRegistry};
     use authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
     use authorize::{Authorizer, Decision};
     use context::Verified;
@@ -404,15 +404,14 @@ mod tests {
     use receive::ReceiveLocationType;
     use route::{Gathering, Subscriber, Subscription};
     use send::{
-        SendChain, SendError, SendLevel, SendLocation as Location, SendRequest, SendResult,
-        SendTransport,
+        SendChain, SendLevel, SendLocation as Location, SendRequest, SendResult, SendTransport,
     };
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use stream::Stream;
     use xcore::{
-        Clock, CredentialRef, Departing, Established, IdGenerator, Mechanism, PartyId, Purpose,
-        StreamId,
+        Clock, CredentialRef, Departing, Established, Failure, IdGenerator, Mechanism, PartyId,
+        Purpose, StreamId,
     };
 
     fn filter(text: &str) -> Expression {
@@ -597,7 +596,7 @@ mod tests {
             self.technology
         }
 
-        fn send(&self, request: SendRequest<'_>) -> Result<SendResult, SendError> {
+        fn send(&self, request: SendRequest<'_>) -> Result<SendResult, Failure> {
             self.presented.lock().unwrap().push(
                 request
                     .present
@@ -605,7 +604,7 @@ mod tests {
             );
 
             if let Some((retryable, message)) = self.fail {
-                return Err(SendError {
+                return Err(Failure {
                     retryable,
                     message: message.to_string(),
                 });
@@ -741,9 +740,9 @@ mod tests {
 
         // One Message, one Journey, and the Journey is holding it.
         assert_eq!(work.message.generation(), 0);
-        assert_eq!(work.journey.messages.len(), 1);
+        assert_eq!(work.journey.messages().len(), 1);
         assert_eq!(
-            work.journey.messages[0].message_id,
+            work.journey.messages()[0].message_id,
             work.message.message_id()
         );
     }
@@ -1608,8 +1607,8 @@ mod tests {
         let parties = registry();
         let clock = Fixed(NOW);
         let context = context::MessageContext::new()
-            .with_value("Blob", context::ContextValue::Binary(vec![0, 1, 2]))
-            .with_value("Note", context::ContextValue::Null);
+            .with_value("Blob", xcore::ScalarValue::Binary(vec![0, 1, 2]))
+            .with_value("Note", xcore::ScalarValue::Null);
         let message = Message::received(
             MessageId::new(1),
             Vec::new(),
