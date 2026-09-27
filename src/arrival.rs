@@ -228,7 +228,7 @@ fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refuse
     let mut names: Vec<&str> = runtime
         .subscriptions
         .iter()
-        .flat_map(|subscription| subscription.filter.referenced_names())
+        .flat_map(|subscription| subscription.filter.names())
         .collect();
     names.sort_unstable();
     names.dedup();
@@ -404,8 +404,9 @@ mod tests {
     use identify::{MessageIdentifier, TransportIdentifier};
     use message::MessageTreatment;
     use party::{Identity, Party, PartyKind};
+    use path::expression::Expression;
     use receive::ReceiveLocationType;
-    use route::{Predicate, Subscriber, Subscription, Value};
+    use route::{Subscriber, Subscription};
     use send::{
         SendChain, SendError, SendLevel, SendLocation as Location, SendRequest, SendResult,
         SendTransport,
@@ -417,6 +418,15 @@ mod tests {
         Clock, CredentialRef, Departing, Established, IdGenerator, Mechanism, PartyId, Purpose,
         StreamId,
     };
+
+    fn filter(text: &str) -> Expression {
+        Expression::parse(text).expect("compiles")
+    }
+
+    /// `name = 'text'`, the filter most of these tests route on.
+    fn equals(name: &str, text: &str) -> Expression {
+        filter(&format!("{name} = '{text}'"))
+    }
 
     /// A clock that does not move. A test asserting on freshness needs the
     /// gap between two moments to be the one it chose.
@@ -658,7 +668,7 @@ mod tests {
         vec![Subscription::new(
             "billing",
             Subscriber::SendPort("Billing".to_string()),
-            Predicate::equals("xmip.party", Value::Text(PartyId::new(7).to_string())),
+            equals("xmip.party", &PartyId::new(7).to_string()),
         )]
     }
 
@@ -741,6 +751,55 @@ mod tests {
         );
     }
 
+    /// ADR-0064: the Subscription is drawn in an Xmip Application, the node
+    /// binds the Application, and what the tree takes from the binding is
+    /// what routing asks.
+    #[test]
+    fn a_bound_applications_subscription_routes_a_message() {
+        let application = format!(
+            "[application]\nname = \"Orders\"\n\n[[receive_locations]]\nname = \"partner-x\"\n\n\
+             [[send_ports]]\nname = \"Billing\"\n\n[[subscriptions]]\nid = \"billing\"\n\
+             destination = {{ send-port = \"Billing\" }}\n\
+             filter = \"xmip.party = '{}'\"\n",
+            PartyId::new(7)
+        );
+        let node = "[service]\nname = \"xmip-alpha\"\ncluster_name = \"orders\"\n\
+                    node_name = \"alpha\"\n\n[[applications]]\nname = \"Orders\"\n\
+                    document = \"orders.application.toml\"\n";
+        let orders = configure::parse_application(&application).expect("the Application reads");
+        let document = configure::parse_toml(node).expect("the node reads");
+        let (tree, _) = crate::execution_tree::build_execution_tree(document, &[orders])
+            .expect("the node binds it");
+
+        let ids = Counter::default();
+        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
+        let authenticators: [&dyn Authenticator; 1] = [&proves];
+        let parties = registry();
+        let allow = Open;
+        let open: [&dyn Authorizer; 1] = [&allow];
+        let clock = Fixed(NOW);
+        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+
+        let arrived = arrive(
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &tree.subscriptions,
+                &Sends,
+                &posting,
+                &open,
+                &clock,
+            ),
+            &location(),
+            arriving(),
+        );
+
+        let routing = arrived.routing().expect("published");
+        assert_eq!(routing.dispatch(), Dispatch::Routed(1));
+        assert_eq!(routing.destinations()[0].to_string(), "SendPort.Billing");
+    }
+
     #[test]
     fn a_refused_arrival_opens_no_journey() {
         // ADR-0013: a Journey exists only after Validation. There is nothing to
@@ -803,7 +862,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "invoices",
             Subscriber::SendPort("Invoices".to_string()),
-            Predicate::equals("xmip.party", Value::Text(PartyId::new(99).to_string())),
+            equals("xmip.party", &PartyId::new(99).to_string()),
         )];
 
         let arrived = arrive(
@@ -849,7 +908,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "archive",
             Subscriber::SendPort("Archive".to_string()),
-            Predicate::everything(),
+            Expression::everything(),
         )];
 
         let folder = ReceiveLocation::new(
@@ -905,10 +964,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "high-assurance-only",
             Subscriber::Process("Approval".to_string()),
-            Predicate::equals(
-                "xmip.transport.class",
-                Value::Text("highAssurance".to_string()),
-            ),
+            equals("xmip.transport.class", "highAssurance"),
         )];
 
         let arrived = arrive(
@@ -1021,7 +1077,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "elsewhere",
             Subscriber::SendPort("Nowhere".to_string()),
-            Predicate::everything(),
+            Expression::everything(),
         )];
 
         let engine = runtime(
@@ -1214,10 +1270,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "edi",
             Subscriber::SendPort("Billing".to_string()),
-            Predicate::equals(
-                "xmip.message.mechanism",
-                Value::Text("edi-x12-interchange".to_string()),
-            ),
+            equals("xmip.message.mechanism", "edi-x12-interchange"),
         )];
 
         let envelope = ReadsInterchange;
@@ -1361,7 +1414,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "nightly",
             Subscriber::SendPort("Archive".to_string()),
-            Predicate::equals("xmip.arriving", Value::Text("scheduled".to_string())),
+            equals("xmip.arriving", "scheduled"),
         )];
 
         let nightly = ReceiveLocation::new(
@@ -1429,10 +1482,7 @@ mod tests {
         let subscriptions = vec![Subscription::new(
             "pushed-edi",
             Subscriber::SendPort("Billing".to_string()),
-            Predicate::equals(
-                "xmip.message.established",
-                Value::Text("detected".to_string()),
-            ),
+            equals("xmip.message.established", "detected"),
         )];
 
         let envelope = ReadsInterchange;
@@ -1495,7 +1545,7 @@ mod tests {
         assert_eq!(routing.dispatch(), Dispatch::Routed(1));
     }
 
-    fn subscribed_on(filter: Predicate) -> Vec<Subscription> {
+    fn subscribed_on(filter: Expression) -> Vec<Subscription> {
         vec![Subscription::new(
             "billing",
             Subscriber::SendPort("Billing".to_string()),
@@ -1511,10 +1561,7 @@ mod tests {
         let parties = registry();
         let open: [&dyn Authorizer; 1] = [&Open];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_on(Predicate::equals(
-            "party:sender",
-            Value::Text(PartyId::new(7).to_string()),
-        ));
+        let subscriptions = subscribed_on(equals("party:sender", &PartyId::new(7).to_string()));
         let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
         let bare = runtime(
             &ids,
@@ -1570,7 +1617,7 @@ mod tests {
             MessageTreatment::default(),
         );
 
-        let on_bytes = subscribed_on(Predicate::exists("Blob"));
+        let on_bytes = subscribed_on(filter("exists Blob"));
         let reading = runtime(&ids, &[], &parties, &on_bytes, &Sends, &[], &[], &clock);
         let Err(Refused::Promotion(error)) = promoted(&reading, &message) else {
             panic!("bytes under a bare name are refused");
@@ -1578,7 +1625,7 @@ mod tests {
         assert_eq!(error.technology, "context");
         assert_eq!(error.property, "Blob");
 
-        let on_null = subscribed_on(Predicate::exists("Note"));
+        let on_null = subscribed_on(filter("exists Note"));
         let reading = runtime(&ids, &[], &parties, &on_null, &Sends, &[], &[], &clock);
         let set = promoted(&reading, &message).expect("a Null is readable");
         assert_eq!(set.get("Note"), None);

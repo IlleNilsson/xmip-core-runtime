@@ -1,7 +1,9 @@
 pub mod arrival;
 pub mod capability_registry;
+pub mod catalogue;
 pub mod compatibility;
 pub mod departure;
+pub mod design;
 pub mod engine;
 pub mod execution_tree;
 pub mod ffi;
