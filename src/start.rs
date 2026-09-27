@@ -13,9 +13,17 @@
 //! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
 //! they do is here.
 
+use std::path::Path;
+
+use configure::{
+    DocumentKind, XmipApplicationDocument, XmipConfigurationDocument, application_problems,
+    document_kind, parse_application,
+};
 use observe::{Health, HealthRecord, Snapshot};
 
+use crate::execution_tree::validate_startup_configuration;
 use crate::operator::publish;
+use crate::service::read_node;
 
 /// What a runtime says about itself before any node has published: it is
 /// here, and it has nothing to run. `Stressed`, not `Done` — nothing is failing
@@ -86,7 +94,22 @@ pub fn start(path: &str) -> Snapshot {
 
     let node = format!("xmip:///{}", document.service.node_name);
 
-    let tree = match crate::execution_tree::build_execution_tree(document) {
+    let applications = match bound_applications(path, &document) {
+        Ok(applications) => applications,
+        Err(reason) => {
+            snapshot.record_health(HealthRecord {
+                scope: node,
+                health: Health::Done,
+                severity: 90,
+                evidence: format!("configuration refused: {reason}"),
+                observed_unix_nanos: now,
+            });
+
+            return snapshot;
+        }
+    };
+
+    let tree = match crate::execution_tree::build_execution_tree(document, &applications) {
         Ok((tree, _)) => tree,
         Err(report) => {
             snapshot.record_health(HealthRecord {
@@ -106,10 +129,11 @@ pub fn start(path: &str) -> Snapshot {
         health: Health::Stressed,
         severity: 50,
         evidence: format!(
-            "{} module(s), {} process(es) validated and planned; not running \u{2014} \
-             phases 4\u{2013}9 (start, load, accept work) are not built yet",
+            "{} module(s), {} process(es), {} Subscription(s) validated and planned; not \
+             running \u{2014} phases 4\u{2013}9 (start, load, accept work) are not built yet",
             tree.modules_to_start.len(),
-            tree.xmip_processes_to_start.len()
+            tree.xmip_processes_to_start.len(),
+            tree.subscriptions.len()
         ),
         observed_unix_nanos: now,
     });
@@ -161,6 +185,31 @@ pub fn start(path: &str) -> Snapshot {
     snapshot
 }
 
+/// The Xmip Applications `document` binds, each read from the file its
+/// binding names, relative to the configuration at `path` (ADR-0064).
+fn bound_applications(
+    path: &str,
+    document: &XmipConfigurationDocument,
+) -> Result<Vec<XmipApplicationDocument>, String> {
+    let base = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
+
+    document
+        .applications
+        .iter()
+        .map(|binding| {
+            let file = base.join(&binding.document);
+            let source = std::fs::read_to_string(&file).map_err(|error| {
+                format!(
+                    "cannot read the Xmip Application {}: {error}",
+                    file.display()
+                )
+            })?;
+            parse_application(&source)
+                .map_err(|error| format!("{} does not parse: {error}", file.display()))
+        })
+        .collect()
+}
+
 pub(crate) fn now_unix_nanos() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -184,17 +233,26 @@ pub(crate) fn start_published(path: &str) -> bool {
     valid
 }
 
-/// Validate a node configuration without starting anything: parse it, build and
-/// validate the execution tree, and return the problems. Publishes nothing —
-/// the running estate is untouched. ADR-0027 clause 9, the editor's Validate.
+/// Validate a document without starting anything, and return the problems.
+/// Publishes nothing — the running estate is untouched. ADR-0027 clause 9,
+/// the editor's Validate.
 ///
-/// Empty when the configuration is good. Each string is one problem, in the
+/// Either document `configure` reads, which it tells apart: an Xmip
+/// Application is checked as a design (ADR-0064), and a node configuration
+/// as startup would check it before building the tree, its bindings as far
+/// as they say on their own — the Applications they join are files beside
+/// it, which a text does not have, and [`start`] reads them.
+///
+/// Empty when the document is good. Each string is one problem, in the
 /// words `xmip-core-configure` and the execution-tree validator use.
 #[must_use]
 pub fn validate(source: &str) -> Vec<String> {
-    match crate::service::plan_startup_from_toml(source) {
-        Ok(_) => Vec::new(),
-        Err(report) => report.errors,
+    match document_kind(source) {
+        DocumentKind::Application => application_problems(source),
+        DocumentKind::Node => match read_node(source) {
+            Ok(document) => validate_startup_configuration(&document).errors,
+            Err(report) => report.errors,
+        },
     }
 }
 
@@ -357,5 +415,108 @@ symbol = "xmip_create_module_v1"
         assert!(
             problems[0].to_lowercase().contains("parse") || problems[0].contains("configuration")
         );
+    }
+
+    const ORDERS: &str = "[application]\nname = \"Orders\"\n\n[[receive_locations]]\n\
+                          name = \"OrdersIn\"\n\n[[send_ports]]\nname = \"Billing\"\n\n\
+                          [[subscriptions]]\nid = \"billing\"\n\
+                          destination = { send-port = \"Billing\" }\nfilter = \"true\"\n";
+
+    const ALPHA: &str = "[service]\nname = \"xmip-alpha\"\ncluster_name = \"orders\"\n\
+                      node_name = \"alpha\"\n\n[[applications]]\nname = \"Orders\"\n\
+                      document = \"orders.application.toml\"\n\n\
+                      [[applications.receive_locations]]\nname = \"OrdersIn\"\nnode = \"alpha\"\n\
+                      start = true\ntransport = \"xmip-core-transport-file\"\n\
+                      address = \"/var/xmip/in/orders\"\n";
+
+    #[test]
+    fn an_application_validates_as_a_design() {
+        assert!(validate(ORDERS).is_empty(), "{:?}", validate(ORDERS));
+
+        let astray = ORDERS.replace("{ send-port = \"Billing\" }", "{ process = \"Approval\" }");
+        assert_eq!(
+            validate(&astray),
+            [
+                "Subscription 'billing' routes to the Xmip Process 'Approval', which the \
+              Application does not declare"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_node_binding_an_application_validates_its_binding_as_far_as_it_says() {
+        assert!(validate(ALPHA).is_empty(), "{:?}", validate(ALPHA));
+
+        let nowhere = ALPHA.replace("node = \"alpha\"", "node = \"\"");
+        assert_eq!(
+            validate(&nowhere),
+            ["the Receive Location 'OrdersIn' of 'Orders' requires the node that takes it"]
+        );
+    }
+
+    #[test]
+    fn starting_a_node_reads_the_applications_it_binds_beside_it() {
+        let directory = std::env::temp_dir().join(format!("xmip-bind-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        std::fs::write(directory.join("orders.application.toml"), ORDERS).expect("writes");
+        let node = directory.join("r1.toml");
+        std::fs::write(&node, ALPHA).expect("writes");
+
+        let snapshot = start(node.to_str().expect("utf-8 path"));
+        let records = snapshot.health("xmip:///alpha");
+
+        assert!(
+            records
+                .iter()
+                .any(|r| r.scope == "xmip:///alpha/receive/OrdersIn"),
+            "{records:?}"
+        );
+        assert!(
+            records[0].evidence.contains("1 Subscription(s)"),
+            "{}",
+            records[0].evidence
+        );
+
+        std::fs::remove_file(directory.join("orders.application.toml")).expect("removes");
+        let snapshot = start(node.to_str().expect("utf-8 path"));
+        assert_eq!(snapshot.health("xmip:///alpha")[0].health, Health::Done);
+        assert!(
+            snapshot.health("xmip:///alpha")[0]
+                .evidence
+                .contains("cannot read the Xmip Application"),
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// ADR-0066 clause 1: a filter is compiled as the node starts, and one
+    /// that does not compile refuses the node then, not at the first Message.
+    #[test]
+    fn a_filter_that_does_not_compile_refuses_the_node_at_start() {
+        let directory = std::env::temp_dir().join(format!("xmip-filter-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let broken = ORDERS.replace(
+            "filter = \"true\"",
+            "filter = \"MessageType = 'Order' + 1\"",
+        );
+        assert_ne!(broken, ORDERS);
+        std::fs::write(directory.join("orders.application.toml"), broken).expect("writes");
+        let node = directory.join("r1.toml");
+        std::fs::write(&node, ALPHA).expect("writes");
+
+        let snapshot = start(node.to_str().expect("utf-8 path"));
+        let refused = &snapshot.health("xmip:///alpha")[0];
+
+        assert_eq!(refused.health, Health::Done);
+        assert!(
+            refused.evidence.contains("does not parse"),
+            "{}",
+            refused.evidence
+        );
+        assert!(
+            refused.evidence.contains("arithmetic"),
+            "{}",
+            refused.evidence
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

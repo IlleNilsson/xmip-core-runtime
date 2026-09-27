@@ -20,7 +20,7 @@ crate-type = ["rlib", "cdylib"]
 [lints.rust]
 # deny, not forbid, because forbid cannot be lowered anywhere. The runtime's
 # C boundary is one folder, src/ffi/ (ADR-0050, refined 2026-09-25): the
-# operator's table and the exports of xmip_operate.h sections 5 to 9
+# operator's table and the exports of xmip_operate.h sections 5 to 11
 # (ADR-0027, the boundary facing out), and the loader that opens somebody
 # else's library and calls through its table (ADR-0057, the boundary facing
 # in). Each file there allows unsafe at its top with its reason; nothing
@@ -29,6 +29,9 @@ unsafe_code = "deny"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Section 10 hands an Xmip Application's routes and edits to the designer's
+# language server as JSON, in memory only (ADR-0031 clause 2, ADR-0064).
+serde_json = "1"
 # Optional: only a node that loads modules links a loader, and only the
 # dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
 # nothing more — the flags specification section 3 requires are passed by
@@ -51,6 +54,10 @@ route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmi
 # Section 9: a program's audit record, forwarded to the capability that owns
 # it (ADR-0062). xaudit, as xcore, because the export's own file is ffi/audit.rs.
 xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
+# Section 11: Events, subscribed from any language, forwarded to the event
+# crate's process hub (ADR-0065). xevent, as xaudit, because the export's own
+# file is ffi/event.rs.
+xevent = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
 # The one byte cursor a loaded contract reads the content through.
@@ -60,9 +67,14 @@ codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNil
 # One real route technology, so a test proves arrival reads a prefixed
 # property through what a node loads rather than through a stand-in.
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
+# The tests write a Subscription's filter as the expression it is (ADR-0066).
+path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
 
 [features]
 # host.rs, ffi/loaded_module.rs and ffi/loaded_contract.rs are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
 # silently always false.
 dynamic-loading = ["dep:libloading"]
+
+[profile.dev.package."*"]
+opt-level = 3
