@@ -21,7 +21,7 @@
 //!   -> authenticate       the message layer, against the same closed set
 //!   -> authorize          alignment settled here, never by preferring a layer
 //!   -> IdentityFacts      both layers recorded
-//!   -> Promoted           the names the filters use, through route::promote
+//!   -> Promoted           the names the filters use, each compiled once
 //!   -> Journey            a Journey exists only now, not before
 //!   -> publish            every Subscription asked, declines kept
 //!   -> Dispatch           routed, or unroutable and retained
@@ -41,7 +41,7 @@ use identify::{IdentifyError, Presented, StreamArrival, identify_message, identi
 use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
 use receive::{ReceiveLocation, ReceivedStream};
-use route::{Dispatch, Promoted, promote, publish};
+use route::{Dispatch, Promoted, publish};
 use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 
 use crate::engine::Runtime;
@@ -220,19 +220,15 @@ pub fn arrive(
     }
 }
 
-/// What routing reads: every name the Subscriptions' filters use, each
-/// through `route::promote` and the route technology its prefix names. A
-/// `Null` is absent and bytes are refused, bare or prefixed (ADR-0046,
-/// amended 2026-09-24).
+/// What routing reads: every name the Subscriptions' filters use, compiled
+/// once when the Runtime was built (`Runtime::gathering`) and read here
+/// through the route technology its prefix names. A `Null` is absent and
+/// bytes are refused, bare or prefixed (ADR-0046, amended 2026-09-24).
 fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refused> {
-    let mut names: Vec<&str> = runtime
-        .subscriptions
-        .iter()
-        .flat_map(|subscription| subscription.filter.names())
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    promote(message, runtime.route_sources, &names).map_err(Refused::Promotion)
+    runtime
+        .gathering
+        .promote(message)
+        .map_err(Refused::Promotion)
 }
 
 /// The second pass of the three gates, over the Message this time.
@@ -406,7 +402,7 @@ mod tests {
     use party::{Identity, Party, PartyKind};
     use path::expression::Expression;
     use receive::ReceiveLocationType;
-    use route::{Subscriber, Subscription};
+    use route::{Gathering, Subscriber, Subscription};
     use send::{
         SendChain, SendError, SendLevel, SendLocation as Location, SendRequest, SendResult,
         SendTransport,
@@ -691,7 +687,8 @@ mod tests {
             parties,
             directory: parties,
             subscriptions,
-            route_sources: &[],
+            // Leaked: a test's Runtime borrows it for the test's length.
+            gathering: Box::leak(Box::new(Gathering::of(&[], subscriptions))),
             treatment: MessageTreatment::default(),
             sends,
             transports,
@@ -1567,15 +1564,17 @@ mod tests {
             &ids,
             &authenticators,
             &parties,
-            &subscriptions,
+            &[],
             &Sends,
             &posting,
             &open,
             &clock,
         );
         let party: [&dyn route::Source; 1] = [&route_party::PartySource];
+        let gathering = Gathering::of(&party, &subscriptions);
         let loaded = Runtime {
-            route_sources: &party,
+            subscriptions: &subscriptions,
+            gathering: &gathering,
             ..bare
         };
 
@@ -1587,8 +1586,9 @@ mod tests {
 
         // Nothing loaded reads `party:`: a filter that cannot be read is a
         // configuration mistake, refused, not a decline (ADR-0046).
+        let unread = Gathering::of(&[], &subscriptions);
         let unloaded = Runtime {
-            route_sources: &[],
+            gathering: &unread,
             ..loaded
         };
         let arrived = arrive(&unloaded, &location(), arriving());

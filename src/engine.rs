@@ -9,7 +9,7 @@ use authorize::Authorizer;
 use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
 use party::Party;
-use route::{Source, Subscriber, Subscription};
+use route::{Gathering, Subscriber, Subscription};
 use send::{SendChain, SendLocation, SendTransport};
 use xcore::{Clock, IdGenerator, PartyId};
 
@@ -43,10 +43,13 @@ pub struct Runtime<'a> {
     pub directory: &'a dyn PartyDirectory,
     pub subscriptions: &'a [Subscription],
 
-    /// The route technologies loaded: each reads the properties its prefix
-    /// names in a filter, `header:`, `party:` and the rest (ADR-0046). A bare
-    /// name is context and needs none of them.
-    pub route_sources: &'a [&'a dyn Source],
+    /// Every name the Subscriptions' filters use, compiled once, when the
+    /// Runtime is built, through the route technologies loaded
+    /// (`Gathering::of`): each reads the properties its prefix names in a
+    /// filter, `header:`, `party:` and the rest (ADR-0046). A bare name is
+    /// context and needs none of them. A name no loaded technology reads is
+    /// found as it compiles, and refuses each Message at arrival.
+    pub gathering: &'a Gathering,
     pub treatment: MessageTreatment,
     pub sends: &'a dyn SendRegistry,
     pub transports: &'a [&'a dyn SendTransport],
