@@ -1,18 +1,27 @@
-//! The header's integers for observe's enums, in both directions.
+//! The header's integers for the crates' enums, in both directions: every
+//! enum that crosses `xmip_operate.h`, converted here and nowhere else.
 //!
-//! `xmip_operate.h` carries health, the counted thing and a topology's kind,
-//! origin and pattern as `int`, and `xmip-core-observe` keeps them as enums. The two conversions live here so
-//! `ffi/operate.rs` holds the table and nothing else. A value the header does not
-//! name is `None`, which the table answers with `XMIP_E_MALFORMED`.
+//! The header carries health, the counted thing and a topology's kind, origin
+//! and pattern (observe), an audit record's phase and severity (xmip-core and
+//! audit), and an Event's action and outcome (node and event) as `int`, and
+//! the crates keep them as enums. The conversions live here so the exports in
+//! `ffi/` hold their tables and nothing else. A value the header does not name
+//! is `None`, which an export answers with `XMIP_E_MALFORMED` or
+//! `XMIP_E_INVALID`.
 //!
 //! It stays in the runtime under ADR-0058: this is the only crate that has
-//! both the header's constants and observe's enums, and neither of those two
-//! may depend on the other — `xmip-core-abi` is Foundation and
+//! both the header's constants and the crates' enums, and neither side may
+//! depend on the other — `xmip-core-abi` is Foundation and
 //! `xmip-core-observe` is Operation.
 
+use abi::operate::audit::{phase, severity};
+use abi::operate::event::{action, outcome};
 use abi::operate::publication::{kind, origin, pattern};
 use abi::operate::{counted, health};
+use node::Stage;
 use observe::{Counted, Health, NodeKind, Origin, Pattern};
+use xcore::{ExecutionPhase, Severity};
+use xevent::outcome::Outcome;
 
 /// The header's `int` for an observe `Health`.
 pub(crate) const fn wire_health(value: Health) -> i32 {
@@ -135,6 +144,75 @@ pub(crate) fn from_wire_pattern(value: i32) -> Option<Pattern> {
         .find(|pattern| wire_pattern(*pattern) == value)
 }
 
+/// The capability's phase for the header's `XmipPhase`, or `None`.
+pub(crate) const fn from_wire_phase(value: i32) -> Option<ExecutionPhase> {
+    match value {
+        phase::BEGIN => Some(ExecutionPhase::Begin),
+        phase::EXECUTE => Some(ExecutionPhase::Execute),
+        phase::FINISHED => Some(ExecutionPhase::Finished),
+        phase::FAILURE => Some(ExecutionPhase::Failure),
+        _ => None,
+    }
+}
+
+/// The capability's severity for the header's `XmipSeverity`, or `None`.
+pub(crate) const fn from_wire_severity(value: i32) -> Option<Severity> {
+    match value {
+        severity::INFORMATION => Some(Severity::Information),
+        severity::WARNING => Some(Severity::Warning),
+        severity::ERROR => Some(Severity::Error),
+        _ => None,
+    }
+}
+
+/// The stage the header's `XmipAction` names.
+pub(crate) const fn stage_of(value: i32) -> Option<Stage> {
+    match value {
+        action::RECEIVE => Some(Stage::Receive),
+        action::PROCESS => Some(Stage::Process),
+        action::SEND => Some(Stage::Send),
+        _ => None,
+    }
+}
+
+/// A stage as the header's `XmipAction`.
+pub(crate) const fn wire_stage(stage: Stage) -> i32 {
+    match stage {
+        Stage::Receive => action::RECEIVE,
+        Stage::Process => action::PROCESS,
+        Stage::Send => action::SEND,
+    }
+}
+
+/// The outcome the header's `XmipOutcome` names.
+pub(crate) const fn outcome_of(value: i32) -> Option<Outcome> {
+    match value {
+        outcome::SUCCESS => Some(Outcome::Success),
+        outcome::FAILURE => Some(Outcome::Failure),
+        outcome::REJECTION => Some(Outcome::Rejection),
+        outcome::WAITING => Some(Outcome::Waiting),
+        outcome::PAUSE => Some(Outcome::Pause),
+        outcome::TIMEOUT => Some(Outcome::Timeout),
+        outcome::EXHAUSTED_RETRIES => Some(Outcome::ExhaustedRetries),
+        outcome::DISMISSAL => Some(Outcome::Dismissal),
+        _ => None,
+    }
+}
+
+/// An outcome as the header's `XmipOutcome`.
+pub(crate) const fn wire_outcome(ended: Outcome) -> i32 {
+    match ended {
+        Outcome::Success => outcome::SUCCESS,
+        Outcome::Failure => outcome::FAILURE,
+        Outcome::Rejection => outcome::REJECTION,
+        Outcome::Waiting => outcome::WAITING,
+        Outcome::Pause => outcome::PAUSE,
+        Outcome::Timeout => outcome::TIMEOUT,
+        Outcome::ExhaustedRetries => outcome::EXHAUSTED_RETRIES,
+        Outcome::Dismissal => outcome::DISMISSAL,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +275,35 @@ mod tests {
         assert_eq!(kinds, (0..15).collect::<Vec<i32>>());
         assert_eq!(origins, [0, 1, 2]);
         assert_eq!(patterns, (0..7).collect::<Vec<i32>>());
+    }
+
+    #[test]
+    fn every_stage_and_outcome_crosses_as_the_header_numbers_it() {
+        for stage in Stage::ALL {
+            assert_eq!(stage_of(wire_stage(stage)), Some(stage));
+        }
+        for (number, ended) in Outcome::ALL.into_iter().enumerate() {
+            let number = i32::try_from(number).expect("eight");
+            assert_eq!(
+                wire_outcome(ended),
+                number,
+                "{ended}: ALL is the header's order"
+            );
+            assert_eq!(outcome_of(number), Some(ended));
+        }
+        assert_eq!(stage_of(3), None);
+        assert_eq!(outcome_of(8), None);
+    }
+
+    #[test]
+    fn every_phase_and_severity_the_header_names_is_read_and_no_other() {
+        assert_eq!(from_wire_phase(phase::BEGIN), Some(ExecutionPhase::Begin));
+        assert_eq!(
+            from_wire_phase(phase::FAILURE),
+            Some(ExecutionPhase::Failure)
+        );
+        assert_eq!(from_wire_severity(severity::ERROR), Some(Severity::Error));
+        assert_eq!(from_wire_phase(-1), None);
+        assert_eq!(from_wire_severity(-1), None);
     }
 }

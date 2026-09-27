@@ -19,7 +19,7 @@ use configure::{
     DocumentKind, XmipApplicationDocument, XmipConfigurationDocument, application_problems,
     document_kind, parse_application,
 };
-use observe::{Health, HealthRecord, Snapshot};
+use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 
 use crate::execution_tree::validate_startup_configuration;
 use crate::operator::publish;
@@ -208,14 +208,6 @@ fn bound_applications(
                 .map_err(|error| format!("{} does not parse: {error}", file.display()))
         })
         .collect()
-}
-
-pub(crate) fn now_unix_nanos() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
-        })
 }
 
 /// [`start`], then publish what it found: true when the node validated.

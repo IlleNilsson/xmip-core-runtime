@@ -1,7 +1,7 @@
 //! An Event and a filter as `xmip_operate.h` section 11 lays them out,
-//! read from a program and written for one, and the header's action and
-//! outcome integers against the crates' enums: the crossing
-//! `ffi/event.rs`'s exports make, and nothing the event crate decides.
+//! read from a program and written for one: the crossing `ffi/event.rs`'s
+//! exports make, and nothing the event crate decides. The header's action
+//! and outcome integers are read and written by `crate::wire`.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a program's pointers are read here.
@@ -11,15 +11,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use abi::ffi::{Str, status};
-use abi::operate::event::{Event as Wire, EventFilter, action, outcome};
-use node::Stage;
+use abi::operate::event::{Event as Wire, EventFilter};
 use xaudit::program_audit::ProgramAudit;
 use xevent::Event;
 use xevent::filter::Filter;
-use xevent::outcome::Outcome;
 use xevent::subscriber::Subscriber;
 
 use crate::ffi::operate::{borrow, scope_text};
+use crate::wire::{outcome_of, stage_of, wire_outcome, wire_stage};
 
 /// The text an Event's identifiers are written as, and its diagnostics as
 /// the header's strings, owned beside the Event they borrow from.
@@ -195,75 +194,4 @@ pub(super) unsafe fn slice<'a, T>(items: *const T, len: usize) -> &'a [T] {
     }
     // SAFETY: per the contract above.
     unsafe { core::slice::from_raw_parts(items, len) }
-}
-
-/// The stage the header's `XmipAction` names.
-pub(super) const fn stage_of(value: i32) -> Option<Stage> {
-    match value {
-        action::RECEIVE => Some(Stage::Receive),
-        action::PROCESS => Some(Stage::Process),
-        action::SEND => Some(Stage::Send),
-        _ => None,
-    }
-}
-
-/// A stage as the header's `XmipAction`.
-pub(super) const fn wire_stage(stage: Stage) -> i32 {
-    match stage {
-        Stage::Receive => action::RECEIVE,
-        Stage::Process => action::PROCESS,
-        Stage::Send => action::SEND,
-    }
-}
-
-/// The outcome the header's `XmipOutcome` names.
-pub(super) const fn outcome_of(value: i32) -> Option<Outcome> {
-    match value {
-        outcome::SUCCESS => Some(Outcome::Success),
-        outcome::FAILURE => Some(Outcome::Failure),
-        outcome::REJECTION => Some(Outcome::Rejection),
-        outcome::WAITING => Some(Outcome::Waiting),
-        outcome::PAUSE => Some(Outcome::Pause),
-        outcome::TIMEOUT => Some(Outcome::Timeout),
-        outcome::EXHAUSTED_RETRIES => Some(Outcome::ExhaustedRetries),
-        outcome::DISMISSAL => Some(Outcome::Dismissal),
-        _ => None,
-    }
-}
-
-/// An outcome as the header's `XmipOutcome`.
-pub(super) const fn wire_outcome(ended: Outcome) -> i32 {
-    match ended {
-        Outcome::Success => outcome::SUCCESS,
-        Outcome::Failure => outcome::FAILURE,
-        Outcome::Rejection => outcome::REJECTION,
-        Outcome::Waiting => outcome::WAITING,
-        Outcome::Pause => outcome::PAUSE,
-        Outcome::Timeout => outcome::TIMEOUT,
-        Outcome::ExhaustedRetries => outcome::EXHAUSTED_RETRIES,
-        Outcome::Dismissal => outcome::DISMISSAL,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_stage_and_outcome_crosses_as_the_header_numbers_it() {
-        for stage in Stage::ALL {
-            assert_eq!(stage_of(wire_stage(stage)), Some(stage));
-        }
-        for (number, ended) in Outcome::ALL.into_iter().enumerate() {
-            let number = i32::try_from(number).expect("eight");
-            assert_eq!(
-                wire_outcome(ended),
-                number,
-                "{ended}: ALL is the header's order"
-            );
-            assert_eq!(outcome_of(number), Some(ended));
-        }
-        assert_eq!(stage_of(3), None);
-        assert_eq!(outcome_of(8), None);
-    }
 }

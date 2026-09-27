@@ -25,11 +25,11 @@
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
 use route::{Routing, Subscriber};
-use send::{SendError, SendLevel, SendRequest};
-use xcore::{Departing, Purpose};
+use send::{SendLevel, SendRequest};
+use xcore::{Departing, Failure, Purpose};
 
-use crate::engine::Runtime;
 use crate::generation::ReceivedWork;
+use crate::message_path::Runtime;
 
 /// What became of one Message on its way out to one destination.
 #[derive(Clone, Debug)]
@@ -185,7 +185,7 @@ fn depart_one(
             presented_from: resolved.map(|(_, level)| level),
             status: result.status,
         },
-        Err(SendError { retryable, message }) => Departed::Failed {
+        Err(Failure { message, retryable }) => Departed::Failed {
             to: to.clone(),
             retryable,
             detail: message,

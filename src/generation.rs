@@ -132,7 +132,7 @@ mod tests {
         assert_ne!(transformed.message.sections()[0].stream.id(), original);
 
         assert_eq!(transformed.message.generation(), 2);
-        assert_eq!(transformed.journey.messages.len(), 3);
+        assert_eq!(transformed.journey.messages().len(), 3);
     }
 
     #[test]
