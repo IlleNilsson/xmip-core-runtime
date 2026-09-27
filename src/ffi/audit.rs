@@ -72,7 +72,9 @@ pub unsafe extern "C" fn xmip_audit_v1(
     };
 
     // SAFETY: `properties` holds `properties_len` strings per the contract.
-    let Some(properties) = (unsafe { pairs(properties, properties_len) }) else {
+    let Some(properties) =
+        (unsafe { pairs::<BTreeMap<String, String>>(properties, properties_len) })
+    else {
         return status::MALFORMED;
     };
 
@@ -105,26 +107,33 @@ pub unsafe extern "C" fn xmip_audit_v1(
     status::OK
 }
 
-/// The key and value strings as a map, or `None` when one is not UTF-8.
+/// The header's key-then-value strings, in order, gathered into whatever the
+/// caller keeps them in — a map here, a list for section 13 — or `None` when
+/// one is not UTF-8.
 ///
 /// # Safety
 /// `properties` holds `len` readable strings, or `len` is 0.
-unsafe fn pairs(properties: *const Str, len: usize) -> Option<BTreeMap<String, String>> {
+pub(crate) unsafe fn pairs<Kept: FromIterator<(String, String)>>(
+    properties: *const Str,
+    len: usize,
+) -> Option<Kept> {
     if len == 0 {
-        return Some(BTreeMap::new());
+        return Some(core::iter::empty().collect());
     }
 
     // SAFETY: per the contract above.
     let strings = unsafe { core::slice::from_raw_parts(properties, len) };
-    let mut map = BTreeMap::new();
 
-    for [key, value] in strings.as_chunks::<2>().0 {
-        // SAFETY: each string points at its stated length of readable bytes.
-        let (key, value) = unsafe { (scope_text(*key), scope_text(*value)) };
-        map.insert(key?.to_string(), value?.to_string());
-    }
-
-    Some(map)
+    strings
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[key, value]| {
+            // SAFETY: each string points at its stated length of readable bytes.
+            let (key, value) = unsafe { (scope_text(*key), scope_text(*value)) };
+            Some((key?.to_string(), value?.to_string()))
+        })
+        .collect()
 }
 
 /// The capability's phase for the header's `XmipPhase`, or `None`.
