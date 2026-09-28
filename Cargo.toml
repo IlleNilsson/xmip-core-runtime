@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-runtime"
-description = "The Xmip runtime: module registry, host service planning and the startup execution tree."
+description = "The Xmip runtime: a node started from its configuration and the technologies its program links, the message path it runs, and the native library the operator surfaces load."
 
 [lib]
 path = "src/lib.rs"
@@ -60,6 +60,9 @@ xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xm
 xevent = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main" }
+# The one transport trait: every Location's transport is built through it,
+# once, from the technologies the program starting the node linked.
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
@@ -69,9 +72,13 @@ codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNil
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
 # The tests write a Subscription's filter as the expression it is (ADR-0066).
 path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
+# One real transport with a loopback far end, so a test starts a node that
+# receives and sends over it rather than over a stand-in.
+tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main" }
 
 [features]
-# host.rs, ffi/loaded_module.rs and ffi/loaded_contract.rs are guarded on this.
+# ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
+# them are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
 # silently always false.
 dynamic-loading = ["dep:libloading"]

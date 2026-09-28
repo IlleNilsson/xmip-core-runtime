@@ -1,8 +1,59 @@
-use crate::{HostBitness, HostServicePlan};
-use abi::ModuleManifest;
+//! The Xmip Host Services a node's Modules run in, planned at startup phase 4
+//! and started at phase 5 (ADR-0018).
+//!
+//! The System Process a Host Service runs as is the Host Process; this is the
+//! service. Which Host Service a Module needs is decided by one rule,
+//! [`host_type`]: what the Module is *written in*, never what it does or what
+//! it is called.
 
-/// The registered, supervised thing. The System Process it runs as is the
-/// Host Process; this is the service. ADR-0018.
+use std::collections::BTreeMap;
+
+use abi::{ExecutionHostKind, ExtensionManifest, ModuleManifest};
+use serde::{Deserialize, Serialize};
+
+/// The runtime's plan for one Host Service: its type, whether it holds
+/// trusted work, its width, and the Modules and Extensions it hosts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostServicePlan {
+    pub host_type: String,
+    pub trusted: bool,
+    pub bitness: HostBitness,
+    pub modules: Vec<ModuleManifest>,
+    pub verified_extensions: Vec<ExtensionManifest>,
+}
+
+/// Execution width of the Host Service.
+///
+/// Classical variants are the address width of the process. `Qubit` carries a
+/// count, because quantum hardware is described by how many qubits it offers
+/// rather than by a single width — a 127-qubit processor is not the same
+/// target as a 20-qubit one, and a Host Service that needs 100 cannot run on
+/// the smaller.
+///
+/// Quantum execution is reachable today through providers such as Azure
+/// Quantum, on real hardware or on a simulator. Xmip carries the shape now so
+/// that a Host Service can declare the requirement, whether or not this node
+/// can satisfy it.
+///
+/// A width this node cannot provide is a configuration error. It is caught at
+/// validate-startup and returned, not discovered at spawn time — a Host Service
+/// asking for a card that is not in the machine, or for more qubits than the
+/// machine has, should fail before anything starts.
+///
+/// The count is u64 rather than u128 because TOML integers are 64-bit signed,
+/// so a wider type could hold a value the manifest cannot express. u64 tops
+/// out around 9.2e18 qubits, which is not a limit anyone will meet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostBitness {
+    Bit32,
+    Bit64,
+    Bit128,
+    Qubit(u64),
+    Native,
+}
+
+/// The registered, supervised thing. ADR-0018.
 #[derive(Clone, Debug)]
 pub struct HostService {
     pub plan: HostServicePlan,
@@ -18,18 +69,26 @@ pub enum HostServiceState {
     Failed(String),
 }
 
+/// The Host Service the node's own process is: the one that loads a Module
+/// in process, through the C ABI, whether it was written in Rust or in
+/// anything else that exports the header's table (ADR-0012).
+pub const IN_PROCESS: [&str; 2] = ["native-rust-host", "c-abi-host"];
+
 impl HostService {
-    pub fn from_manifest(manifest: ModuleManifest, trusted: bool) -> Self {
+    /// Planned, not started.
+    #[must_use]
+    pub const fn planned(plan: HostServicePlan) -> Self {
         Self {
-            plan: HostServicePlan {
-                host_type: format!("{}-host", manifest.identity.name),
-                trusted,
-                bitness: HostBitness::Native,
-                modules: vec![manifest],
-                verified_extensions: Vec::new(),
-            },
+            plan,
             state: HostServiceState::Planned,
         }
+    }
+
+    /// Whether this Host Service is the node's own process, which startup
+    /// phase 5 starts by running on.
+    #[must_use]
+    pub fn in_process(&self) -> bool {
+        IN_PROCESS.contains(&self.plan.host_type.as_str())
     }
 
     pub fn start(&mut self) {
@@ -42,134 +101,132 @@ impl HostService {
     }
 }
 
-/// ADR-0025 clause 3: a delayed Module is loaded on the first call that needs
-/// it, and this is the verification that load performs — ADR-0018 phase 6's
-/// check, run late for the delayed set.
+/// Startup phase 4: the Host Services `modules` need, one per host type,
+/// each holding the Modules of that type in the order they were given.
+#[must_use]
+pub fn plan(modules: &[ModuleManifest]) -> Vec<HostService> {
+    let mut by_type: BTreeMap<String, HostServicePlan> = BTreeMap::new();
+
+    for module in modules {
+        let host_type = host_type(module);
+        let planned = by_type
+            .entry(host_type.clone())
+            .or_insert_with(|| HostServicePlan {
+                host_type,
+                trusted: false,
+                bitness: HostBitness::Native,
+                modules: Vec::new(),
+                verified_extensions: Vec::new(),
+            });
+        planned.trusted |= module.capabilities.iter().any(|c| c.trusted_required);
+        planned.modules.push(module.clone());
+    }
+
+    by_type.into_values().map(HostService::planned).collect()
+}
+
+/// Which Host Service a Module needs.
 ///
-/// It checks a request an operator's configuration composed, before anything
-/// is opened. The load itself is `ffi/loaded_module.rs` since 2026-09-19
-/// (ADR-0057 clause 8 step 2): that file opens the library, resolves the
-/// symbol and reads the descriptor the module actually filled, which is the
-/// only descriptor worth believing. Nothing wires the two together yet.
+/// What decides the host process is what a Module is *written in*, never what
+/// it does (ADR-0012 clause 5 removed the Module's `kind`): a .NET transport
+/// and a .NET content handler share a host; a .NET transport and a Rust
+/// transport do not.
 ///
-/// Written before `xmip-core-abi` exported any of this and never compiled
-/// until 2026-08-30: the imports named symbols nobody had written
-/// (`ModuleAbiDescriptor`, `XMIP_MODULE_ENTRYPOINT`), and the call below moved
-/// `request.descriptor` out of a borrow. Both were invisible for as long as
-/// nothing built the feature, which is what put `cargo build` on every
-/// declared feature in `Test-XmipModule`.
-#[cfg(feature = "dynamic-loading")]
-pub mod dynamic {
-    use abi::{ModuleDescriptor, ModuleManifest, XMIP_ENTRYPOINT, validate_module_abi};
+/// A Module whose capabilities disagree about their execution host cannot be
+/// placed in one Host Service. That is a manifest defect, and naming it here
+/// makes it visible at planning time rather than at spawn time.
+#[must_use]
+pub fn host_type(module: &ModuleManifest) -> String {
+    let mut hosts = module
+        .capabilities
+        .iter()
+        .map(|capability| execution_host_name(&capability.execution_host))
+        .collect::<Vec<_>>();
+    hosts.sort_unstable();
+    hosts.dedup();
 
-    #[derive(Clone, Debug)]
-    pub struct DynamicModuleRequest {
-        pub manifest: ModuleManifest,
-        pub resolved_library_path: String,
-        pub descriptor: ModuleDescriptor,
+    match hosts.as_slice() {
+        [] => "native-rust-host".to_string(),
+        [only] => format!("{only}-host"),
+        many => format!("mixed-host({})", many.join("+")),
+    }
+}
+
+const fn execution_host_name(host: &ExecutionHostKind) -> &'static str {
+    match host {
+        ExecutionHostKind::NativeRust => "native-rust",
+        ExecutionHostKind::DotNet => "dotnet",
+        ExecutionHostKind::Java => "java",
+        ExecutionHostKind::Python => "python",
+        ExecutionHostKind::CAbi => "c-abi",
+        ExecutionHostKind::Go => "go",
+        ExecutionHostKind::PowerShell => "powershell",
+        ExecutionHostKind::Bash => "bash",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use abi::{ModuleCapability, ModuleEntrypoint, ModuleIdentity};
+
+    fn module(name: &str, hosts: &[ExecutionHostKind]) -> ModuleManifest {
+        ModuleManifest {
+            identity: ModuleIdentity {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+            },
+            capabilities: hosts
+                .iter()
+                .map(|host| ModuleCapability {
+                    capability: "contract".to_string(),
+                    execution_host: host.clone(),
+                    trusted_required: false,
+                })
+                .collect(),
+            entrypoint: ModuleEntrypoint {
+                library_path: None,
+                executable_path: None,
+                symbol: None,
+            },
+        }
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct VerifiedDynamicModule {
-        pub module_name: String,
-        pub resolved_library_path: String,
-        pub entrypoint_symbol: String,
+    #[test]
+    fn what_a_module_is_written_in_decides_its_host_and_not_its_name() {
+        use ExecutionHostKind::{CAbi, DotNet, NativeRust};
+
+        assert_eq!(
+            host_type(&module("dotnet-thing", &[NativeRust])),
+            "native-rust-host"
+        );
+        assert_eq!(host_type(&module("a", &[DotNet, DotNet])), "dotnet-host");
+        assert_eq!(host_type(&module("a", &[])), "native-rust-host");
+        assert_eq!(
+            host_type(&module("a", &[NativeRust, CAbi])),
+            "mixed-host(c-abi+native-rust)"
+        );
     }
 
-    /// # Errors
-    ///
-    /// A request with no library path, a descriptor the host refuses, or a
-    /// manifest whose declared symbol is blank. The refusal reaches the first
-    /// caller — ADR-0025 clause 4 — so it names what to fix rather than which
-    /// call failed.
-    pub fn verify_dynamic_module(
-        request: &DynamicModuleRequest,
-    ) -> Result<VerifiedDynamicModule, String> {
-        if request.resolved_library_path.trim().is_empty() {
-            return Err("dynamic module request requires a resolved library path".to_string());
-        }
+    #[test]
+    fn modules_of_one_host_type_share_one_host_service() {
+        use ExecutionHostKind::{CAbi, DotNet, NativeRust};
 
-        validate_module_abi(&request.descriptor)?;
+        let planned = plan(&[
+            module("a", &[NativeRust]),
+            module("b", &[DotNet]),
+            module("c", &[NativeRust]),
+            module("d", &[CAbi]),
+        ]);
 
-        let entrypoint_symbol = request
-            .manifest
-            .entrypoint
-            .symbol
-            .clone()
-            .unwrap_or_else(|| XMIP_ENTRYPOINT.to_string());
-
-        if entrypoint_symbol.trim().is_empty() {
-            return Err("dynamic module request requires an exported symbol".to_string());
-        }
-
-        Ok(VerifiedDynamicModule {
-            module_name: request.manifest.identity.name.clone(),
-            resolved_library_path: request.resolved_library_path.clone(),
-            entrypoint_symbol,
-        })
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use abi::{
-            ExecutionHostKind, ModuleCapability, ModuleEntrypoint, ModuleIdentity, XMIP_ABI_VERSION,
-        };
-
-        fn request(symbol: Option<&str>) -> DynamicModuleRequest {
-            DynamicModuleRequest {
-                manifest: ModuleManifest {
-                    identity: ModuleIdentity {
-                        name: "xmip-core-transport-file".to_string(),
-                        version: "0.1.0".to_string(),
-                    },
-                    capabilities: vec![ModuleCapability {
-                        capability: "transport".to_string(),
-                        execution_host: ExecutionHostKind::NativeRust,
-                        trusted_required: false,
-                    }],
-                    entrypoint: ModuleEntrypoint {
-                        library_path: Some("libxmip_core_transport_file.so".to_string()),
-                        executable_path: None,
-                        symbol: symbol.map(str::to_string),
-                    },
-                },
-                resolved_library_path: "/opt/xmip/libxmip_core_transport_file.so".to_string(),
-                descriptor: ModuleDescriptor {
-                    abi_version: XMIP_ABI_VERSION,
-                    provider: "core".to_string(),
-                    module: "transport".to_string(),
-                    standard: "file".to_string(),
-                    trait_major: 1,
-                    trait_minor: 0,
-                    module_major: 0,
-                    module_minor: 1,
-                    module_patch: 0,
-                },
-            }
-        }
-
-        #[test]
-        fn an_unnamed_symbol_defaults_to_the_headers_entrypoint() {
-            let verified = verify_dynamic_module(&request(None)).expect("verifies");
-
-            assert_eq!(verified.entrypoint_symbol, XMIP_ENTRYPOINT);
-        }
-
-        #[test]
-        fn a_declared_symbol_is_kept() {
-            let verified =
-                verify_dynamic_module(&request(Some("partner_create_v1"))).expect("verifies");
-
-            assert_eq!(verified.entrypoint_symbol, "partner_create_v1");
-        }
-
-        #[test]
-        fn a_foreign_abi_version_is_refused_before_any_load() {
-            let mut foreign = request(None);
-            foreign.descriptor.abi_version = XMIP_ABI_VERSION + 1;
-
-            verify_dynamic_module(&foreign).expect_err("the host must refuse it");
-        }
+        let types: Vec<&str> = planned.iter().map(|h| h.plan.host_type.as_str()).collect();
+        assert_eq!(types, ["c-abi-host", "dotnet-host", "native-rust-host"]);
+        assert_eq!(planned[2].plan.modules.len(), 2);
+        assert!(planned[0].in_process() && planned[2].in_process());
+        assert!(
+            !planned[1].in_process(),
+            "a .NET module needs its own Host Process"
+        );
+        assert!(planned.iter().all(|h| h.state == HostServiceState::Planned));
     }
 }

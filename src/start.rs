@@ -1,13 +1,13 @@
-//! Starting a node from its configuration, as far as the runtime can today.
+//! A node's configuration read, planned and validated for a surface: the
+//! first three of ADR-0018's startup phases, and nothing that runs.
 //!
-//! ADR-0018 gives startup nine phases. What is here performs the first three
-//! — read, build the execution tree, validate — and publishes what it planned
-//! through `operator.rs`, saying in every record that phases four to nine are
-//! not built. An operator reading `Fine` over a node that has not loaded a
-//! module has been told something false.
-//!
-//! Split from `operate.rs` on 2026-09-05 when that file passed 400 lines:
-//! the table a surface calls and the act of starting a node are two subjects.
+//! `xmip_start_v1` hands a surface this, and publishes what it planned
+//! through `operator.rs`. Running a node — the other six phases, its Modules
+//! loaded and its Receive Locations accepting work — is
+//! [`crate::running::Running::start`], called by the program that links the
+//! technologies the node needs (ADR-0018, amendment 2026-09-26); a surface's
+//! process links none, and whether it may run a node at all is open problem
+//! 20. Both read a configuration through [`read`], one reading.
 //!
 //! Its two exports, `xmip_start_v1` and `xmip_validate_v1`, are the
 //! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
@@ -21,7 +21,8 @@ use configure::{
 };
 use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 
-use crate::execution_tree::validate_startup_configuration;
+use crate::catalogue;
+use crate::execution_tree::{build_execution_tree, validate_startup_configuration};
 use crate::operator::publish;
 use crate::service::read_node;
 
@@ -46,14 +47,51 @@ pub(crate) fn unconfigured() -> Snapshot {
     snapshot
 }
 
-/// Start a node from its configuration file, as far as the runtime can today:
-/// read it, build the execution tree, validate it, and publish what it plans.
+/// A configuration that could not be read: why, and the scope that says so —
+/// the node's, once the document named one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unread {
+    pub scope: String,
+    pub reason: String,
+}
+
+/// What startup phase 1 reads: the node's configuration and the Xmip
+/// Applications it binds.
+pub type Read = (XmipConfigurationDocument, Vec<XmipApplicationDocument>);
+
+/// Startup phase 1: the node configuration at `path`, and every Xmip
+/// Application it binds, each read from the file its binding names, relative
+/// to the configuration (ADR-0064).
 ///
-/// ADR-0018 gives startup nine phases. This performs the first three and says
-/// so in every record it publishes — an operator reading `Fine` over a node
-/// that has not loaded a module has been told something false, so the
-/// evidence names what happened and what did not. Phases four to nine are not
-/// built yet.
+/// # Errors
+/// The file cannot be read or does not parse, or a bound Application cannot
+/// be read or does not parse.
+pub fn read(path: &str) -> Result<Read, Unread> {
+    let root = |reason: String| Unread {
+        scope: "xmip:///".to_string(),
+        reason,
+    };
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| root(format!("cannot read {path}: {error}")))?;
+    let document = read_node(&source).map_err(|report| {
+        root(format!(
+            "{path} does not parse: {}",
+            report.errors.join("; ")
+        ))
+    })?;
+    let applications = bound_applications(path, &document).map_err(|reason| Unread {
+        scope: format!("xmip:///{}", document.service.node_name),
+        reason: format!("configuration refused: {reason}"),
+    })?;
+
+    Ok((document, applications))
+}
+
+/// Plan a node from its configuration file, as a surface asks: read it, build
+/// the execution tree, validate it against the technologies this runtime
+/// carries, and say what it would start. Nothing is loaded and nothing runs,
+/// and every record says so — an operator reading `Fine` over a node that
+/// has not loaded a module has been told something false.
 ///
 /// Red when the file cannot be read or does not validate, with the errors as
 /// evidence. A refusal that names the fault is the point of validating first.
@@ -61,65 +99,31 @@ pub(crate) fn unconfigured() -> Snapshot {
 pub fn start(path: &str) -> Snapshot {
     let now = now_unix_nanos();
     let mut snapshot = Snapshot::new();
-
-    let source = match std::fs::read_to_string(path) {
-        Ok(source) => source,
-        Err(error) => {
-            snapshot.record_health(HealthRecord {
-                scope: "xmip:///".into(),
-                health: Health::Done,
-                severity: 90,
-                evidence: format!("cannot read {path}: {error}"),
-                observed_unix_nanos: now,
-            });
-
-            return snapshot;
-        }
+    let refuse = |snapshot: &mut Snapshot, scope: String, evidence: String| {
+        snapshot.record_health(HealthRecord {
+            scope,
+            health: Health::Done,
+            severity: 90,
+            evidence,
+            observed_unix_nanos: now,
+        });
     };
 
-    let document = match configure::parse_toml(&source) {
-        Ok(document) => document,
-        Err(error) => {
-            snapshot.record_health(HealthRecord {
-                scope: "xmip:///".into(),
-                health: Health::Done,
-                severity: 90,
-                evidence: format!("{path} does not parse: {error}"),
-                observed_unix_nanos: now,
-            });
-
+    let (document, applications) = match read(path) {
+        Ok(read) => read,
+        Err(Unread { scope, reason }) => {
+            refuse(&mut snapshot, scope, reason);
             return snapshot;
         }
     };
 
     let node = format!("xmip:///{}", document.service.node_name);
 
-    let applications = match bound_applications(path, &document) {
-        Ok(applications) => applications,
-        Err(reason) => {
-            snapshot.record_health(HealthRecord {
-                scope: node,
-                health: Health::Done,
-                severity: 90,
-                evidence: format!("configuration refused: {reason}"),
-                observed_unix_nanos: now,
-            });
-
-            return snapshot;
-        }
-    };
-
-    let tree = match crate::execution_tree::build_execution_tree(document, &applications) {
+    let tree = match build_execution_tree(document, &applications, &catalogue::declarations()) {
         Ok((tree, _)) => tree,
         Err(report) => {
-            snapshot.record_health(HealthRecord {
-                scope: node,
-                health: Health::Done,
-                severity: 90,
-                evidence: format!("configuration refused: {}", report.errors.join("; ")),
-                observed_unix_nanos: now,
-            });
-
+            let evidence = format!("configuration refused: {}", report.errors.join("; "));
+            refuse(&mut snapshot, node, evidence);
             return snapshot;
         }
     };
@@ -130,7 +134,7 @@ pub fn start(path: &str) -> Snapshot {
         severity: 50,
         evidence: format!(
             "{} module(s), {} process(es), {} Subscription(s) validated and planned; not \
-             running \u{2014} phases 4\u{2013}9 (start, load, accept work) are not built yet",
+             running \u{2014} a node runs in the program that links its technologies",
             tree.modules_to_start.len(),
             tree.xmip_processes_to_start.len(),
             tree.subscriptions.len()
@@ -233,7 +237,8 @@ pub(crate) fn start_published(path: &str) -> bool {
 /// Application is checked as a design (ADR-0064), and a node configuration
 /// as startup would check it before building the tree, its bindings as far
 /// as they say on their own — the Applications they join are files beside
-/// it, which a text does not have, and [`start`] reads them.
+/// it, which a text does not have, and [`start`] reads them. Each Location
+/// is held to the declaration of every technology this runtime carries.
 ///
 /// Empty when the document is good. Each string is one problem, in the
 /// words `xmip-core-configure` and the execution-tree validator use.
@@ -242,7 +247,9 @@ pub fn validate(source: &str) -> Vec<String> {
     match document_kind(source) {
         DocumentKind::Application => application_problems(source),
         DocumentKind::Node => match read_node(source) {
-            Ok(document) => validate_startup_configuration(&document).errors,
+            Ok(document) => {
+                validate_startup_configuration(&document, &catalogue::declarations()).errors
+            }
             Err(report) => report.errors,
         },
     }
@@ -339,7 +346,7 @@ address = "C:/out"
                 .iter()
                 .any(|r| r.scope == "xmip:///edge-01/process/approval")
         );
-        assert!(records[0].evidence.contains("not built yet"));
+        assert!(records[0].evidence.contains("not running"));
     }
 
     #[test]

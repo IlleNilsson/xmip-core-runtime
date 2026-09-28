@@ -8,15 +8,11 @@
 //!
 //! ```text
 //! Routing        every destination the Message matched
+//!   -> resolve   which Send Location, on this node
 //!   -> authorize may this identity still send, now
-//!   -> resolve   whose identity Xmip presents, per ADR-0006
-//!   -> depart    pushed, collected or scheduled
+//!   -> identity  whose identity Xmip presents, per ADR-0006
+//!   -> depart    through the Location's transport, built once
 //! ```
-//!
-//! **The ToDo holds the Message until every departure is settled.** A
-//! Journey with two destinations reached and one awaiting collection is
-//! unfinished, and the work store is the only place that state can live without
-//! either lying about it.
 //!
 //! Authorization runs again here rather than being inherited from arrival.
 //! Time has passed — a Process may have waited days for a human — and what was
@@ -25,11 +21,12 @@
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
 use route::{Routing, Subscriber};
-use send::{SendLevel, SendRequest};
-use xcore::{Departing, Failure, Purpose};
+use send::SendLevel;
+use xcore::Purpose;
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
+use crate::sending::{Destination, Sending};
 
 /// What became of one Message on its way out to one destination.
 #[derive(Clone, Debug)]
@@ -39,22 +36,22 @@ pub enum Departed {
         /// Which artifact decided the identity presented, or `None` where
         /// nothing in the chain declared one.
         presented_from: Option<SendLevel>,
-        status: String,
+        /// The value of the identity the chain resolved to, as its Party
+        /// holds it for sending (ADR-0006). The transport's `send` takes no
+        /// identity, so a Location presents what its own settings give it;
+        /// this records what the chain decided.
+        presented: Option<String>,
     },
-    /// Available, and waiting to be collected.
+    /// Routing named a destination this node has no Send Location for.
     ///
-    /// Not a success and not a failure. Xmip has done everything it can and the
-    /// departure completes when somebody turns up — so the Message stays in the
-    /// ToDo, and an unreachable partner and an idle one stay
-    /// distinguishable, which they are not if this is reported as sent.
-    Awaiting { to: Subscriber, at: String },
-    /// Routing named a destination that configuration does not have.
-    ///
-    /// A deploy-time defect found at run time, and the same class of mistake
-    /// `never_satisfiable` catches on the receive side.
+    /// A Send Port bound to another node, or one no configuration gives a
+    /// Location: the same class of mistake `never_satisfiable` catches on the
+    /// receive side, found here at run time.
     NoSuchDestination { to: Subscriber },
-    /// No loaded transport speaks the Location's technology.
-    NoTransport { to: Subscriber, technology: String },
+    /// Routing matched an Xmip Process, and this runtime runs none yet: a
+    /// Process is compiled at design time into a module a node loads
+    /// (ADR-0066 clause 4).
+    ProcessNotRun { to: Subscriber },
     /// Authorized to arrive, and not authorized to leave this way.
     ///
     /// The two are different questions and time may have passed between them.
@@ -74,51 +71,51 @@ impl Departed {
     pub const fn sent(&self) -> bool {
         matches!(self, Self::Sent { .. })
     }
-
-    /// Whether the ToDo must keep holding this.
-    ///
-    /// True while a collected departure has not been collected. The Message is
-    /// not done and is not failed, and the work store is the only thing that
-    /// can hold that state without either lying.
-    #[must_use]
-    pub const fn holds(&self) -> bool {
-        matches!(self, Self::Awaiting { .. })
-    }
 }
 
 /// Carry a routed Message to every destination that matched.
 ///
-/// The mirror of [`arrive`]. One departure per destination, and one result per
-/// departure. A Message routed to three Send Ports that reaches two of them is
-/// two successes and one failure, not a single verdict — which is why this
-/// returns a list rather than a `Result`.
-///
-/// **The ToDo holds the Message until every departure is settled.** Not
-/// until the first succeeds, and not until routing decided where it was going:
-/// a Journey with two destinations reached and one refused is unfinished, and
-/// the work store is what makes that recoverable rather than lost.
+/// The mirror of [`crate::arrival::arrive`]. One departure per Send Location
+/// reached, and one result per departure. A Message routed to three Send
+/// Ports that reaches two of them is two successes and one failure, not a
+/// single verdict — which is why this returns a list rather than a `Result`.
 pub fn depart(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
     facts: &IdentityFacts,
     routing: &Routing,
 ) -> Vec<Departed> {
-    routing
-        .destinations()
-        .into_iter()
-        .map(|to| depart_one(runtime, work, facts, to))
-        .collect()
+    let mut departed = Vec::new();
+
+    for to in routing.destinations() {
+        match runtime.sends.to(to) {
+            Destination::Ports(ports) => {
+                for (port, sending) in ports {
+                    let to = Subscriber::SendPort(port.to_string());
+                    departed.push(match sending {
+                        Some(sending) => depart_one(runtime, work, facts, to, sending),
+                        None => Departed::NoSuchDestination { to },
+                    });
+                }
+            }
+            Destination::Process => departed.push(Departed::ProcessNotRun { to: to.clone() }),
+            Destination::Nowhere => {
+                departed.push(Departed::NoSuchDestination { to: to.clone() });
+            }
+        }
+    }
+
+    departed
 }
 
 fn depart_one(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
     facts: &IdentityFacts,
-    to: &Subscriber,
+    to: Subscriber,
+    sending: &Sending,
 ) -> Departed {
-    let Some((location, chain)) = runtime.sends.location(to) else {
-        return Departed::NoSuchDestination { to: to.clone() };
-    };
+    let location = &sending.configured;
 
     // Authorized again, now, against the clock. What receive concluded may be
     // days old by the time a Process finished waiting for a human.
@@ -131,64 +128,36 @@ fn depart_one(
 
     if !permitted.allowed() {
         return Departed::NotPermitted {
-            to: to.clone(),
+            to,
             decision: permitted,
         };
     }
-
-    // Xmip is the server here: the Stream is made available and something comes
-    // and takes it. There is nothing to send and no identity for Xmip to
-    // present — the collector presents one, and is put through the same three
-    // gates an arrival is, when it turns up.
-    if location.departing == Departing::Collected {
-        return Departed::Awaiting {
-            to: to.clone(),
-            at: location.uri.clone(),
-        };
-    }
-
-    let Some(transport) = runtime
-        .transports
-        .iter()
-        .find(|candidate| candidate.technology() == location.transport)
-    else {
-        return Departed::NoTransport {
-            to: to.clone(),
-            technology: location.transport.clone(),
-        };
-    };
 
     // ADR-0006. The first identity found walking Location, Port, Group,
     // Sending Process is the one presented — resolved independently of
     // whatever identity the Message arrived under, because the target only
     // cares which identity Xmip presents.
-    let resolved = chain.resolve();
+    let resolved = sending.chain.resolve();
     let party = resolved.and_then(|(party_id, _)| runtime.directory.party(party_id));
     let presented = party.as_ref().and_then(|party| {
         party
             .configured_for(Purpose::Send)
-            .find(|identity| identity.mechanism.name() == location.transport)
-            .or_else(|| party.configured_for(Purpose::Send).next())
+            .next()
+            .map(|identity| identity.value.clone())
     });
 
-    let request = SendRequest {
-        message: &work.message,
-        location: &location,
-        present: presented,
-        present_from: resolved.map(|(_, level)| level),
-        dynamic_properties: &[],
-    };
+    let bytes = work.message.sections()[0].stream.bytes();
 
-    match transport.send(request) {
-        Ok(result) => Departed::Sent {
-            to: to.clone(),
+    match sending.transport.send(&location.address, bytes) {
+        Ok(()) => Departed::Sent {
+            to,
             presented_from: resolved.map(|(_, level)| level),
-            status: result.status,
+            presented,
         },
-        Err(Failure { message, retryable }) => Departed::Failed {
-            to: to.clone(),
-            retryable,
-            detail: message,
+        Err(failure) => Departed::Failed {
+            to,
+            retryable: failure.retryable,
+            detail: failure.message,
         },
     }
 }

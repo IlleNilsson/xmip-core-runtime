@@ -2,26 +2,23 @@
 //!
 //! Arrival and departure are mirror images and share one runtime. Putting the
 //! shared thing here keeps `arrival.rs` and `departure.rs` about what happens
-//! rather than about what is wired up.
+//! rather than about what is wired up. [`carry`] is the join: one Stream in,
+//! arrival, routing, and a departure to every destination it matched.
 
 use authenticate::{Authenticator, PartyRegistry};
 use authorize::Authorizer;
 use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
 use party::Party;
-use route::{Gathering, Subscriber, Subscription};
-use send::{SendChain, SendLocation, SendTransport};
-use xcore::{Clock, IdGenerator, PartyId};
+use receive::ReceivedStream;
+use route::{Gathering, Subscription};
+use xcore::{Clock, IdGenerator, PartyId, Purpose};
 
-/// Where a matched Subscriber is configured.
-///
-/// Routing decides *that* a Message goes to `SendPort.Billing`. Which Location
-/// that is, and whose identity it presents, is configuration — and it is
-/// resolved here rather than by routing, because ADR-0019 clause 3 keeps the
-/// two apart: routing never decides *how* something gets somewhere.
-pub trait SendRegistry: Send + Sync {
-    fn location(&self, subscriber: &Subscriber) -> Option<(SendLocation, SendChain)>;
-}
+use crate::arrival::arrive;
+use crate::departure::{Departed, depart};
+use crate::outcome::Arrived;
+use crate::receiving::ReceiveGate;
+use crate::sending::Sends;
 
 /// A Party, by the identifier the gates handed back.
 ///
@@ -35,7 +32,32 @@ pub trait PartyDirectory: Send + Sync {
     fn party(&self, party_id: PartyId) -> Option<Party>;
 }
 
-/// Everything the arrival path needs that is not the arrival itself.
+/// The Parties a node knows, answering both the gates' question (whose is
+/// this verified value) and the send side's (which identity does this Party
+/// present). One list, because a deployment has one set of Parties.
+#[derive(Clone, Debug, Default)]
+pub struct Parties(pub Vec<Party>);
+
+impl PartyRegistry for Parties {
+    fn resolve(&self, mechanism: &str, purpose: Purpose, value: &str) -> Option<PartyId> {
+        self.0
+            .iter()
+            .find(|party| party.identity(mechanism, purpose) == Some(value))
+            .map(|party| party.party_id)
+    }
+}
+
+impl PartyDirectory for Parties {
+    fn party(&self, party_id: PartyId) -> Option<Party> {
+        self.0
+            .iter()
+            .find(|party| party.party_id == party_id)
+            .cloned()
+    }
+}
+
+/// Everything the message path needs that is not the Message itself, built
+/// once as a node starts and shared by every Receive Location it runs.
 pub struct Runtime<'a> {
     pub ids: &'a dyn IdGenerator,
     pub authenticators: &'a [&'a dyn Authenticator],
@@ -47,12 +69,15 @@ pub struct Runtime<'a> {
     /// Runtime is built, through the route technologies loaded
     /// (`Gathering::of`): each reads the properties its prefix names in a
     /// filter, `header:`, `party:` and the rest (ADR-0046). A bare name is
-    /// context and needs none of them. A name no loaded technology reads is
-    /// found as it compiles, and refuses each Message at arrival.
+    /// context and needs none of them. A node refuses to start while a name
+    /// does not compile (ADR-0066 clause 1); a gathering used without asking
+    /// refuses each Message at arrival instead.
     pub gathering: &'a Gathering,
     pub treatment: MessageTreatment,
-    pub sends: &'a dyn SendRegistry,
-    pub transports: &'a [&'a dyn SendTransport],
+
+    /// The node's Send Locations, each with the transport built for it once,
+    /// by the Send Port name routing resolves.
+    pub sends: &'a Sends,
 
     /// The first gate, before a Message exists.
     pub transport_identifiers: &'a [&'a dyn TransportIdentifier],
@@ -68,4 +93,29 @@ pub struct Runtime<'a> {
     /// Read at each gate rather than once. A Journey may wait days between
     /// arriving and sending, and both gates need to know when they are.
     pub clock: &'a dyn Clock,
+}
+
+/// What became of one Stream: its arrival, and a departure for every
+/// destination routing matched — none when it was refused or unroutable.
+#[derive(Debug)]
+pub struct Carried {
+    pub arrived: Arrived,
+    pub departed: Vec<Departed>,
+}
+
+/// One Stream along the whole path: arrival at `gate`, routing, and
+/// departure to every destination the Message matched.
+pub fn carry(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStream) -> Carried {
+    let arrived = arrive(runtime, gate, received);
+
+    let departed = match &arrived {
+        Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } => depart(runtime, work, facts, routing),
+        Arrived::Refused { .. } | Arrived::Unroutable { .. } => Vec::new(),
+    };
+
+    Carried { arrived, departed }
 }

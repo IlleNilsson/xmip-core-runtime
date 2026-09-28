@@ -6,8 +6,8 @@
 //! contract's `ContractFactory::settings`). The runtime names no technology
 //! (`architecture.toml`: a platform service depends on no technology
 //! repository), so it holds the declarations of the technologies it has been
-//! given — [`carry`] is how whatever brings a technology into this runtime
-//! hands over its declaration — and every reader asks here: `xmip_validate_v1`
+//! given — a node carries each technology here as it loads it (startup phase
+//! 6, `startup.rs`) — and every reader asks here: `xmip_validate_v1`
 //! and `xmip_start_v1` hold each Location to its technology's declaration
 //! through `configure::location_problems`, and `xmip_technology_catalogue_v1`
 //! (`xmip_operate.h` section 12) hands the same declarations to the language
