@@ -69,6 +69,7 @@ impl fmt::Display for Refusal {
 /// A node, started and serving until [`Running::stop`], or until it is
 /// dropped.
 pub struct Running {
+    cluster: String,
     node: String,
     capabilities: CapabilityRegistry,
     host_services: Vec<HostService>,
@@ -164,6 +165,7 @@ impl Running {
         );
 
         Ok(Self {
+            cluster: tree.service.cluster_name,
             node: tree.service.node_name,
             capabilities,
             host_services,
@@ -174,6 +176,12 @@ impl Running {
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
+    }
+
+    /// The cluster the node belongs to, `service.cluster_name`.
+    #[must_use]
+    pub fn cluster(&self) -> &str {
+        &self.cluster
     }
 
     /// The node's name, `service.node_name`.

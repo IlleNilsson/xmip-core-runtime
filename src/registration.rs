@@ -66,18 +66,24 @@ pub struct ServiceDefinition {
 
 impl ServiceDefinition {
     /// The Xmip Service for a node: the master, and the only thing the
-    /// operating system starts.
+    /// operating system starts — `xmip-service --configuration <path>`, the
+    /// estate root's executable (ADR-0018, amendment 2026-09-26).
     #[must_use]
-    pub fn for_node(node: &str, executable: &str, working_directory: &str) -> Self {
+    pub fn for_node(
+        node: &str,
+        executable: &str,
+        configuration: &str,
+        working_directory: &str,
+    ) -> Self {
         Self {
-            name: format!("xmip-{node}"),
+            name: node_service_name(node),
             display_name: format!("Xmip Service ({node})"),
             description: format!(
-                "Reads the configuration for node {node}, builds and validates the \
-                 execution tree, and supervises its Host Services. Not in the message path."
+                "Starts node {node} from its configuration, runs its in-process Host \
+                 Service, and drains it when the service manager stops it."
             ),
             executable: executable.into(),
-            arguments: vec![String::from("service"), format!("--node={node}")],
+            arguments: vec![String::from("--configuration"), configuration.into()],
             service_identity: None,
             working_directory: working_directory.into(),
         }
@@ -180,13 +186,19 @@ impl ServiceManager {
 /// before it can accept work is a node whose dependencies start against
 /// nothing.
 ///
-/// `Restart=on-failure` rather than `always`, because a validation failure is
-/// not something restarting fixes: the configuration is wrong and will still be
-/// wrong. Restarting it forever turns one legible refusal into a log nobody
-/// reads.
+/// `Restart=on-failure` rather than `always`, and never after [`REFUSED`]:
+/// a validation failure is not something restarting fixes — the
+/// configuration is wrong and will still be wrong. Restarting it forever
+/// turns one legible refusal into a log nobody reads. A stop exits 0, which
+/// is no failure, so systemd restarts nothing Xmip stopped on purpose.
 #[must_use]
 pub fn systemd_unit(definition: &ServiceDefinition) -> String {
-    let arguments = definition.arguments.join(" ");
+    let arguments = definition
+        .arguments
+        .iter()
+        .map(|argument| quoted(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
     let identity = match &definition.service_identity {
         Some(user) => format!("User={user}\n"),
         None => String::new(),
@@ -204,22 +216,48 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
          WorkingDirectory={working}\n\
          {identity}\
          Restart=on-failure\n\
+         RestartPreventExitStatus={refused}\n\
          RestartSec=5\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
         description = definition.description,
-        executable = definition.executable,
+        executable = quoted(&definition.executable),
         arguments = arguments,
         working = definition.working_directory,
         identity = identity,
+        refused = REFUSED,
     )
+}
+
+/// The exit code of a node the Xmip Service refused to start: its
+/// configuration does not read, or names what the program was not built
+/// with. A service manager does not restart it; an operator fixes it.
+pub const REFUSED: u8 = 2;
+
+/// The registered name of a node's Xmip Service, `xmip-<node>` (ADR-0053
+/// clause 1): what a service manager starts and stops it by.
+#[must_use]
+pub fn node_service_name(node: &str) -> String {
+    format!("xmip-{node}")
+}
+
+/// `text` as one argument on a command line that systemd and the Windows
+/// service control manager split at spaces: double-quoted where it has one.
+fn quoted(text: &str) -> String {
+    if text.contains(' ') {
+        format!("\"{text}\"")
+    } else {
+        text.to_string()
+    }
 }
 
 /// A launchd property list for this definition.
 ///
 /// `RunAtLoad` with `KeepAlive` on `SuccessfulExit=false` is launchd's spelling
-/// of `Restart=on-failure`, for the same reason.
+/// of `Restart=on-failure`, for the same reason. launchd has no spelling of
+/// `RestartPreventExitStatus`, so a refused node is started again after its
+/// throttle interval; macOS is a development target (ADR-0015 clause 7).
 #[must_use]
 pub fn launchd_plist(definition: &ServiceDefinition) -> String {
     let mut arguments = String::new();
@@ -271,11 +309,11 @@ pub fn launchd_plist(definition: &ServiceDefinition) -> String {
 /// way this fails with an unhelpful usage message.
 #[must_use]
 pub fn windows_service_arguments(definition: &ServiceDefinition) -> Vec<String> {
-    let mut binary = definition.executable.clone();
+    let mut binary = quoted(&definition.executable);
 
     for argument in &definition.arguments {
         binary.push(' ');
-        binary.push_str(argument);
+        binary.push_str(&quoted(argument));
     }
 
     let mut arguments = vec![
@@ -298,7 +336,12 @@ mod tests {
     use super::*;
 
     fn node_service() -> ServiceDefinition {
-        ServiceDefinition::for_node("edge-01", "/opt/xmip/bin/xmip", "/opt/xmip")
+        ServiceDefinition::for_node(
+            "edge-01",
+            "/opt/xmip/bin/xmip-service",
+            "/opt/xmip/config/xmip-node.toml",
+            "/opt/xmip",
+        )
     }
 
     #[test]
@@ -307,10 +350,10 @@ mod tests {
 
         assert_eq!(definition.name, "xmip-edge-01");
         assert!(definition.display_name.contains("edge-01"));
-        assert!(
-            definition
-                .description
-                .contains("supervises its Host Services")
+        assert!(definition.description.contains("node edge-01"));
+        assert_eq!(
+            definition.arguments,
+            ["--configuration", "/opt/xmip/config/xmip-node.toml"]
         );
     }
 
@@ -380,8 +423,10 @@ mod tests {
     #[test]
     fn the_launchd_plist_lists_the_executable_before_its_arguments() {
         let plist = launchd_plist(&node_service());
-        let executable = plist.find("/opt/xmip/bin/xmip").expect("executable");
-        let argument = plist.find("--node=edge-01").expect("argument");
+        let executable = plist
+            .find("/opt/xmip/bin/xmip-service")
+            .expect("executable");
+        let argument = plist.find("--configuration").expect("argument");
 
         assert!(executable < argument, "argv[0] comes first");
     }
@@ -421,8 +466,31 @@ mod tests {
             .find(|a| a.starts_with("binPath="))
             .expect("binPath");
 
-        assert!(bin.contains("/opt/xmip/bin/xmip"));
-        assert!(bin.contains("--node=edge-01"));
+        assert!(bin.contains("/opt/xmip/bin/xmip-service"));
+        assert!(bin.contains("--configuration /opt/xmip/config/xmip-node.toml"));
+    }
+
+    #[test]
+    fn a_path_with_a_space_stays_one_argument() {
+        let definition = ServiceDefinition::for_node(
+            "edge-01",
+            r"C:\Program Files\Xmip\bin\xmip-service.exe",
+            r"C:\ProgramData\Xmip\config\xmip-node.toml",
+            r"C:\ProgramData\Xmip",
+        );
+
+        assert_eq!(
+            windows_service_arguments(&definition)[2],
+            r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\xmip-node.toml"#
+        );
+        assert!(systemd_unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
+    }
+
+    #[test]
+    fn the_systemd_unit_does_not_restart_a_refused_node() {
+        let unit = systemd_unit(&node_service());
+
+        assert!(unit.contains(&format!("RestartPreventExitStatus={REFUSED}")));
     }
 
     #[test]
