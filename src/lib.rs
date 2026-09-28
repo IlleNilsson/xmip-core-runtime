@@ -27,6 +27,7 @@ pub mod registration;
 pub mod running;
 pub mod sending;
 pub mod service;
+pub mod service_control;
 pub mod start;
 mod startup;
 mod wire;
