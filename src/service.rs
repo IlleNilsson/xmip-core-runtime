@@ -1,19 +1,15 @@
-use crate::execution_tree::{ExecutionTree, StartupValidationReport, build_execution_tree};
-use configure::{PARSE_FAILED, XmipApplicationDocument, XmipConfigurationDocument, parse_toml};
+//! ADR-0018's nine startup phases, by the names the record gives them, and
+//! the first one's reading of a node's configuration. The phases run in
+//! `running.rs`; `start.rs` runs the first three for a surface.
+
+use std::fmt;
+
+use configure::{PARSE_FAILED, XmipConfigurationDocument, parse_toml};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum XmipServiceState {
-    Created,
-    ConfigurationRead,
-    ExecutionTreeBuilt,
-    StartupValidated,
-    ReadyToStartHostServices,
-    Running,
-    Failed,
-}
+use crate::execution_tree::StartupValidationReport;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StartupPhase {
     ReadConfiguration,
     BuildExecutionTree,
@@ -27,7 +23,8 @@ pub enum StartupPhase {
 }
 
 impl StartupPhase {
-    pub fn id(&self) -> &'static str {
+    #[must_use]
+    pub const fn id(&self) -> &'static str {
         match self {
             StartupPhase::ReadConfiguration => "read-configuration",
             StartupPhase::BuildExecutionTree => "build-execution-tree",
@@ -42,35 +39,6 @@ impl StartupPhase {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct XmipServiceStartupPlan {
-    pub state: XmipServiceState,
-    pub phases: Vec<StartupPhase>,
-    pub execution_tree: ExecutionTree,
-    pub validation_report: StartupValidationReport,
-}
-
-/// Startup phases 1 to 3 over a node configuration's text: read it as
-/// `configure`'s one document, bind the Xmip Applications it names from
-/// `applications`, build the execution tree, validate it.
-///
-/// # Errors
-/// The report, when the text does not parse or the document does not validate.
-pub fn plan_startup_from_toml(
-    source: &str,
-    applications: &[XmipApplicationDocument],
-) -> Result<XmipServiceStartupPlan, StartupValidationReport> {
-    let document = read_node(source)?;
-    let (execution_tree, validation_report) = build_execution_tree(document, applications)?;
-
-    Ok(XmipServiceStartupPlan {
-        state: XmipServiceState::ReadyToStartHostServices,
-        phases: startup_phases(),
-        execution_tree,
-        validation_report,
-    })
-}
-
 /// Startup phase 1: a node configuration's text read as `configure`'s one
 /// document, or the reader's refusal as the report.
 ///
@@ -83,6 +51,13 @@ pub fn read_node(source: &str) -> Result<XmipConfigurationDocument, StartupValid
     })
 }
 
+impl fmt::Display for StartupPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+#[must_use]
 pub fn startup_phases() -> Vec<StartupPhase> {
     vec![
         StartupPhase::ReadConfiguration,
@@ -97,6 +72,7 @@ pub fn startup_phases() -> Vec<StartupPhase> {
     ]
 }
 
+#[must_use]
 pub fn startup_sequence() -> Vec<&'static str> {
     startup_phases().iter().map(StartupPhase::id).collect()
 }

@@ -14,8 +14,8 @@
 
 use abi::ExtensionManifest;
 use configure::{
-    ConfiguredLocation, ModuleConfiguration, ServiceConfiguration, XmipApplicationDocument,
-    XmipConfigurationDocument, XmipProcessConfiguration,
+    ConfiguredLocation, Declarations, ModuleConfiguration, SendPortGroup, ServiceConfiguration,
+    XmipApplicationDocument, XmipConfigurationDocument, XmipProcessConfiguration,
 };
 use route::Subscription;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,9 @@ pub struct ExecutionTree {
     /// What routing asks of every published Message on this node: every
     /// Subscription of every Xmip Application the node binds.
     pub subscriptions: Vec<Subscription>,
+    /// The Send Port Groups of the Applications the node binds, which a
+    /// Subscription routed to a group reaches.
+    pub send_port_groups: Vec<SendPortGroup>,
 }
 
 /// An extension the runtime checked at startup, and whether it loaded it.
@@ -57,7 +60,8 @@ impl StartupValidationReport {
     }
 }
 
-/// Validate the document, bind the Xmip Applications it names from
+/// Validate the document, each Location's settings against the technology
+/// declarations in `declared`, bind the Xmip Applications it names from
 /// `applications`, and take from both what starts.
 ///
 /// # Errors
@@ -66,8 +70,9 @@ impl StartupValidationReport {
 pub fn build_execution_tree(
     document: XmipConfigurationDocument,
     applications: &[XmipApplicationDocument],
+    declared: &Declarations,
 ) -> Result<(ExecutionTree, StartupValidationReport), StartupValidationReport> {
-    let mut report = validate_startup_configuration(&document);
+    let mut report = validate_startup_configuration(&document, declared);
     if !report.is_valid() {
         return Err(report);
     }
@@ -124,6 +129,7 @@ pub fn build_execution_tree(
             ),
             verified_extensions,
             subscriptions: bound.subscriptions,
+            send_port_groups: bound.send_port_groups,
         },
         report,
     ))
@@ -135,10 +141,13 @@ fn starting(locations: impl Iterator<Item = ConfiguredLocation>) -> Vec<Configur
 }
 
 /// Everything in the document that would stop the node starting, as errors,
-/// and what would start it degraded, as warnings.
+/// and what would start it degraded, as warnings. Each Location is held to
+/// the declaration its technology makes in `declared`; a technology `declared`
+/// does not hold is the caller's to judge.
 #[must_use]
 pub fn validate_startup_configuration(
     document: &XmipConfigurationDocument,
+    declared: &Declarations,
 ) -> StartupValidationReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -217,9 +226,8 @@ pub fn validate_startup_configuration(
     }
 
     // Each Location's settings, held to the declaration its technology makes
-    // of them, for every technology this runtime carries (ADR-0064,
-    // amendment 2026-09-26): a node's own and every bound one.
-    let declared = crate::catalogue::declarations();
+    // of them (ADR-0064, amendment 2026-09-26): a node's own and every bound
+    // one.
     for (stage, side, locations) in [
         (
             "Receive Location",
@@ -230,7 +238,7 @@ pub fn validate_startup_configuration(
     ] {
         for location in locations {
             validate_location(stage, location, &mut errors);
-            errors.extend(configure::location_problems(location, side, &declared));
+            errors.extend(configure::location_problems(location, side, declared));
         }
     }
     for binding in &document.applications {
@@ -242,7 +250,7 @@ pub fn validate_startup_configuration(
                 errors.extend(configure::location_problems(
                     &bound.location,
                     side,
-                    &declared,
+                    declared,
                 ));
             }
         }
@@ -371,7 +379,8 @@ address = "C:/out"
     #[test]
     fn the_tree_is_what_the_document_starts_and_extensions_are_verified_not_loaded() {
         let document = configure::parse_toml(NODE).expect("parses");
-        let (tree, report) = build_execution_tree(document.clone(), &[]).expect("valid tree");
+        let (tree, report) =
+            build_execution_tree(document.clone(), &[], &Declarations::new()).expect("valid tree");
 
         assert!(report.is_valid());
         assert_eq!(tree.service, document.service);
@@ -390,7 +399,8 @@ address = "C:/out"
             "transport = \"\"\naddress = \"C:/in\"",
         );
         let document = configure::parse_toml(&source).expect("parses");
-        let report = build_execution_tree(document, &[]).expect_err("refused");
+        let report =
+            build_execution_tree(document, &[], &Declarations::new()).expect_err("refused");
 
         assert_eq!(
             report.errors,
@@ -411,7 +421,7 @@ address = "C:/out"
                 applies: Applies::Receive,
             }],
         };
-        crate::catalogue::carry(crate::catalogue::Capability::Transport, DROP);
+        let declared = Declarations::from([(DROP.technology, DROP)]);
 
         let source = NODE.replace(
             "transport = \"file\"\naddress = \"C:/in\"",
@@ -419,7 +429,7 @@ address = "C:/out"
              [receive_locations.settings]\ncolour = \"lime\"",
         );
         let document = configure::parse_toml(&source).expect("parses");
-        let report = build_execution_tree(document, &[]).expect_err("refused");
+        let report = build_execution_tree(document, &[], &declared).expect_err("refused");
         assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
         assert!(report.errors.iter().any(|e| e.contains("\"colour\"")));
         assert!(
@@ -481,7 +491,8 @@ address = "https://billing.example/orders"
     fn a_bound_application_gives_the_tree_its_locations_and_subscriptions() {
         let document = configure::parse_toml(ALPHA).expect("parses");
         let orders = configure::parse_application(ORDERS).expect("parses");
-        let (tree, _) = build_execution_tree(document, &[orders]).expect("binds");
+        let (tree, _) =
+            build_execution_tree(document, &[orders], &Declarations::new()).expect("binds");
 
         assert_eq!(tree.receive_locations_to_start.len(), 1);
         assert_eq!(tree.receive_locations_to_start[0].name, "OrdersIn");
@@ -493,7 +504,8 @@ address = "https://billing.example/orders"
     #[test]
     fn a_binding_of_an_application_not_given_is_refused() {
         let document = configure::parse_toml(ALPHA).expect("parses");
-        let report = build_execution_tree(document, &[]).expect_err("refused");
+        let report =
+            build_execution_tree(document, &[], &Declarations::new()).expect_err("refused");
 
         assert_eq!(
             report.errors,

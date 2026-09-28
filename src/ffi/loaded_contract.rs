@@ -15,14 +15,21 @@
 
 use std::ffi::c_void;
 
-use abi::ModuleDescriptor;
 use abi::ffi::{ContractVtable, Diagnostic, Reader, Str, status};
+use abi::{Expectation, ModuleDescriptor};
 use codec::cursor::Cursor;
 
 use crate::ffi::loaded_module::{LoadedModule, read_str};
 
 /// The trait this file drives, as `descriptor.module` spells it (ADR-0011).
 pub const CONTRACT: &str = "contract";
+
+/// What this host requires of a module offering the contract trait: the
+/// trait version the table below was written against (ADR-0012 clause 6).
+#[must_use]
+pub fn expectation() -> Expectation {
+    Expectation::new(CONTRACT, 1, 0)
+}
 
 /// `configure`, `start` and `stop` differ only in what they are called; the
 /// first also takes the artifact's TOML fragment.
@@ -334,7 +341,6 @@ fn read_diagnostics(first: *const Diagnostic, count: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compatibility::Expectation;
     use std::path::{Path, PathBuf};
 
     /// Where the real module is. `XMIP_MODULE_LIBRARY` first, as

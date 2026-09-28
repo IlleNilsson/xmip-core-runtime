@@ -9,9 +9,10 @@
 //! the table is already paid for, which is that record's clause 8 step 2.
 //!
 //! ADR-0025 clause 3 is what this makes real: a delayed Module is loaded on
-//! the first call that needs it. Until this file there was nothing to delay —
-//! `host::dynamic::verify_dynamic_module` checks a descriptor an operator
-//! typed and has never opened a library.
+//! the first call that needs it. A node opens every Module its configuration
+//! starts through here, once, as it starts (`library.rs`, startup phase 6),
+//! and the descriptor the module filled is judged by `abi::accepts`, the one
+//! compatibility rule, beside the descriptor's own.
 //!
 //! What a loaded module is then *asked* is the trait's subject and lives with
 //! the trait: `loaded_contract.rs` for creation wave one's contract table.
@@ -38,10 +39,8 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
 use abi::ffi::{CreateModuleFn, Host, Module, Str, status};
-use abi::{ModuleDescriptor, XMIP_ABI_VERSION, XMIP_ENTRYPOINT};
+use abi::{Expectation, ModuleDescriptor, XMIP_ABI_VERSION, XMIP_ENTRYPOINT, accepts};
 use libloading::Library;
-
-use crate::compatibility::{Expectation, accepts};
 
 // ----------------------------------------------------------------------
 // The host table. Header section 6: a module gets no allocator, no thread

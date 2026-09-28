@@ -1,4 +1,5 @@
-//! What became of one arrival: refused at a gate, routed, or wanted by nobody.
+//! What became of one arrival: refused at a gate, routed, or wanted by nobody;
+//! and a running node's count of them ([`Outcomes`]).
 //!
 //! Separate from [`crate::arrival`], which is the lifecycle that produces one
 //! of these. The outcome is read by callers that never run the lifecycle —
@@ -18,8 +19,11 @@
 //! already composes the three, which is ADR-0044's rule read upward.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use crate::generation::ReceivedWork;
+use crate::message_path::Carried;
 use authenticate::Refusal;
 use authorize::Decision;
 use context::IdentityFacts;
@@ -98,6 +102,87 @@ impl Arrived {
         match self {
             Self::Routed { routing, .. } | Self::Unroutable { routing, .. } => Some(routing),
             Self::Refused { .. } => None,
+        }
+    }
+}
+
+/// What became of every Stream a running node took, counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Outcomes {
+    /// Streams taken off a Receive Location.
+    pub received: u64,
+    /// Published, and at least one Subscription wanted it.
+    pub routed: u64,
+    /// Published, and nobody wanted it.
+    pub unroutable: u64,
+    /// Refused at a gate before a Journey opened.
+    pub refused: u64,
+    /// Departures that left.
+    pub sent: u64,
+    /// Departures that did not: refused, failed, nowhere to go, or bound
+    /// for an Xmip Process no runtime runs yet.
+    pub not_sent: u64,
+}
+
+/// The counts a running node keeps as each Stream is carried, and why any
+/// Receive Location stopped.
+#[derive(Default)]
+pub(crate) struct Tally {
+    received: AtomicU64,
+    routed: AtomicU64,
+    unroutable: AtomicU64,
+    refused: AtomicU64,
+    sent: AtomicU64,
+    not_sent: AtomicU64,
+    failures: Mutex<Vec<(String, String)>>,
+}
+
+impl Tally {
+    /// Count what became of one Stream.
+    pub(crate) fn record(&self, carried: &Carried) {
+        let count = |counter: &AtomicU64| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        };
+        count(&self.received);
+        count(match carried.arrived {
+            Arrived::Routed { .. } => &self.routed,
+            Arrived::Unroutable { .. } => &self.unroutable,
+            Arrived::Refused { .. } => &self.refused,
+        });
+        for departed in &carried.departed {
+            count(if departed.sent() {
+                &self.sent
+            } else {
+                &self.not_sent
+            });
+        }
+    }
+
+    /// `location` stopped serving, and why.
+    pub(crate) fn fail(&self, location: &str, why: String) {
+        self.failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((location.to_string(), why));
+    }
+
+    /// Every Location that stopped, with its reason.
+    pub(crate) fn failures(&self) -> Vec<(String, String)> {
+        self.failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn outcomes(&self) -> Outcomes {
+        let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        Outcomes {
+            received: read(&self.received),
+            routed: read(&self.routed),
+            unroutable: read(&self.unroutable),
+            refused: read(&self.refused),
+            sent: read(&self.sent),
+            not_sent: read(&self.not_sent),
         }
     }
 }

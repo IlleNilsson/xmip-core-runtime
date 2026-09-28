@@ -40,13 +40,14 @@ use context::{IdentityFacts, MessageContext};
 use identify::{IdentifyError, Presented, StreamArrival, identify_message, identify_transport};
 use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
-use receive::{ReceiveLocation, ReceivedStream};
+use receive::ReceivedStream;
 use route::{Dispatch, Promoted, publish};
 use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 use crate::outcome::{Arrived, Refused};
+use crate::receiving::ReceiveGate;
 
 /// Drive one arrival from bytes to a dispatch.
 ///
@@ -70,11 +71,7 @@ use crate::outcome::{Arrived, Refused};
 /// unauthorized sender** — and the type system carries that rather than the
 /// comment, because the transport gate is handed an [`Arrival`] and only the
 /// message gate is handed a [`Message`].
-pub fn arrive(
-    runtime: &Runtime<'_>,
-    location: &ReceiveLocation,
-    received: ReceivedStream,
-) -> Arrived {
+pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStream) -> Arrived {
     let now = runtime.clock.unix_timestamp_nanos();
 
     // -- Transport identification ------------------------------------------
@@ -112,7 +109,7 @@ pub fn arrive(
 
     // -- Transport authentication ------------------------------------------
     let transport = match authenticate(
-        &location.accept,
+        &gate.accept,
         runtime.authenticators,
         runtime.parties,
         &presented,
@@ -133,14 +130,13 @@ pub fn arrive(
     // permitted to post here, and an unconfigured Receive Location permits
     // nothing. Alignment is vacuous while there is one layer, and is evaluated
     // again below once there may be two.
-    let transport_facts =
-        IdentityFacts::evaluate(location.identity_policy.alignment, transport, None);
+    let transport_facts = IdentityFacts::evaluate(gate.identity.alignment, transport, None);
 
     let permitted = authorize(
         runtime.policies,
         &transport_facts,
-        &Attempt::new(Action::Receive, &location.name).at(now),
-        location.identity_policy.on_misalignment,
+        &Attempt::new(Action::Receive, &gate.location).at(now),
+        gate.identity.on_misalignment,
     );
 
     if !permitted.allowed() {
@@ -178,7 +174,7 @@ pub fn arrive(
     // questions.
     let (facts, message) = match settle_message_identity(
         runtime,
-        location,
+        gate,
         transport_facts,
         message,
         received.arriving,
@@ -241,7 +237,7 @@ fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refuse
 /// edit that never happened.
 fn settle_message_identity(
     runtime: &Runtime<'_>,
-    location: &ReceiveLocation,
+    gate: &ReceiveGate,
     transport_facts: IdentityFacts,
     message: Message,
     arriving: Arriving,
@@ -267,7 +263,7 @@ fn settle_message_identity(
     // the mechanism refuses it here exactly as it would at the transport, and
     // for the same clause-1 reason.
     let identity = authenticate(
-        &location.accept,
+        &gate.accept,
         runtime.authenticators,
         runtime.parties,
         &claimed,
@@ -281,7 +277,7 @@ fn settle_message_identity(
     // connection and the partner produced the content is the ordinary case, not
     // the attack.
     let facts = IdentityFacts::evaluate(
-        location.identity_policy.alignment,
+        gate.identity.alignment,
         transport_facts.transport.clone(),
         Some(identity),
     );
@@ -289,8 +285,8 @@ fn settle_message_identity(
     let permitted = authorize(
         runtime.policies,
         &facts,
-        &Attempt::new(Action::Receive, &location.name).at(now),
-        location.identity_policy.on_misalignment,
+        &Attempt::new(Action::Receive, &gate.location).at(now),
+        gate.identity.on_misalignment,
     );
 
     if !permitted.allowed() {
@@ -393,26 +389,22 @@ mod tests {
     // arrived with, and a test that stubbed the join would not catch the case
     // that matters.
     use crate::departure::{Departed, depart};
-    use crate::message_path::{PartyDirectory, Runtime, SendRegistry};
-    use authenticate::{Acceptance, AuthenticateError, Authenticator, PartyRegistry, Refusal};
+    use crate::message_path::{Parties, Runtime};
+    use crate::receiving::ReceiveGate;
+    use crate::sending::{Sending, Sends};
+    use authenticate::{Acceptance, AuthenticateError, Authenticator, Refusal};
     use authorize::{Authorizer, Decision};
     use context::Verified;
     use identify::{MessageIdentifier, TransportIdentifier};
     use message::MessageTreatment;
     use party::{Identity, Party, PartyKind};
     use path::expression::Expression;
-    use receive::ReceiveLocationType;
     use route::{Gathering, Subscriber, Subscription};
-    use send::{
-        SendChain, SendLevel, SendLocation as Location, SendRequest, SendResult, SendTransport,
-    };
-    use std::sync::Mutex;
+    use send::{SendChain, SendLevel};
     use std::sync::atomic::{AtomicU64, Ordering};
     use stream::Stream;
-    use xcore::{
-        Clock, CredentialRef, Departing, Established, Failure, IdGenerator, Mechanism, PartyId,
-        Purpose, StreamId,
-    };
+    use transport::{Arrived as Delivered, Directions, Transport, TransportError};
+    use xcore::{Clock, CredentialRef, Established, IdGenerator, Mechanism, PartyId, StreamId};
 
     fn filter(text: &str) -> Expression {
         Expression::parse(text).expect("compiles")
@@ -516,105 +508,71 @@ mod tests {
         }
     }
 
-    /// Both halves over one list. Two traits because the gates may only have
-    /// the narrow one; one implementation because a deployment has one set of
-    /// Parties.
-    struct Registry(Vec<Party>);
-
-    impl PartyRegistry for Registry {
-        fn resolve(&self, mechanism: &str, purpose: Purpose, value: &str) -> Option<PartyId> {
-            self.0
-                .iter()
-                .find(|party| party.identity(mechanism, purpose) == Some(value))
-                .map(|party| party.party_id)
-        }
-    }
-
-    impl PartyDirectory for Registry {
-        fn party(&self, party_id: PartyId) -> Option<Party> {
-            self.0
-                .iter()
-                .find(|party| party.party_id == party_id)
-                .cloned()
-        }
-    }
-
-    /// One Send Port, configured to present Xmip's own identity.
-    struct Sends;
-
-    impl SendRegistry for Sends {
-        fn location(&self, subscriber: &Subscriber) -> Option<(Location, SendChain)> {
-            if subscriber.name() != "Billing" {
-                return None;
-            }
-
-            Some((
-                Location {
-                    artifact_id: xcore::ArtifactId::new(10),
-                    name: "Billing".to_string(),
-                    uri: "sftp://billing.example/in".to_string(),
-                    transport: "ssh-key".to_string(),
-                    departing: Departing::Pushed,
-                    present_as: None,
-                },
-                SendChain {
-                    port: Some(PartyId::new(8)),
-                    ..SendChain::default()
-                },
-            ))
-        }
-    }
-
-    /// Records what it was asked to present, so a test can assert on identity
-    /// rather than only on success.
+    /// A transport that sends, or fails as told: the smallest thing that is
+    /// a Send Location's transport rather than the runtime deciding.
     struct Recording {
-        technology: &'static str,
         fail: Option<(bool, &'static str)>,
-        presented: Mutex<Vec<String>>,
     }
 
     impl Recording {
-        fn ok(technology: &'static str) -> Self {
-            Self {
-                technology,
-                fail: None,
-                presented: Mutex::new(Vec::new()),
-            }
+        const fn ok() -> Self {
+            Self { fail: None }
         }
 
-        fn failing(technology: &'static str, retryable: bool, why: &'static str) -> Self {
+        const fn failing(retryable: bool, why: &'static str) -> Self {
             Self {
-                technology,
                 fail: Some((retryable, why)),
-                presented: Mutex::new(Vec::new()),
             }
         }
     }
 
-    impl SendTransport for Recording {
-        fn technology(&self) -> &'static str {
-            self.technology
+    impl Transport for Recording {
+        fn name(&self) -> &'static str {
+            "recording"
         }
 
-        fn send(&self, request: SendRequest<'_>) -> Result<SendResult, Failure> {
-            self.presented.lock().unwrap().push(
-                request
-                    .present
-                    .map_or_else(|| "(none)".to_string(), |identity| identity.value.clone()),
-            );
+        fn directions(&self) -> Directions {
+            Directions::SEND
+        }
 
-            if let Some((retryable, message)) = self.fail {
-                return Err(Failure {
-                    retryable,
+        fn receive(&self) -> transport::Result<Vec<Delivered>> {
+            Ok(Vec::new())
+        }
+
+        fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
+            match self.fail {
+                Some((retryable, message)) => Err(TransportError {
                     message: message.to_string(),
-                });
+                    retryable,
+                }),
+                None => Ok(()),
             }
+        }
+    }
 
-            Ok(SendResult {
-                response: None,
-                status: "accepted".to_string(),
-                properties: Vec::new(),
-            })
+    /// One Send Port, Billing, whose Port declares Xmip's own identity.
+    fn sends(transport: Recording) -> Sends {
+        let configured = configure::ConfiguredLocation {
+            name: "Billing".to_string(),
+            start: true,
+            transport: "recording".to_string(),
+            address: "sftp://billing.example/in".to_string(),
+            credentials: None,
+            contract: None,
+            settings: configure::LocationSettings::default(),
+            contract_settings: configure::LocationSettings::default(),
+            accept: configure::Accept::default(),
+        };
+        Sends {
+            locations: vec![Sending {
+                configured,
+                chain: SendChain {
+                    port: Some(PartyId::new(8)),
+                    ..SendChain::default()
+                },
+                transport: Box::new(transport),
+            }],
+            groups: Vec::new(),
         }
     }
 
@@ -631,21 +589,6 @@ mod tests {
             mechanism::mutual_tls(),
             "CN=partner-x.example",
         ))
-    }
-
-    fn registry() -> Registry {
-        Registry(vec![partner(), xmip_itself()])
-    }
-
-    fn location() -> ReceiveLocation {
-        ReceiveLocation::new(
-            xcore::ArtifactId::new(1),
-            "partner-x",
-            "https://xmip.example/in/partner-x",
-            "https",
-            ReceiveLocationType::DataTransfer,
-        )
-        .accepting(Acceptance::closed().accepting(&mechanism::mutual_tls()))
     }
 
     fn arriving() -> ReceivedStream {
@@ -667,16 +610,23 @@ mod tests {
         )]
     }
 
-    // One argument per Runtime field, because that is what this builds. A
-    // builder would be a second copy of the struct for the sake of a lint.
-    #[allow(clippy::too_many_arguments)]
+    fn registry() -> Parties {
+        Parties(vec![partner(), xmip_itself()])
+    }
+
+    fn location() -> ReceiveGate {
+        ReceiveGate::new(
+            "partner-x",
+            Acceptance::closed().accepting(&mechanism::mutual_tls()),
+        )
+    }
+
     fn runtime<'a>(
         ids: &'a Counter,
         authenticators: &'a [&'a dyn Authenticator],
-        parties: &'a Registry,
+        parties: &'a Parties,
         subscriptions: &'a [Subscription],
         sends: &'a Sends,
-        transports: &'a [&'a dyn SendTransport],
         policies: &'a [&'a dyn Authorizer],
         clock: &'a dyn Clock,
     ) -> Runtime<'a> {
@@ -690,7 +640,6 @@ mod tests {
             gathering: Box::leak(Box::new(Gathering::of(&[], subscriptions))),
             treatment: MessageTreatment::default(),
             sends,
-            transports,
             transport_identifiers: &[],
             message_identifiers: &[],
             policies,
@@ -708,7 +657,7 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_to_partner();
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let arrived = arrive(
             &runtime(
@@ -716,8 +665,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -764,8 +712,12 @@ mod tests {
                     document = \"orders.application.toml\"\n";
         let orders = configure::parse_application(&application).expect("the Application reads");
         let document = configure::parse_toml(node).expect("the node reads");
-        let (tree, _) = crate::execution_tree::build_execution_tree(document, &[orders])
-            .expect("the node binds it");
+        let (tree, _) = crate::execution_tree::build_execution_tree(
+            document,
+            &[orders],
+            &configure::Declarations::new(),
+        )
+        .expect("the node binds it");
 
         let ids = Counter::default();
         let proves = Always(mechanism::mutual_tls(), Verified::Proven);
@@ -774,7 +726,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let arrived = arrive(
             &runtime(
@@ -782,8 +734,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &tree.subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -808,7 +759,7 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_to_partner();
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let arrived = arrive(
             &runtime(
@@ -816,8 +767,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -853,7 +803,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let subscriptions = vec![Subscription::new(
             "invoices",
@@ -867,8 +817,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -896,25 +845,21 @@ mod tests {
         let ids = Counter::default();
         let circumstance = Always(mechanism::circumstance(), Verified::Proven);
         let authenticators: [&dyn Authenticator; 1] = [&circumstance];
-        let parties = Registry(Vec::new());
+        let parties = Parties::default();
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
         let subscriptions = vec![Subscription::new(
             "archive",
             Subscriber::SendPort("Archive".to_string()),
             Expression::everything(),
         )];
 
-        let folder = ReceiveLocation::new(
-            xcore::ArtifactId::new(2),
+        let folder = ReceiveGate::new(
             "drop",
-            "file:///in/partner-y",
-            "file",
-            ReceiveLocationType::BatchLoad,
-        )
-        .accepting(Acceptance::closed().accepting(&mechanism::circumstance()));
+            Acceptance::closed().accepting(&mechanism::circumstance()),
+        );
 
         let arrived = arrive(
             &runtime(
@@ -922,8 +867,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -955,7 +899,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let subscriptions = vec![Subscription::new(
             "high-assurance-only",
@@ -969,8 +913,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -998,8 +941,7 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_to_partner();
-        let sftp = Recording::ok("ssh-key");
-        let posting: [&dyn SendTransport; 1] = [&sftp];
+        let sends = sends(Recording::ok());
 
         let arrived = arrive(
             &runtime(
@@ -1007,8 +949,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -1031,8 +972,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -1045,17 +985,19 @@ mod tests {
         assert!(departed[0].sent(), "got {:?}", departed[0]);
 
         // The Send Port declared it, not the Location and not the Message.
-        let Departed::Sent { presented_from, .. } = &departed[0] else {
+        let Departed::Sent {
+            presented_from,
+            presented,
+            ..
+        } = &departed[0]
+        else {
             unreachable!()
         };
         assert_eq!(*presented_from, Some(SendLevel::Port));
 
-        // And the transport was handed Xmip's key rather than the partner's
+        // And the chain resolved Xmip's key rather than the partner's
         // certificate.
-        assert_eq!(
-            sftp.presented.lock().unwrap().as_slice(),
-            ["SHA256:xmip-outbound"]
-        );
+        assert_eq!(presented.as_deref(), Some("SHA256:xmip-outbound"));
     }
 
     #[test]
@@ -1067,7 +1009,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         // Routing sends it to a Send Port that Sends knows nothing about.
         let subscriptions = vec![Subscription::new(
@@ -1081,8 +1023,7 @@ mod tests {
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
@@ -1114,16 +1055,14 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_to_partner();
-        let refusing = Recording::failing("ssh-key", true, "connection refused");
-        let posting: [&dyn SendTransport; 1] = [&refusing];
+        let sends = sends(Recording::failing(true, "connection refused"));
 
         let engine = runtime(
             &ids,
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
@@ -1152,51 +1091,6 @@ mod tests {
     }
 
     #[test]
-    fn a_technology_nothing_loaded_speaks_is_named_rather_than_guessed() {
-        let ids = Counter::default();
-        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
-        let authenticators: [&dyn Authenticator; 1] = [&proves];
-        let parties = registry();
-        let allow = Open;
-        let open: [&dyn Authorizer; 1] = [&allow];
-        let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
-
-        // The Send Port wants ssh-key and only an HTTP transport is loaded.
-        let http = Recording::ok("http");
-        let posting: [&dyn SendTransport; 1] = [&http];
-
-        let engine = runtime(
-            &ids,
-            &authenticators,
-            &parties,
-            &subscriptions,
-            &Sends,
-            &posting,
-            &open,
-            &clock,
-        );
-        let arrived = arrive(&engine, &location(), arriving());
-
-        let Arrived::Routed {
-            work,
-            facts,
-            routing,
-        } = &arrived
-        else {
-            panic!("expected a route, got {arrived:?}");
-        };
-
-        let departed = depart(&engine, work, facts, routing);
-
-        let Departed::NoTransport { technology, .. } = &departed[0] else {
-            panic!("expected no transport, got {:?}", departed[0]);
-        };
-
-        assert_eq!(technology, "ssh-key");
-    }
-
-    #[test]
     fn the_first_gate_is_called_and_the_transport_does_not_decide() {
         // The claim comes from an identifier reading the connection, not from a
         // transport handing over a conclusion. `ReceivedStream::presented` is
@@ -1210,7 +1104,7 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_to_partner();
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
 
         let reads = ReadsProperty(mechanism::mutual_tls(), "tls.client.subject");
         let identifiers: [&dyn TransportIdentifier; 1] = [&reads];
@@ -1220,8 +1114,7 @@ mod tests {
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
@@ -1262,7 +1155,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
         let subscriptions = vec![Subscription::new(
             "edi",
             Subscriber::SendPort("Billing".to_string()),
@@ -1277,21 +1170,14 @@ mod tests {
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
         engine.message_identifiers = &identifiers;
 
-        let van = ReceiveLocation::new(
-            xcore::ArtifactId::new(3),
+        let van = ReceiveGate::new(
             "van",
-            "https://xmip.example/in/van",
-            "https",
-            ReceiveLocationType::DataTransfer,
-        )
-        .accepting(
             Acceptance::closed()
                 .accepting(&mechanism::mutual_tls())
                 .accepting(&mechanism::edi_x12_interchange()),
@@ -1341,7 +1227,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
         let subscriptions = subscribed_to_partner();
 
         let envelope = ReadsInterchange;
@@ -1352,8 +1238,7 @@ mod tests {
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
@@ -1402,25 +1287,21 @@ mod tests {
         let ids = Counter::default();
         let circumstance = Always(mechanism::circumstance(), Verified::Proven);
         let authenticators: [&dyn Authenticator; 1] = [&circumstance];
-        let parties = Registry(Vec::new());
+        let parties = Parties::default();
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
         let subscriptions = vec![Subscription::new(
             "nightly",
             Subscriber::SendPort("Archive".to_string()),
             equals("xmip.arriving", "scheduled"),
         )];
 
-        let nightly = ReceiveLocation::new(
-            xcore::ArtifactId::new(4),
+        let nightly = ReceiveGate::new(
             "partner-y-nightly",
-            "sftp://partner-y.example/out",
-            "sftp",
-            ReceiveLocationType::BatchLoad,
-        )
-        .accepting(Acceptance::closed().accepting(&mechanism::circumstance()));
+            Acceptance::closed().accepting(&mechanism::circumstance()),
+        );
 
         let arrived = arrive(
             &runtime(
@@ -1428,8 +1309,7 @@ mod tests {
                 &authenticators,
                 &parties,
                 &subscriptions,
-                &Sends,
-                &posting,
+                &sends,
                 &open,
                 &clock,
             ),
@@ -1474,7 +1354,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
+        let sends = sends(Recording::ok());
         let subscriptions = vec![Subscription::new(
             "pushed-edi",
             Subscriber::SendPort("Billing".to_string()),
@@ -1489,21 +1369,14 @@ mod tests {
             &authenticators,
             &parties,
             &subscriptions,
-            &Sends,
-            &posting,
+            &sends,
             &open,
             &clock,
         );
         engine.message_identifiers = &identifiers;
 
-        let van = ReceiveLocation::new(
-            xcore::ArtifactId::new(5),
+        let van = ReceiveGate::new(
             "van",
-            "https://xmip.example/in/van",
-            "https",
-            ReceiveLocationType::DataTransfer,
-        )
-        .accepting(
             Acceptance::closed()
                 .accepting(&mechanism::mutual_tls())
                 .accepting(&mechanism::edi_x12_interchange()),
@@ -1558,17 +1431,8 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&Open];
         let clock = Fixed(NOW);
         let subscriptions = subscribed_on(equals("party:sender", &PartyId::new(7).to_string()));
-        let posting: [&dyn SendTransport; 1] = [&Recording::ok("ssh-key")];
-        let bare = runtime(
-            &ids,
-            &authenticators,
-            &parties,
-            &[],
-            &Sends,
-            &posting,
-            &open,
-            &clock,
-        );
+        let sends = sends(Recording::ok());
+        let bare = runtime(&ids, &authenticators, &parties, &[], &sends, &open, &clock);
         let party: [&dyn route::Source; 1] = [&route_party::PartySource];
         let gathering = Gathering::of(&party, &subscriptions);
         let loaded = Runtime {
@@ -1616,8 +1480,9 @@ mod tests {
             MessageTreatment::default(),
         );
 
+        let nowhere = Sends::default();
         let on_bytes = subscribed_on(filter("exists Blob"));
-        let reading = runtime(&ids, &[], &parties, &on_bytes, &Sends, &[], &[], &clock);
+        let reading = runtime(&ids, &[], &parties, &on_bytes, &nowhere, &[], &clock);
         let Err(Refused::Promotion(error)) = promoted(&reading, &message) else {
             panic!("bytes under a bare name are refused");
         };
@@ -1625,7 +1490,7 @@ mod tests {
         assert_eq!(error.property, "Blob");
 
         let on_null = subscribed_on(filter("exists Note"));
-        let reading = runtime(&ids, &[], &parties, &on_null, &Sends, &[], &[], &clock);
+        let reading = runtime(&ids, &[], &parties, &on_null, &nowhere, &[], &clock);
         let set = promoted(&reading, &message).expect("a Null is readable");
         assert_eq!(set.get("Note"), None);
         assert_eq!(publish(&set, &on_null).dispatch(), Dispatch::Unroutable);
