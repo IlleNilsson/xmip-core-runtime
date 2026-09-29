@@ -293,7 +293,7 @@ mod tests {
             scope: "xmip:///edge-01/transport/sftp".into(),
             health: Health::Done,
             severity: 90,
-            evidence: "refused by partner-x".into(),
+            evidence: "refused by party-x".into(),
             observed_unix_nanos: 11,
         });
         snapshot.record_count(Count {
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(len, 2);
         assert_eq!(out[0].health, health::DONE);
-        assert_eq!(text(out[0].evidence), "refused by partner-x");
+        assert_eq!(text(out[0].evidence), "refused by party-x");
 
         // SAFETY: not used after this.
         unsafe { (table.destroy.expect("destroy"))(table.ctx) };
