@@ -94,6 +94,7 @@ pub(crate) const fn wire_kind(value: NodeKind) -> i32 {
         NodeKind::Node => kind::NODE,
         NodeKind::Stage => kind::STAGE,
         NodeKind::Endpoint => kind::ENDPOINT,
+        NodeKind::Party => kind::PARTY,
     }
 }
 
@@ -228,7 +229,7 @@ mod tests {
         for pattern in Pattern::ALL {
             assert_eq!(from_wire_pattern(wire_pattern(*pattern)), Some(*pattern));
         }
-        assert_eq!(from_wire_kind(15), None);
+        assert_eq!(from_wire_kind(16), None);
         assert_eq!(from_wire_origin(-1), None);
         assert_eq!(from_wire_pattern(7), None);
     }
@@ -272,7 +273,7 @@ mod tests {
         let origins: Vec<i32> = Origin::ALL.iter().map(|o| wire_origin(*o)).collect();
         let patterns: Vec<i32> = Pattern::ALL.iter().map(|p| wire_pattern(*p)).collect();
 
-        assert_eq!(kinds, (0..15).collect::<Vec<i32>>());
+        assert_eq!(kinds, (0..16).collect::<Vec<i32>>());
         assert_eq!(origins, [0, 1, 2]);
         assert_eq!(patterns, (0..7).collect::<Vec<i32>>());
     }
