@@ -99,6 +99,31 @@ pub unsafe extern "C" fn xmip_scope_contains_v1(
     status::OK
 }
 
+/// `observe::wildcard::matches`, forwarded: the one wildcard, which every
+/// surface's `ScopePattern` calls rather than keeping a copy (ADR-0052,
+/// amendment 2026-09-19; moved to Rust 2026-09-29).
+///
+/// # Safety
+/// Both strings point at their stated length of readable bytes;
+/// `out_matches` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_scope_matches_v1(
+    candidate: Str,
+    pattern: Str,
+    out_matches: *mut u8,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on both.
+    let (Some(candidate), Some(pattern)) = (unsafe { scope_text(candidate) }, unsafe {
+        scope_text(pattern)
+    }) else {
+        return status::MALFORMED;
+    };
+
+    // SAFETY: `out_matches` is writable per the contract.
+    unsafe { *out_matches = u8::from(observe::wildcard::matches(candidate, pattern)) };
+    status::OK
+}
+
 /// `observe::Scope::segments`, forwarded. Each entry borrows from `scope`.
 ///
 /// # Safety
@@ -378,6 +403,22 @@ mod tests {
         out == 1
     }
 
+    #[test]
+    fn the_wildcard_crosses_as_the_one_rule() {
+        let matches = |candidate: &str, pattern: &str| {
+            let mut out = 9u8;
+            // SAFETY: both borrow live strings; `out` is writable.
+            let code =
+                unsafe { xmip_scope_matches_v1(borrow(candidate), borrow(pattern), &raw mut out) };
+            assert_eq!(code, status::OK);
+            out == 1
+        };
+
+        assert!(matches("xmip:///C1/node/R1", "C1/node/r*"));
+        assert!(!matches("xmip:///C1/node/R1", "xmip:///C1/node"));
+        assert!(matches("", "*"));
+    }
+
     fn parts(scope: &str) -> (i32, Vec<String>) {
         let mut out = [Str::empty(); 8];
         let mut len = 0usize;
@@ -406,6 +447,7 @@ mod tests {
 
         // A signature that drifted from xmip-core-abi's fails to compile here.
         let _: rule::ScopeContainsFn = xmip_scope_contains_v1;
+        let _: rule::ScopeMatchesFn = xmip_scope_matches_v1;
         let _: rule::ScopePartsFn = xmip_scope_parts_v1;
         let _: rule::ScopeNodeFn = xmip_scope_node_v1;
         let _: rule::HealthTextFn = xmip_health_word_v1;
