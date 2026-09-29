@@ -94,7 +94,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStrea
         }
     };
 
-    // ADR-0019 clause 7. A partner drop folder is not an absence of identity,
+    // ADR-0019 clause 7. A Party drop folder is not an absence of identity,
     // and neither is a schedule: where nothing identified anything, the
     // circumstance *is* the transport identity and is authenticated as that —
     // inferred, weakly, and on the record.
@@ -233,7 +233,7 @@ fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refuse
 /// Message is rebuilt rather than mutated when a claim was found, under the
 /// same identifiers: nothing has observed it yet, and ADR-0013 puts these gates
 /// *inside* Message creation, so this is not a second generation. `generation()`
-/// would be wrong if it said otherwise — a partner reading it would see an
+/// would be wrong if it said otherwise — a Party reading it would see an
 /// edit that never happened.
 fn settle_message_identity(
     runtime: &Runtime<'_>,
@@ -274,7 +274,7 @@ fn settle_message_identity(
     // Alignment becomes a real question only now. ADR-0019 clause 7 settles a
     // disagreement between the layers here, at authorization, and never by
     // quietly preferring one — a relayed integration where the VAN opened the
-    // connection and the partner produced the content is the ordinary case, not
+    // connection and the Party produced the content is the ordinary case, not
     // the attack.
     let facts = IdentityFacts::evaluate(
         gate.identity.alignment,
@@ -584,25 +584,25 @@ mod tests {
         ))
     }
 
-    fn partner() -> Party {
-        Party::new(PartyId::new(7), PartyKind::Organization, "partner-x").with(Identity::receiving(
+    fn party_x() -> Party {
+        Party::new(PartyId::new(7), PartyKind::Organization, "party-x").with(Identity::receiving(
             mechanism::mutual_tls(),
-            "CN=partner-x.example",
+            "CN=party-x.example",
         ))
     }
 
     fn arriving() -> ReceivedStream {
         ReceivedStream::new(
             Stream::new(StreamId::new(100), b"<order/>".to_vec(), None),
-            "https://xmip.example/in/partner-x",
+            "https://xmip.example/in/party-x",
         )
         .presenting(Presented::passed(
             mechanism::mutual_tls(),
-            "CN=partner-x.example",
+            "CN=party-x.example",
         ))
     }
 
-    fn subscribed_to_partner() -> Vec<Subscription> {
+    fn subscribed_to_party_x() -> Vec<Subscription> {
         vec![Subscription::new(
             "billing",
             Subscriber::SendPort("Billing".to_string()),
@@ -611,12 +611,12 @@ mod tests {
     }
 
     fn registry() -> Parties {
-        Parties(vec![partner(), xmip_itself()])
+        Parties(vec![party_x(), xmip_itself()])
     }
 
     fn location() -> ReceiveGate {
         ReceiveGate::new(
-            "partner-x",
+            "party-x",
             Acceptance::closed().accepting(&mechanism::mutual_tls()),
         )
     }
@@ -656,7 +656,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
         let sends = sends(Recording::ok());
 
         let arrived = arrive(
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn a_bound_applications_subscription_routes_a_message() {
         let application = format!(
-            "[application]\nname = \"Orders\"\n\n[[receive_locations]]\nname = \"partner-x\"\n\n\
+            "[application]\nname = \"Orders\"\n\n[[receive_locations]]\nname = \"party-x\"\n\n\
              [[send_ports]]\nname = \"Billing\"\n\n[[subscriptions]]\nid = \"billing\"\n\
              destination = {{ send-port = \"Billing\" }}\n\
              filter = \"xmip.party = '{}'\"\n",
@@ -758,7 +758,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
         let sends = sends(Recording::ok());
 
         let arrived = arrive(
@@ -774,7 +774,7 @@ mod tests {
             &location(),
             ReceivedStream::new(
                 Stream::new(StreamId::new(101), b"{}".to_vec(), None),
-                "https://xmip.example/in/partner-x",
+                "https://xmip.example/in/party-x",
             )
             .presenting(Presented::passed(mechanism::api_key(), "k-123")),
         );
@@ -874,7 +874,7 @@ mod tests {
             &folder,
             ReceivedStream::new(
                 Stream::new(StreamId::new(102), b"ISA*00*".to_vec(), None),
-                "file:///in/partner-y/order-1.edi",
+                "file:///in/party-y/order-1.edi",
             ),
         );
 
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn a_routed_message_leaves_presenting_xmips_own_identity() {
-        // The whole spine. A partner's certificate gets it in; Xmip's own SSH
+        // The whole spine. A Party's certificate gets it in; Xmip's own SSH
         // key gets it out. ADR-0006: the send identity is resolved
         // independently, because the target only cares which identity Xmip
         // presents.
@@ -940,7 +940,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
         let sends = sends(Recording::ok());
 
         let arrived = arrive(
@@ -995,7 +995,7 @@ mod tests {
         };
         assert_eq!(*presented_from, Some(SendLevel::Port));
 
-        // And the chain resolved Xmip's key rather than the partner's
+        // And the chain resolved Xmip's key rather than the Party's
         // certificate.
         assert_eq!(presented.as_deref(), Some("SHA256:xmip-outbound"));
     }
@@ -1054,7 +1054,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
         let sends = sends(Recording::failing(true, "connection refused"));
 
         let engine = runtime(
@@ -1103,7 +1103,7 @@ mod tests {
         let allow = Open;
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
         let sends = sends(Recording::ok());
 
         let reads = ReadsProperty(mechanism::mutual_tls(), "tls.client.subject");
@@ -1125,23 +1125,23 @@ mod tests {
             &location(),
             ReceivedStream::new(
                 Stream::new(StreamId::new(103), b"<order/>".to_vec(), None),
-                "https://xmip.example/in/partner-x",
+                "https://xmip.example/in/party-x",
             )
-            .with_property("tls.client.subject", "CN=partner-x.example"),
+            .with_property("tls.client.subject", "CN=party-x.example"),
         );
 
         let Arrived::Routed { facts, .. } = arrived else {
             panic!("expected a route, got {arrived:?}");
         };
 
-        assert_eq!(facts.transport.value, "CN=partner-x.example");
+        assert_eq!(facts.transport.value, "CN=party-x.example");
         assert_eq!(facts.accountable().party_id, Some(PartyId::new(7)));
     }
 
     #[test]
     fn the_message_gate_runs_after_the_message_exists_and_records_both_layers() {
         // ADR-0013's lifecycle end to end. The connection is a VAN's
-        // certificate; the content names the partner in ISA06. Neither
+        // certificate; the content names the Party in ISA06. Neither
         // substitutes for the other and both are on the record.
         let ids = Counter::default();
         let tls = Always(mechanism::mutual_tls(), Verified::Proven);
@@ -1189,7 +1189,7 @@ mod tests {
             ReceivedStream::new(
                 Stream::new(
                     StreamId::new(104),
-                    b"ISA*00*          *00*          *ZZ*PARTNERX".to_vec(),
+                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
                     None,
                 ),
                 "https://xmip.example/in/van",
@@ -1205,7 +1205,7 @@ mod tests {
         assert_eq!(facts.transport.value, "CN=van.example");
 
         let message = facts.message.as_ref().expect("the envelope named someone");
-        assert_eq!(message.value, "ISA06=PARTNERX");
+        assert_eq!(message.value, "ISA06=PARTYX");
         assert_eq!(message.verified, Verified::Claimed);
 
         // Still one Message. These gates run inside Message creation, so
@@ -1228,7 +1228,7 @@ mod tests {
         let open: [&dyn Authorizer; 1] = [&allow];
         let clock = Fixed(NOW);
         let sends = sends(Recording::ok());
-        let subscriptions = subscribed_to_partner();
+        let subscriptions = subscribed_to_party_x();
 
         let envelope = ReadsInterchange;
         let identifiers: [&dyn MessageIdentifier; 1] = [&envelope];
@@ -1250,14 +1250,14 @@ mod tests {
             ReceivedStream::new(
                 Stream::new(
                     StreamId::new(105),
-                    b"ISA*00*          *00*          *ZZ*PARTNERX".to_vec(),
+                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
                     None,
                 ),
-                "https://xmip.example/in/partner-x",
+                "https://xmip.example/in/party-x",
             )
             .presenting(Presented::passed(
                 mechanism::mutual_tls(),
-                "CN=partner-x.example",
+                "CN=party-x.example",
             )),
         );
 
@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn a_scheduled_pickup_has_no_caller_and_its_identity_is_inferred() {
-        // A timer fires, Xmip logs into the partner's SFTP with its own key and
+        // A timer fires, Xmip logs into the Party's SFTP with its own key and
         // brings back a file. Nobody presented anything — Xmip was the client —
         // so the only identity available is the one the configuration implies.
         //
@@ -1299,7 +1299,7 @@ mod tests {
         )];
 
         let nightly = ReceiveGate::new(
-            "partner-y-nightly",
+            "party-y-nightly",
             Acceptance::closed().accepting(&mechanism::circumstance()),
         );
 
@@ -1316,7 +1316,7 @@ mod tests {
             &nightly,
             ReceivedStream::new(
                 Stream::new(StreamId::new(106), b"<orders/>".to_vec(), None),
-                "sftp://partner-y.example/out/orders-2026-08-27.xml",
+                "sftp://party-y.example/out/orders-2026-08-27.xml",
             )
             .scheduled(),
         );
@@ -1331,17 +1331,17 @@ mod tests {
         assert_eq!(facts.transport.mechanism.name(), "circumstance");
 
         // And how it got here is routable, because "the nightly pickup" and
-        // "partner-y posted something" are different events that a Subscription
+        // "party-y posted something" are different events that a Subscription
         // has to be able to tell apart.
         assert_eq!(
             facts.transport.value,
-            "sftp://partner-y.example/out/orders-2026-08-27.xml"
+            "sftp://party-y.example/out/orders-2026-08-27.xml"
         );
     }
 
     #[test]
     fn how_it_arrived_and_how_the_identity_was_established_are_separate_facts() {
-        // A pushed Stream with a detected identity: the partner posts an X12
+        // A pushed Stream with a detected identity: the Party posts an X12
         // interchange and the only name anywhere is inside the envelope. If
         // these were one fact, this case would have to be misfiled as one or
         // the other.
@@ -1388,7 +1388,7 @@ mod tests {
             ReceivedStream::new(
                 Stream::new(
                     StreamId::new(107),
-                    b"ISA*00*          *00*          *ZZ*PARTNERX".to_vec(),
+                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
                     None,
                 ),
                 "https://xmip.example/in/van",
