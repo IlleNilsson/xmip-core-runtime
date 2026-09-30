@@ -29,8 +29,8 @@ use crate::wire::{wire_counted, wire_health, wire_kind, wire_origin, wire_patter
 
 /// A read publication and its values laid out as the header's, each string
 /// borrowed from `publication`, whose buffers do not move while it lives.
-struct Read {
-    publication: Publication,
+pub(crate) struct Read {
+    pub(crate) publication: Publication,
     records: Vec<HealthEntry>,
     counts: Vec<Measurement>,
     nodes: Vec<Node>,
@@ -147,7 +147,7 @@ pub(crate) unsafe fn fill_copied<T: Copy>(
 /// # Safety
 /// `publication` is null or a handle `xmip_publication_read_v1` returned and
 /// nobody freed.
-unsafe fn held<'a>(publication: *const Handle) -> Option<&'a Read> {
+pub(crate) unsafe fn held<'a>(publication: *const Handle) -> Option<&'a Read> {
     // SAFETY: per the contract above.
     unsafe { publication.cast::<Read>().as_ref() }
 }
