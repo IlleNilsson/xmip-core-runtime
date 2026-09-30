@@ -33,4 +33,5 @@ pub mod service;
 pub mod service_control;
 pub mod start;
 mod startup;
+pub mod store;
 mod wire;

@@ -12,11 +12,15 @@
 //! `[[modules]]`, and the node opens it through the C ABI (ADR-0057); this is
 //! the other way a Module is in a process.
 
+use std::path::Path;
+
 use authenticate::Authenticator;
 use authorize::Authorizer;
 use configure::ConfiguredLocation;
 use identify::{MessageIdentifier, TransportIdentifier};
+use persist::{Engine, PersistError};
 use route::Source;
+use secret::KeyStore;
 use transport::{Configured, Transport};
 use xaudit::program_audit::ProgramAudit;
 use xcore::settings::{Applies, Given, Settings};
@@ -80,6 +84,70 @@ fn open<T: Configured + Send + Sync + 'static>(
     Ok(Box::new(T::open(address, side, given)?))
 }
 
+/// How an engine opens its store at a place: a directory for `RocksDB`, a
+/// file for `SQLite`.
+pub type OpenEngine = fn(&Path) -> Result<Box<dyn Engine>, PersistError>;
+
+/// A runtime store engine linked into the program, by the module name a
+/// node's `[store]` names it by (`xmip-core-persist-rocksdb`).
+pub struct LinkedEngine {
+    technology: &'static str,
+    open: OpenEngine,
+}
+
+impl LinkedEngine {
+    /// The engine called `technology`, opened by `open`.
+    #[must_use]
+    pub const fn new(technology: &'static str, open: OpenEngine) -> Self {
+        Self { technology, open }
+    }
+
+    /// Its module name.
+    #[must_use]
+    pub const fn technology(&self) -> &'static str {
+        self.technology
+    }
+
+    /// Open it at `place`.
+    ///
+    /// # Errors
+    /// The engine's refusal: the place cannot be opened, or another
+    /// process holds it.
+    pub fn open(&self, place: &Path) -> Result<Box<dyn Engine>, PersistError> {
+        (self.open)(place)
+    }
+}
+
+/// How a key store is built over the place it keeps its keys.
+pub type OpenKeyStore = fn(&Path) -> Box<dyn KeyStore>;
+
+/// A key store linked into the program (`xmip-core-secret`'s technologies),
+/// by the module name a node's `[store]` names it by.
+pub struct LinkedKeyStore {
+    technology: &'static str,
+    open: OpenKeyStore,
+}
+
+impl LinkedKeyStore {
+    /// The key store called `technology`, built by `open`.
+    #[must_use]
+    pub const fn new(technology: &'static str, open: OpenKeyStore) -> Self {
+        Self { technology, open }
+    }
+
+    /// Its module name.
+    #[must_use]
+    pub const fn technology(&self) -> &'static str {
+        self.technology
+    }
+
+    /// Build it over `keys`.
+    #[must_use]
+    pub fn open(&self, keys: &Path) -> Box<dyn KeyStore> {
+        (self.open)(keys)
+    }
+}
+
 /// Everything a program linked that a node may use.
 ///
 /// Each list is what the program was built with, not what the node runs: the
@@ -97,10 +165,18 @@ pub struct Linked {
     pub policies: Vec<Box<dyn Authorizer>>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
-    /// The runtime store the program opened over the engine it linked
-    /// (`xmip-core-persist`): where a paused Subscription's standing and
-    /// what it holds are kept, so both survive a restart (ADR-0013,
-    /// amendment 2026-09-30). None holds in memory, for the node's life.
+    /// The runtime store engines the program was built with; the node
+    /// opens the one its `[store]` names (`crate::store`, ADR-0018,
+    /// amendment 2026-09-30).
+    pub engines: Vec<LinkedEngine>,
+    /// The key stores the program was built with, one of which wraps the
+    /// runtime store's data key.
+    pub key_stores: Vec<LinkedKeyStore>,
+    /// A runtime store the program opened itself, which the node takes
+    /// instead of opening the one its configuration names: where a paused
+    /// Subscription's standing and what it holds are kept, so both survive
+    /// a restart (ADR-0013, amendment 2026-09-30). None, with no engine
+    /// linked and no `[store]` named, holds in memory for the node's life.
     pub store: Option<Store>,
     /// The program's own audit, where an operator's act on a Subscription
     /// is recorded (ADR-0062).
@@ -112,6 +188,22 @@ impl Linked {
     #[must_use]
     pub fn transport(&self, technology: &str) -> Option<&LinkedTransport> {
         self.transports
+            .iter()
+            .find(|linked| linked.technology() == technology)
+    }
+
+    /// The linked engine a `[store]` names.
+    #[must_use]
+    pub fn engine(&self, technology: &str) -> Option<&LinkedEngine> {
+        self.engines
+            .iter()
+            .find(|linked| linked.technology() == technology)
+    }
+
+    /// The linked key store a `[store]` names.
+    #[must_use]
+    pub fn key_store(&self, technology: &str) -> Option<&LinkedKeyStore> {
+        self.key_stores
             .iter()
             .find(|linked| linked.technology() == technology)
     }
