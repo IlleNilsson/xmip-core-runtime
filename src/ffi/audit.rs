@@ -200,6 +200,7 @@ fn record(entry: &AuditEntry) -> Value {
         "host": entry.host, "process": entry.process, "action": entry.action,
         "phase": entry.phase, "severity": entry.severity, "summary": entry.summary(),
         "scope": texts(&entry.scope), "properties": texts(&entry.properties),
+        "hidden": entry.hidden,
     });
     for (key, value) in [
         ("location", entry.location.as_deref()),
@@ -218,6 +219,7 @@ fn group(group: &AuditGroup) -> Value {
     json!({
         "kind": group.kind, "who": group.who, "count": group.count,
         "warnings": group.warnings, "errors": group.errors, "latest": group.latest,
+        "hidden": group.hidden,
     })
 }
 
@@ -333,6 +335,32 @@ mod tests {
         assert_eq!(answer["actions"][0], "probe");
         assert_eq!(answer["columns"][0], "at");
         assert_eq!(answer["severities"][2], "error");
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_hidden_run_is_read_back_only_when_the_query_includes_it() {
+        let directory =
+            std::env::temp_dir().join(format!("xmip-runtime-audit-hidden-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let place = directory.to_string_lossy().into_owned();
+        let hidden = xaudit::program_audit::ProgramAudit::new("probe", Some(&directory));
+        hidden.locate("xmip:///CT");
+        hidden.hide();
+        hidden.failed("start", "a hidden run").expect("recorded");
+        assert_eq!(call(&place, phase::BEGIN, &[]).0, status::OK);
+
+        let (_, left_out) = read(&place, &[]);
+        let answer: Value = serde_json::from_str(&left_out).expect("JSON");
+        assert_eq!(answer["matched"], 1, "{left_out}");
+        assert_eq!(answer["records"][0]["hidden"], false);
+
+        let (_, included) = read(&place, &["hidden", "include"]);
+        let answer: Value = serde_json::from_str(&included).expect("JSON");
+        assert_eq!(answer["matched"], 2, "{included}");
+        assert_eq!(answer["records"][1]["hidden"], true, "the older of the two");
+        assert_eq!(answer["groups"][0]["who"], "xmip:///CT");
+        assert_eq!(answer["groups"][0]["hidden"], true);
         let _ = fs::remove_dir_all(&directory);
     }
 

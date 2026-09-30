@@ -115,6 +115,7 @@ impl Read {
             has_run: u8::from(run.is_some()),
             cluster: run.map_or(Str::empty(), |run| borrow(&run.cluster)),
             stress: run.map_or(Str::empty(), |run| borrow(&run.stress)),
+            hidden: u8::from(run.is_some_and(|run| run.hidden)),
             has_topology: u8::from(topology.is_some()),
             topology_source: topology.map_or(Str::empty(), |drawn| borrow(&drawn.source)),
             topology_observed_unix_nanos: topology.map_or(0, |drawn| drawn.observed_unix_nanos),
@@ -466,6 +467,7 @@ attempts = 2
             has_run: 9,
             cluster: Str::empty(),
             stress: Str::empty(),
+            hidden: 9,
             has_topology: 9,
             topology_source: Str::empty(),
             topology_observed_unix_nanos: 0,
@@ -477,6 +479,7 @@ attempts = 2
         );
         assert_eq!(text(head.node), "xmip:///C1");
         assert_eq!((head.has_run, text(head.stress)), (1, "harsh".to_string()));
+        assert_eq!(head.hidden, 0, "the roll declared nothing");
         assert_eq!(
             (head.has_topology, head.topology_observed_unix_nanos),
             (1, 5)
