@@ -31,6 +31,7 @@ use xevent::listener::Listener;
 use crate::ffi::rule::refuse;
 
 mod crossing;
+mod subscription;
 
 use crossing::{Texts, asked, event_of, texts_of, view_of};
 
