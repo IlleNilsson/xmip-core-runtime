@@ -63,10 +63,18 @@ configure = { package = "xmip-core-configure", git = "https://github.com/IlleNil
 # The one transport trait: every Location's transport is built through it,
 # once, from the technologies the program starting the node linked.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The runtime store: where a paused Subscription's standing and the Messages
+# it holds are kept, sealed, over whichever engine the program linked, so a
+# pause survives a restart (ADR-0013, amendment 2026-09-30).
+persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main" }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
+# A runtime store in memory, sealed under a key held in memory, so a test
+# stops and starts a node over the same records without a machine's key store.
+persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }
+secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
 # One real route technology, so a test proves arrival reads a prefixed
 # property through what a node loads rather than through a stand-in.
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }

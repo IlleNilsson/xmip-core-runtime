@@ -25,7 +25,7 @@ use abi::operate::event::{
     Callback, Event as Wire, EventBatch, EventFilter, EventSubscription as Handle,
 };
 use xevent::Event;
-use xevent::hub::{Hub, Subscription};
+use xevent::hub::{EventSubscription, Hub};
 use xevent::listener::Listener;
 
 use crate::ffi::rule::refuse;
@@ -38,7 +38,7 @@ use crossing::{Texts, asked, event_of, texts_of, view_of};
 /// What a subscription handle holds: a queue the program drains, or a
 /// listener calling it back, which is held only to be dropped.
 struct Held {
-    drained: Option<Subscription>,
+    drained: Option<EventSubscription>,
     _listening: Option<Listener>,
 }
 
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn xmip_event_subscribe_v1(
     }
 }
 
-/// `xevent::hub::Subscription::listen`, forwarded: `callback` with
+/// `xevent::hub::EventSubscription::listen`, forwarded: `callback` with
 /// `context` for each Event, on the listener's thread.
 ///
 /// # Safety
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn xmip_event_listen_v1(
     }
 }
 
-/// `xevent::hub::Subscription::next`, forwarded, as a batch.
+/// `xevent::hub::EventSubscription::next`, forwarded, as a batch.
 ///
 /// # Safety
 /// `subscription` is a handle subscribe returned and nobody unsubscribed;
@@ -288,7 +288,7 @@ pub unsafe extern "C" fn xmip_event_publish_v1(
 }
 
 /// A new handle's box.
-fn handle(drained: Option<Subscription>, listening: Option<Listener>) -> *mut Handle {
+fn handle(drained: Option<EventSubscription>, listening: Option<Listener>) -> *mut Handle {
     let held = Held {
         drained,
         _listening: listening,

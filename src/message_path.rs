@@ -16,7 +16,9 @@ use xcore::{Clock, IdGenerator, PartyId, Purpose};
 
 use crate::arrival::arrive;
 use crate::departure::{Departed, depart};
+use crate::held_work::held;
 use crate::outcome::Arrived;
+use crate::pickup::Pickup;
 use crate::receiving::ReceiveGate;
 use crate::sending::Sends;
 
@@ -95,27 +97,45 @@ pub struct Runtime<'a> {
     pub clock: &'a dyn Clock,
 }
 
-/// What became of one Stream: its arrival, and a departure for every
-/// destination routing matched — none when it was refused or unroutable.
+/// What became of one Stream: its arrival, a departure for every
+/// destination routing matched — none when it was refused or unroutable —
+/// and how many paused Subscriptions held it instead.
 #[derive(Debug)]
 pub struct Carried {
     pub arrived: Arrived,
     pub departed: Vec<Departed>,
+    /// Paused Subscriptions that matched it and hold it (ADR-0013,
+    /// amendment 2026-09-30).
+    pub held: usize,
 }
 
 /// One Stream along the whole path: arrival at `gate`, routing, and
-/// departure to every destination the Message matched.
-pub fn carry(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStream) -> Carried {
+/// departure to every destination the Message matched whose Subscription
+/// `pickup` does not hold it for.
+pub fn carry(
+    runtime: &Runtime<'_>,
+    pickup: &Pickup,
+    gate: &ReceiveGate,
+    received: ReceivedStream,
+) -> Carried {
     let arrived = arrive(runtime, gate, received);
 
-    let departed = match &arrived {
+    let (departed, held) = match &arrived {
         Arrived::Routed {
             work,
             facts,
             routing,
-        } => depart(runtime, work, facts, routing),
-        Arrived::Refused { .. } | Arrived::Unroutable { .. } => Vec::new(),
+        } => {
+            let picked = pickup.route(routing, &|| held(work, facts));
+            let held = routing.destinations().len() - picked.destinations().len();
+            (depart(runtime, work, facts, &picked), held)
+        }
+        Arrived::Refused { .. } | Arrived::Unroutable { .. } => (Vec::new(), 0),
     };
 
-    Carried { arrived, departed }
+    Carried {
+        arrived,
+        departed,
+        held,
+    }
 }

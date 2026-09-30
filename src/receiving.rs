@@ -12,6 +12,7 @@ use transport::Transport;
 use xcore::StreamId;
 
 use crate::message_path::{Carried, Runtime, carry};
+use crate::pickup::Pickup;
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
 /// the closed set of mechanisms it accepts (ADR-0019 clause 1) and what it
@@ -103,6 +104,7 @@ impl Receiving {
     pub fn serve(
         &self,
         runtime: &Runtime<'_>,
+        pickup: &Pickup,
         stopping: &AtomicBool,
         mut each: impl FnMut(&Carried),
     ) -> Result<(), String> {
@@ -116,7 +118,7 @@ impl Receiving {
                             None,
                         );
                         let received = ReceivedStream::new(stream, arrived.origin_uri);
-                        each(&carry(runtime, &self.gate, received));
+                        each(&carry(runtime, pickup, &self.gate, received));
                     }
                 }
                 Err(failure) if failure.retryable => {}
