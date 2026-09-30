@@ -22,6 +22,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use crate::departure::Departed;
 use crate::generation::ReceivedWork;
 use crate::message_path::Carried;
 use authenticate::Refusal;
@@ -115,6 +116,8 @@ pub struct Outcomes {
     pub routed: u64,
     /// Published, and nobody wanted it.
     pub unroutable: u64,
+    /// Matches a paused Subscription held rather than picked up.
+    pub held: u64,
     /// Refused at a gate before a Journey opened.
     pub refused: u64,
     /// Departures that left.
@@ -131,6 +134,7 @@ pub(crate) struct Tally {
     received: AtomicU64,
     routed: AtomicU64,
     unroutable: AtomicU64,
+    held: AtomicU64,
     refused: AtomicU64,
     sent: AtomicU64,
     not_sent: AtomicU64,
@@ -149,12 +153,20 @@ impl Tally {
             Arrived::Unroutable { .. } => &self.unroutable,
             Arrived::Refused { .. } => &self.refused,
         });
-        for departed in &carried.departed {
-            count(if departed.sent() {
+        self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
+        self.departed(&carried.departed);
+    }
+
+    /// Count departures: a Stream's, or a held Message's once its
+    /// Subscription is resumed and picks it up.
+    pub(crate) fn departed(&self, departed: &[Departed]) {
+        for one in departed {
+            let counter = if one.sent() {
                 &self.sent
             } else {
                 &self.not_sent
-            });
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -180,6 +192,7 @@ impl Tally {
             received: read(&self.received),
             routed: read(&self.routed),
             unroutable: read(&self.unroutable),
+            held: read(&self.held),
             refused: read(&self.refused),
             sent: read(&self.sent),
             not_sent: read(&self.not_sent),

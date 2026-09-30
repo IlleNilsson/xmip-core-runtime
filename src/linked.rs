@@ -18,7 +18,10 @@ use configure::ConfiguredLocation;
 use identify::{MessageIdentifier, TransportIdentifier};
 use route::Source;
 use transport::{Configured, Transport};
+use xaudit::program_audit::ProgramAudit;
 use xcore::settings::{Applies, Given, Settings};
+
+use crate::pickup::Store;
 
 /// A transport built for one Location: the one kept instance its receives or
 /// sends go through.
@@ -94,6 +97,14 @@ pub struct Linked {
     pub policies: Vec<Box<dyn Authorizer>>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
+    /// The runtime store the program opened over the engine it linked
+    /// (`xmip-core-persist`): where a paused Subscription's standing and
+    /// what it holds are kept, so both survive a restart (ADR-0013,
+    /// amendment 2026-09-30). None holds in memory, for the node's life.
+    pub store: Option<Store>,
+    /// The program's own audit, where an operator's act on a Subscription
+    /// is recorded (ADR-0062).
+    pub audit: Option<ProgramAudit>,
 }
 
 impl Linked {

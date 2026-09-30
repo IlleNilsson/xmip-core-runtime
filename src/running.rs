@@ -35,11 +35,14 @@ use route::Gathering;
 use xcore::{SystemClock, UuidV7Generator};
 
 use crate::capability_registry::{CapabilityRegistry, Load};
+use crate::configured_subscription::ConfiguredSubscription;
 use crate::execution_tree::build_execution_tree;
+use crate::held_work::pick_up_released;
 use crate::host::{self, HostService};
 use crate::linked::Linked;
 use crate::message_path::{Parties, Runtime};
 use crate::outcome::{Outcomes, Tally};
+use crate::pickup::Pickup;
 use crate::receiving::Receiving;
 use crate::sending::Sends;
 use crate::service::StartupPhase;
@@ -77,6 +80,7 @@ pub struct Running {
     stopping: Arc<AtomicBool>,
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
+    pickup: Arc<Pickup>,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
 }
@@ -93,7 +97,7 @@ impl Running {
     /// # Errors
     /// The phase that refused the node, and every problem it found there.
     pub fn start(path: &str, mut linked: Linked) -> Result<Self, Refusal> {
-        let (document, applications) = read(path)
+        let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
 
         let declared: Declarations = linked
@@ -128,6 +132,18 @@ impl Running {
 
         let (receiving, sends) = open(&tree, &linked, gates)
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
+        let scope = format!(
+            "xmip:///{}/node/{}",
+            tree.service.cluster_name, tree.service.node_name
+        );
+        let configured = ConfiguredSubscription::of(&applications, &files);
+        let pickup = Pickup::open(
+            &scope,
+            configured,
+            linked.store.clone(),
+            linked.audit.clone(),
+        )
+        .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))?;
 
         // Only what the configuration named goes on: the authenticators its
         // Receive Locations accept. Policies and identifiers are consulted at
@@ -157,6 +173,7 @@ impl Running {
                 linked,
                 gathering,
                 subscriptions: tree.subscriptions,
+                pickup: Arc::clone(&pickup),
                 sends,
                 receiving,
             },
@@ -173,6 +190,7 @@ impl Running {
             stopping,
             serving: Some(serving),
             tally,
+            pickup,
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
@@ -200,6 +218,13 @@ impl Running {
     #[must_use]
     pub fn host_services(&self) -> &[HostService] {
         &self.host_services
+    }
+
+    /// The node's Subscriptions, their standing and what they hold, which
+    /// an operator pauses and resumes (ADR-0013, amendment 2026-09-30).
+    #[must_use]
+    pub fn pickup(&self) -> &Pickup {
+        &self.pickup
     }
 
     /// What became of every Stream so far.
@@ -298,6 +323,7 @@ struct Served {
     linked: Linked,
     gathering: Gathering,
     subscriptions: Vec<route::Subscription>,
+    pickup: Arc<Pickup>,
     sends: Sends,
     receiving: Vec<Receiving>,
 }
@@ -312,6 +338,7 @@ fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHa
             linked,
             gathering,
             subscriptions,
+            pickup,
             sends,
             receiving,
         } = served;
@@ -347,14 +374,17 @@ fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHa
 
         std::thread::scope(|scope| {
             for location in &receiving {
-                let (runtime, stopping, tally) = (&runtime, &*stopping, &*tally);
+                let (runtime, pickup, stopping, tally) = (&runtime, &*pickup, &*stopping, &*tally);
                 scope.spawn(move || {
-                    let served = location.serve(runtime, stopping, |carried| tally.record(carried));
+                    let served =
+                        location.serve(runtime, pickup, stopping, |carried| tally.record(carried));
                     if let Err(why) = served {
                         tally.fail(&location.configured.name, why);
                     }
                 });
             }
+            let (runtime, pickup, stopping, tally) = (&runtime, &*pickup, &*stopping, &*tally);
+            scope.spawn(move || pick_up_released(runtime, pickup, stopping, tally));
         });
     })
 }
@@ -793,6 +823,55 @@ address = "{far}"
         assert_eq!(contract.load, Load::Library(library.clone()));
         assert!(running.host_services().iter().all(HostService::in_process));
         running.stop();
+        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
+    }
+
+    #[test]
+    fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_order() {
+        let far = TcpTransport::loopback();
+        let (listener, far_address) = far.bind().expect("the far end binds");
+        let receive = free_address();
+        let path = written("paused", &node(&receive, &far_address));
+        let running = Running::start(path_text(&path), linked()).expect("the node starts");
+        deliver(&receive, b"before the pause");
+        far.accept_one(&listener).expect("it reaches the far end");
+
+        let pickup = running.pickup();
+        assert_eq!(pickup.node(), "xmip:///loopback/node/alpha");
+        let standing = &pickup.standing()[0];
+        assert_eq!(standing.name, "onward");
+        assert_eq!(standing.application, "Loopback");
+        assert!(standing.file.ends_with("loopback.application.toml"));
+        assert!(standing.configuration.starts_with("[[subscriptions]]"));
+        pickup
+            .act("onward", observe::Act::Pause, "ilian")
+            .expect("paused");
+        for n in 1..=3 {
+            deliver(&receive, format!("held {n}").as_bytes());
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pickup.standing()[0].held < 3 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(pickup.standing()[0].held, 3, "held, not sent");
+
+        pickup
+            .act("onward", observe::Act::Resume, "ilian")
+            .expect("resumed");
+        for n in 1..=3 {
+            let arrived = far.accept_one(&listener).expect("it reaches the far end");
+            assert_eq!(
+                arrived.bytes,
+                format!("held {n}").as_bytes(),
+                "oldest first"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pickup.standing()[0].held > 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let outcomes = running.stop();
+        assert_eq!((outcomes.held, outcomes.sent), (3, 4), "{outcomes:?}");
         let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 }

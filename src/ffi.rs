@@ -1,7 +1,8 @@
 //! The runtime's C boundary, in one folder (ADR-0050, refined 2026-09-25):
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
-//! sections 5 to 13, ADR-0027, ADR-0053, ADR-0064 and ADR-0065) and the loader that
-//! opens a module's library and calls through its table (ADR-0057). Unsafe
+//! sections 5 to 14, ADR-0027, ADR-0053, ADR-0064, ADR-0065 and ADR-0013)
+//! and the loader that opens a module's library and calls through its table
+//! (ADR-0057). Unsafe
 //! code is allowed in these files and nowhere else in the runtime; each file
 //! lowers the crate's `deny` at its top, and `test/Unsafe.Test.ps1` holds the
 //! folder.
@@ -18,8 +19,10 @@ pub mod loaded_contract;
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_module;
 pub mod operate;
+pub mod order;
 pub mod process;
 pub mod publication;
 pub mod rule;
 pub mod start;
+pub mod subscription;
 pub mod topology;

@@ -85,27 +85,37 @@ pub fn depart(
     facts: &IdentityFacts,
     routing: &Routing,
 ) -> Vec<Departed> {
-    let mut departed = Vec::new();
+    routing
+        .destinations()
+        .into_iter()
+        .flat_map(|to| depart_to(runtime, work, facts, to))
+        .collect()
+}
 
-    for to in routing.destinations() {
-        match runtime.sends.to(to) {
-            Destination::Ports(ports) => {
-                for (port, sending) in ports {
-                    let to = Subscriber::SendPort(port.to_string());
-                    departed.push(match sending {
-                        Some(sending) => depart_one(runtime, work, facts, to, sending),
-                        None => Departed::NoSuchDestination { to },
-                    });
+/// Carry a Message to one destination: every Send Location it reaches.
+/// What [`depart`] does for each destination routing matched, and what a
+/// Subscription does for a Message it held once it is resumed
+/// ([`crate::held_work`]).
+pub fn depart_to(
+    runtime: &Runtime<'_>,
+    work: &ReceivedWork,
+    facts: &IdentityFacts,
+    to: &Subscriber,
+) -> Vec<Departed> {
+    match runtime.sends.to(to) {
+        Destination::Ports(ports) => ports
+            .into_iter()
+            .map(|(port, sending)| {
+                let to = Subscriber::SendPort(port.to_string());
+                match sending {
+                    Some(sending) => depart_one(runtime, work, facts, to, sending),
+                    None => Departed::NoSuchDestination { to },
                 }
-            }
-            Destination::Process => departed.push(Departed::ProcessNotRun { to: to.clone() }),
-            Destination::Nowhere => {
-                departed.push(Departed::NoSuchDestination { to: to.clone() });
-            }
-        }
+            })
+            .collect(),
+        Destination::Process => vec![Departed::ProcessNotRun { to: to.clone() }],
+        Destination::Nowhere => vec![Departed::NoSuchDestination { to: to.clone() }],
     }
-
-    departed
 }
 
 fn depart_one(

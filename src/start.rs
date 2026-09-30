@@ -55,9 +55,26 @@ pub struct Unread {
     pub reason: String,
 }
 
-/// What startup phase 1 reads: the node's configuration and the Xmip
-/// Applications it binds.
-pub type Read = (XmipConfigurationDocument, Vec<XmipApplicationDocument>);
+/// What startup phase 1 reads: the node's configuration, the Xmip
+/// Applications it binds, and the file each was read from.
+pub type Read = (
+    XmipConfigurationDocument,
+    Vec<XmipApplicationDocument>,
+    Vec<ApplicationFile>,
+);
+
+/// A bound Xmip Application's file as it was read: what an operator is
+/// shown a Subscription's configuration from (ADR-0013, amendment
+/// 2026-09-30), so nothing reads the file a second time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationFile {
+    /// The Application's name, as its binding names it.
+    pub name: String,
+    /// Where it was read from.
+    pub file: String,
+    /// What the file said.
+    pub text: String,
+}
 
 /// Startup phase 1: the node configuration at `path`, and every Xmip
 /// Application it binds, each read from the file its binding names, relative
@@ -79,12 +96,12 @@ pub fn read(path: &str) -> Result<Read, Unread> {
             report.errors.join("; ")
         ))
     })?;
-    let applications = bound_applications(path, &document).map_err(|reason| Unread {
+    let (applications, files) = bound_applications(path, &document).map_err(|reason| Unread {
         scope: format!("xmip:///{}", document.service.node_name),
         reason: format!("configuration refused: {reason}"),
     })?;
 
-    Ok((document, applications))
+    Ok((document, applications, files))
 }
 
 /// Plan a node from its configuration file, as a surface asks: read it, build
@@ -109,7 +126,7 @@ pub fn start(path: &str) -> Snapshot {
         });
     };
 
-    let (document, applications) = match read(path) {
+    let (document, applications, _) = match read(path) {
         Ok(read) => read,
         Err(Unread { scope, reason }) => {
             refuse(&mut snapshot, scope, reason);
@@ -194,7 +211,7 @@ pub fn start(path: &str) -> Snapshot {
 fn bound_applications(
     path: &str,
     document: &XmipConfigurationDocument,
-) -> Result<Vec<XmipApplicationDocument>, String> {
+) -> Result<(Vec<XmipApplicationDocument>, Vec<ApplicationFile>), String> {
     let base = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
 
     document
@@ -208,10 +225,17 @@ fn bound_applications(
                     file.display()
                 )
             })?;
-            parse_application(&source)
-                .map_err(|error| format!("{} does not parse: {error}", file.display()))
+            let application = parse_application(&source)
+                .map_err(|error| format!("{} does not parse: {error}", file.display()))?;
+            let read = ApplicationFile {
+                name: binding.name.clone(),
+                file: file.display().to_string(),
+                text: source,
+            };
+            Ok((application, read))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()
+        .map(|read| read.into_iter().unzip())
 }
 
 /// [`start`], then publish what it found: true when the node validated.
