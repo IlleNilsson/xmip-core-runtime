@@ -124,6 +124,18 @@ pub unsafe extern "C" fn xmip_scope_matches_v1(
     status::OK
 }
 
+/// `observe::run::shown`, forwarded: whether what a run made is shown, as
+/// the run declared and the reader asked (ADR-0028, amendment 2026-09-30).
+///
+/// # Safety
+/// `out_shown` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_run_shown_v1(hidden: u8, including: u8, out_shown: *mut u8) -> i32 {
+    // SAFETY: `out_shown` is writable per the contract.
+    unsafe { *out_shown = u8::from(observe::run::shown(hidden != 0, including != 0)) };
+    status::OK
+}
+
 /// `observe::Scope::segments`, forwarded. Each entry borrows from `scope`.
 ///
 /// # Safety
@@ -419,6 +431,22 @@ mod tests {
         assert!(matches("", "*"));
     }
 
+    #[test]
+    fn a_hidden_run_crosses_as_the_one_rule() {
+        let shown = |hidden: u8, including: u8| {
+            let mut out = 9u8;
+            // SAFETY: `out` is writable.
+            let code = unsafe { xmip_run_shown_v1(hidden, including, &raw mut out) };
+            assert_eq!(code, status::OK);
+            out
+        };
+
+        assert_eq!(
+            [shown(0, 0), shown(0, 1), shown(1, 0), shown(1, 1)],
+            [1, 1, 0, 1]
+        );
+    }
+
     fn parts(scope: &str) -> (i32, Vec<String>) {
         let mut out = [Str::empty(); 8];
         let mut len = 0usize;
@@ -448,6 +476,7 @@ mod tests {
         // A signature that drifted from xmip-core-abi's fails to compile here.
         let _: rule::ScopeContainsFn = xmip_scope_contains_v1;
         let _: rule::ScopeMatchesFn = xmip_scope_matches_v1;
+        let _: rule::RunShownFn = xmip_run_shown_v1;
         let _: rule::ScopePartsFn = xmip_scope_parts_v1;
         let _: rule::ScopeNodeFn = xmip_scope_node_v1;
         let _: rule::HealthTextFn = xmip_health_word_v1;
