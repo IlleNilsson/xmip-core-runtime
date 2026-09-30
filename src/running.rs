@@ -48,6 +48,7 @@ use crate::sending::Sends;
 use crate::service::StartupPhase;
 use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
+use crate::store::Opened;
 
 /// Why a node did not start: the phase that refused it, and every problem it
 /// found there, one sentence each (ADR-0055: refused at the door, in words).
@@ -58,7 +59,7 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    const fn at(phase: StartupPhase, problems: Vec<String>) -> Self {
+    pub(crate) const fn at(phase: StartupPhase, problems: Vec<String>) -> Self {
         Self { phase, problems }
     }
 }
@@ -81,6 +82,7 @@ pub struct Running {
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
     pickup: Arc<Pickup>,
+    store: Opened,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
 }
@@ -99,6 +101,7 @@ impl Running {
     pub fn start(path: &str, mut linked: Linked) -> Result<Self, Refusal> {
         let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
+        let planned = crate::store::plan(&document, path, &linked)?;
 
         let declared: Declarations = linked
             .transports
@@ -137,13 +140,9 @@ impl Running {
             tree.service.cluster_name, tree.service.node_name
         );
         let configured = ConfiguredSubscription::of(&applications, &files);
-        let pickup = Pickup::open(
-            &scope,
-            configured,
-            linked.store.clone(),
-            linked.audit.clone(),
-        )
-        .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))?;
+        let store = planned.open(&linked)?;
+        let pickup = Pickup::open(&scope, configured, store.held(), linked.audit.clone())
+            .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))?;
 
         // Only what the configuration named goes on: the authenticators its
         // Receive Locations accept. Policies and identifiers are consulted at
@@ -191,6 +190,7 @@ impl Running {
             serving: Some(serving),
             tally,
             pickup,
+            store,
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
@@ -225,6 +225,12 @@ impl Running {
     #[must_use]
     pub fn pickup(&self) -> &Pickup {
         &self.pickup
+    }
+
+    /// Its runtime store as opened, and its data directory.
+    #[must_use]
+    pub const fn store(&self) -> &Opened {
+        &self.store
     }
 
     /// What became of every Stream so far.

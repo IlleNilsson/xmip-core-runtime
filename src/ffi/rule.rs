@@ -426,8 +426,8 @@ mod tests {
             out == 1
         };
 
-        assert!(matches("xmip:///C1/node/R1", "C1/node/r*"));
-        assert!(!matches("xmip:///C1/node/R1", "xmip:///C1/node"));
+        assert!(matches("xmip:///C1/node/alpha", "C1/node/A*"));
+        assert!(!matches("xmip:///C1/node/alpha", "xmip:///C1/node"));
         assert!(matches("", "*"));
     }
 

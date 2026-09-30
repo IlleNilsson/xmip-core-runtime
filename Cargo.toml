@@ -67,6 +67,9 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # it holds are kept, sealed, over whichever engine the program linked, so a
 # pause survives a restart (ADR-0013, amendment 2026-09-30).
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main" }
+# The key home the runtime store's data key is wrapped in: the key store the
+# node's `[store]` names, among those its program linked (ADR-0063 clause 4).
+secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main" }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
