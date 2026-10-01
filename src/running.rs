@@ -30,11 +30,10 @@ use authorize::Authorizer;
 use configure::{ConfiguredLocation, Declarations};
 use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
-use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 use route::Gathering;
 use xcore::{SystemClock, UuidV7Generator};
 
-use crate::capability_registry::{CapabilityRegistry, Load};
+use crate::capability_registry::CapabilityRegistry;
 use crate::configured_subscription::ConfiguredSubscription;
 use crate::execution_tree::build_execution_tree;
 use crate::held_work::pick_up_released;
@@ -49,6 +48,8 @@ use crate::service::StartupPhase;
 use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::store::Opened;
+
+pub mod publication;
 
 /// Why a node did not start: the phase that refused it, and every problem it
 /// found there, one sentence each (ADR-0055: refused at the door, in words).
@@ -75,6 +76,8 @@ impl fmt::Display for Refusal {
 pub struct Running {
     cluster: String,
     node: String,
+    /// Whether its configuration says it may reach the internet (ADR-0045).
+    online: bool,
     capabilities: CapabilityRegistry,
     host_services: Vec<HostService>,
     locations: Vec<(&'static str, ConfiguredLocation)>,
@@ -135,10 +138,7 @@ impl Running {
 
         let (receiving, sends) = open(&tree, &linked, gates)
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
-        let scope = format!(
-            "xmip:///{}/node/{}",
-            tree.service.cluster_name, tree.service.node_name
-        );
+        let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
         let store = planned.open(&linked)?;
         let pickup = Pickup::open(&scope, configured, store.held(), linked.audit.clone())
@@ -181,6 +181,7 @@ impl Running {
         );
 
         Ok(Self {
+            online: tree.service.online,
             cluster: tree.service.cluster_name,
             node: tree.service.node_name,
             capabilities,
@@ -237,60 +238,6 @@ impl Running {
     #[must_use]
     pub fn outcomes(&self) -> Outcomes {
         self.tally.outcomes()
-    }
-
-    /// What the node says of itself now: itself, each capability loaded, and
-    /// each Location with what it is doing — `Fine` while it serves, `Done`
-    /// with the reason where a Receive Location stopped.
-    #[must_use]
-    pub fn snapshot(&self) -> Snapshot {
-        let now = now_unix_nanos();
-        let node = format!("xmip:///{}", self.node);
-        let failures = self.tally.failures();
-        let mut snapshot = Snapshot::new();
-        let mut record = |scope: String, health: Health, evidence: String| {
-            snapshot.record_health(HealthRecord {
-                scope,
-                health,
-                severity: if health == Health::Fine { 0 } else { 90 },
-                evidence,
-                observed_unix_nanos: now,
-            });
-        };
-
-        record(
-            node.clone(),
-            Health::Fine,
-            format!(
-                "running: {} capability(ies) loaded, {} Location(s) started",
-                self.capabilities.capabilities().count(),
-                self.locations.len()
-            ),
-        );
-        for capability in self.capabilities.capabilities() {
-            let how = match &capability.load {
-                Load::Linked => "linked".to_string(),
-                Load::Library(path) => format!("from {}", path.display()),
-            };
-            record(
-                format!("{node}/module/{}", capability.module),
-                Health::Fine,
-                format!("loaded ({how}), serving {}", capability.capability),
-            );
-        }
-        for (stage, location) in &self.locations {
-            let scope = format!("{node}/{stage}/{}", location.name);
-            match failures.iter().find(|(name, _)| name == &location.name) {
-                Some((_, why)) => record(scope, Health::Done, why.clone()),
-                None => record(
-                    scope,
-                    Health::Fine,
-                    format!("started; {} at {}", location.transport, location.address),
-                ),
-            }
-        }
-
-        snapshot
     }
 
     /// Stop: every Receive Location takes nothing more once its current
@@ -403,6 +350,7 @@ mod tests {
     use authorize::{Attempt, Decision};
     use context::{IdentityFacts, Verified};
     use identify::Presented;
+    use observe::Health;
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
@@ -666,14 +614,10 @@ address = "{far}"
         deliver(&receive, b"before the stop");
         far.accept_one(&listener).expect("it reaches the far end");
 
-        let health = running.snapshot();
+        let health = running.snapshot().health("xmip:///loopback/node/alpha");
         assert!(
-            health
-                .health("xmip:///alpha")
-                .iter()
-                .all(|record| record.health == Health::Fine),
-            "{:?}",
-            health.health("xmip:///alpha")
+            !health.is_empty() && health.iter().all(|record| record.health == Health::Fine),
+            "{health:?}"
         );
 
         let stopping = Instant::now();
@@ -826,7 +770,10 @@ address = "{far}"
             .get("contract")
             .expect("registered once");
         assert_eq!(contract.module, "xmip-core-contract-rust");
-        assert_eq!(contract.load, Load::Library(library.clone()));
+        assert_eq!(
+            contract.load,
+            crate::capability_registry::Load::Library(library.clone())
+        );
         assert!(running.host_services().iter().all(HostService::in_process));
         running.stop();
         let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
