@@ -312,7 +312,7 @@ pub unsafe extern "C" fn xmip_publication_run_v1(
     let which = match list {
         run_list::TESTS => RunList::Tests,
         run_list::NODES => RunList::Nodes,
-        run_list::CAPABILITIES => RunList::Capabilities,
+        run_list::ROLES => RunList::Roles,
         run_list::ONLINE => RunList::Online,
         _ => return status::INVALID,
     };
@@ -355,7 +355,7 @@ observed_unix_nanos = 9
 scope = "xmip:///C1/node/alpha/capability"
 state = "sulking"
 severity = 0
-evidence = "declares receive; online; x"
+evidence = "declares receiving; online; x"
 observed_unix_nanos = 7
 
 [[counts]]
@@ -370,7 +370,7 @@ value = 1
 cluster = "C1"
 tests = ["RoundTrip"]
 nodes = ["alpha"]
-capabilities = ["alpha=receive"]
+roles = ["alpha=receiving"]
 online = ["alpha"]
 stress = "harsh"
 
@@ -554,17 +554,11 @@ attempts = 2
         let mut len = 0usize;
         // SAFETY: a live handle; `words` has room for two.
         let code = unsafe {
-            xmip_publication_run_v1(
-                handle,
-                run_list::CAPABILITIES,
-                words.as_mut_ptr(),
-                2,
-                &raw mut len,
-            )
+            xmip_publication_run_v1(handle, run_list::ROLES, words.as_mut_ptr(), 2, &raw mut len)
         };
         assert_eq!(
             (code, len, text(words[0])),
-            (status::OK, 1, "alpha=receive".to_string())
+            (status::OK, 1, "alpha=receiving".to_string())
         );
         // SAFETY: as above.
         let unknown =
