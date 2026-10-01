@@ -296,14 +296,14 @@ pub unsafe extern "C" fn xmip_stage_counted_v1(stage: Str, out: *mut i32) -> i32
 ///
 /// # Safety
 /// `scope` and `evidence` point at their stated length of readable bytes;
-/// `stages` has room for `cap` entries and `refusal` for `refusal_cap`
+/// `roles` has room for `cap` entries and `refusal` for `refusal_cap`
 /// bytes; every other out is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_capability_published_v1(
     scope: Str,
     evidence: Str,
     out_node: *mut Str,
-    stages: *mut Str,
+    roles: *mut Str,
     cap: usize,
     out_len: *mut usize,
     out_online: *mut u8,
@@ -324,15 +324,7 @@ pub unsafe extern "C" fn xmip_capability_published_v1(
     // SAFETY: per the contract above.
     unsafe {
         out_node.write(borrow(node));
-        match node::write_declared(
-            said,
-            stages,
-            cap,
-            out_len,
-            refusal,
-            refusal_cap,
-            refusal_len,
-        ) {
+        match node::write_declared(said, roles, cap, out_len, refusal, refusal_cap, refusal_len) {
             Some(online) => {
                 *out_online = u8::from(online);
                 status::OK
@@ -535,11 +527,11 @@ mod tests {
 
     #[test]
     fn a_capability_record_crosses_as_observe_reads_it() {
-        let evidence = ::node::Capability::of(&[::node::Stage::Send])
+        let evidence = ::node::Capability::of(&[::node::NodeRole::Sending])
             .with_online(true)
             .evidence();
         let published = |scope: &str, evidence: &str| {
-            let (mut node, mut stages) = (Str::empty(), [Str::empty(); 3]);
+            let (mut node, mut roles) = (Str::empty(), [Str::empty(); 7]);
             let (mut len, mut online, mut said_len) = (0usize, 9u8, 0usize);
             let mut said = [0u8; 256];
             // SAFETY: every buffer has the capacity passed; every out writable.
@@ -548,8 +540,8 @@ mod tests {
                     borrow(scope),
                     borrow(evidence),
                     &raw mut node,
-                    stages.as_mut_ptr(),
-                    3,
+                    roles.as_mut_ptr(),
+                    7,
                     &raw mut len,
                     &raw mut online,
                     said.as_mut_ptr(),
@@ -557,14 +549,14 @@ mod tests {
                     &raw mut said_len,
                 )
             };
-            let words: Vec<String> = stages[..len.min(3)].iter().map(|s| text(*s)).collect();
+            let words: Vec<String> = roles[..len.min(7)].iter().map(|s| text(*s)).collect();
             let sentence = String::from_utf8(said[..said_len.min(256)].to_vec()).expect("UTF-8");
             (code, text(node), words, online, sentence)
         };
 
         let (code, node, words, online, said) = published("xmip:///C1/alpha/capability", &evidence);
         assert_eq!((code, node.as_str(), online), (status::OK, "alpha", 1));
-        assert_eq!((words, said), (vec!["send".to_string()], String::new()));
+        assert_eq!((words, said), (vec!["sending".to_string()], String::new()));
 
         let (code, node, _, _, said) = published("xmip:///C1/alpha/capability", "declares relay;");
         assert_eq!((code, node.as_str()), (status::INVALID, "alpha"));

@@ -1,14 +1,15 @@
 //! `xmip_operate.h` section 7, the node crate's part: the stage words and
-//! their parse, the other facts of a stage, and a run's node entry — each
-//! `node::Stage`'s or `node::Capability`'s, forwarded with no rule of its
-//! own (ADR-0027 and ADR-0052, amendments 2026-09-24).
+//! the facts of a stage, the role words and their parse, and a run's node
+//! entry — each `node::Stage`'s, `node::NodeRole`'s or `node::Capability`'s,
+//! forwarded with no rule of its own (ADR-0027 and ADR-0052, amendments
+//! 2026-09-24; ADR-0056, amendment 2026-10-01).
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
-use node::{Capability, Stage};
+use node::{Capability, NodeRole, Stage};
 
 use super::{fill, refuse};
 use crate::ffi::operate::{borrow, scope_text};
@@ -28,17 +29,28 @@ pub unsafe extern "C" fn xmip_stage_words_v1(
     status::OK
 }
 
-/// `node::Stage::declared`, forwarded: the stages in the fill shape, or
+/// `node::NodeRole::WORDS`, forwarded. Static.
+///
+/// # Safety
+/// `out` has room for `cap` entries; `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_role_words_v1(out: *mut Str, cap: usize, out_len: *mut usize) -> i32 {
+    // SAFETY: per the contract above.
+    unsafe { fill(NodeRole::WORDS.into_iter(), out, cap, out_len) };
+    status::OK
+}
+
+/// `node::NodeRole::declared`, forwarded: the roles in the fill shape, or
 /// `XMIP_E_INVALID` and the refusal written as UTF-8.
 ///
 /// # Safety
-/// `declared` points at its stated length of readable bytes; `stages` has
+/// `declared` points at its stated length of readable bytes; `roles` has
 /// room for `cap` entries and `refusal` for `refusal_cap` bytes; `out_len`
 /// and `refusal_len` are writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_stage_declared_v1(
+pub unsafe extern "C" fn xmip_role_declared_v1(
     declared: Str,
-    stages: *mut Str,
+    roles: *mut Str,
     cap: usize,
     out_len: *mut usize,
     refusal: *mut u8,
@@ -49,21 +61,44 @@ pub unsafe extern "C" fn xmip_stage_declared_v1(
     let Some(declared) = (unsafe { scope_text(declared) }) else {
         return status::MALFORMED;
     };
-    let said = Stage::declared(declared).map(|stages| Capability::of(&stages));
+    let said = Capability::parse(declared);
 
     // SAFETY: per the contract above.
+    unsafe { write_declared(said, roles, cap, out_len, refusal, refusal_cap, refusal_len) }
+        .map_or(status::INVALID, |_| status::OK)
+}
+
+/// `node::NodeRole::stages`, forwarded: the stage words of the role a word
+/// names, static, in the fill shape; `XMIP_E_NOT_FOUND` for a word that is
+/// no role.
+///
+/// # Safety
+/// `role` points at its stated length of readable bytes; `out` has room for
+/// `cap` entries; `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_role_stages_v1(
+    role: Str,
+    out: *mut Str,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `role`.
+    let Some(word) = (unsafe { scope_text(role) }) else {
+        return status::MALFORMED;
+    };
+    let Some(role) = NodeRole::named(word) else {
+        return status::NOT_FOUND;
+    };
+    // SAFETY: per the contract above.
     unsafe {
-        write_declared(
-            said,
-            stages,
+        fill(
+            role.stages().iter().map(|stage| stage.name()),
+            out,
             cap,
             out_len,
-            refusal,
-            refusal_cap,
-            refusal_len,
         )
-    }
-    .map_or(status::INVALID, |_| status::OK)
+    };
+    status::OK
 }
 
 /// The stage a word names, or `None` for a word that is no stage or text
@@ -112,17 +147,17 @@ pub unsafe extern "C" fn xmip_stage_location_v1(stage: Str, out: *mut Str) -> i3
 }
 
 /// `node::Capability::from_entry`, forwarded: the name borrowed from
-/// `entry`, and the stages or the refusal.
+/// `entry`, and the roles or the refusal.
 ///
 /// # Safety
-/// `entry` points at its stated length of readable bytes; `stages` has room
+/// `entry` points at its stated length of readable bytes; `roles` has room
 /// for `cap` entries and `refusal` for `refusal_cap` bytes; every other out
 /// is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_capability_entry_v1(
     entry: Str,
     out_node: *mut Str,
-    stages: *mut Str,
+    roles: *mut Str,
     cap: usize,
     out_len: *mut usize,
     refusal: *mut u8,
@@ -138,29 +173,21 @@ pub unsafe extern "C" fn xmip_capability_entry_v1(
     // SAFETY: per the contract above.
     unsafe {
         out_node.write(borrow(name));
-        write_declared(
-            said,
-            stages,
-            cap,
-            out_len,
-            refusal,
-            refusal_cap,
-            refusal_len,
-        )
+        write_declared(said, roles, cap, out_len, refusal, refusal_cap, refusal_len)
     }
     .map_or(status::INVALID, |_| status::OK)
 }
 
-/// A declaration's answer in the header's shape: its stages in the fill
-/// shape and no refusal, or no stage and the refusal written. `Some` with
+/// A declaration's answer in the header's shape: its roles in the fill
+/// shape and no refusal, or no role and the refusal written. `Some` with
 /// the online capability when it was declared, `None` when refused.
 ///
 /// # Safety
-/// `stages` has room for `cap` entries and `refusal` for `refusal_cap`
+/// `roles` has room for `cap` entries and `refusal` for `refusal_cap`
 /// bytes; `out_len` and `refusal_len` are writable.
 pub(crate) unsafe fn write_declared(
     said: Result<Capability, String>,
-    stages: *mut Str,
+    roles: *mut Str,
     cap: usize,
     out_len: *mut usize,
     refusal: *mut u8,
@@ -169,10 +196,10 @@ pub(crate) unsafe fn write_declared(
 ) -> Option<bool> {
     match said {
         Ok(capability) => {
-            let words = capability.features().iter().map(|stage| stage.name());
+            let words = capability.roles().iter().map(|role| role.name());
             // SAFETY: per the contract above.
             unsafe {
-                fill(words, stages, cap, out_len);
+                fill(words, roles, cap, out_len);
                 *refusal_len = 0;
             }
             Some(capability.is_online())
@@ -202,33 +229,30 @@ mod tests {
     }
 
     fn declared(raw: &str) -> (i32, Vec<String>, String) {
-        let mut stages = [Str::empty(); 3];
+        let mut roles = [Str::empty(); 7];
         let mut len = 0usize;
         let mut refusal = [0u8; 256];
         let mut refusal_len = 0usize;
         // SAFETY: the buffers have the capacities passed; lengths writable.
         let code = unsafe {
-            xmip_stage_declared_v1(
+            xmip_role_declared_v1(
                 borrow(raw),
-                stages.as_mut_ptr(),
-                stages.len(),
+                roles.as_mut_ptr(),
+                roles.len(),
                 &raw mut len,
                 refusal.as_mut_ptr(),
                 refusal.len(),
                 &raw mut refusal_len,
             )
         };
-        let words = stages[..len.min(3)]
-            .iter()
-            .map(|word| text(*word))
-            .collect();
+        let words = roles[..len.min(7)].iter().map(|word| text(*word)).collect();
         let said = String::from_utf8(refusal[..refusal_len.min(256)].to_vec()).expect("UTF-8");
 
         (code, words, said)
     }
 
     fn entry(raw: &str) -> (i32, String, Vec<String>, String) {
-        let (mut node, mut stages) = (Str::empty(), [Str::empty(); 3]);
+        let (mut node, mut roles) = (Str::empty(), [Str::empty(); 7]);
         let (mut len, mut said_len) = (0usize, 0usize);
         let mut said = [0u8; 256];
         // SAFETY: the buffers have the capacities passed; every out writable.
@@ -236,15 +260,15 @@ mod tests {
             xmip_capability_entry_v1(
                 borrow(raw),
                 &raw mut node,
-                stages.as_mut_ptr(),
-                3,
+                roles.as_mut_ptr(),
+                7,
                 &raw mut len,
                 said.as_mut_ptr(),
                 said.len(),
                 &raw mut said_len,
             )
         };
-        let words = stages[..len.min(3)].iter().map(|s| text(*s)).collect();
+        let words = roles[..len.min(7)].iter().map(|s| text(*s)).collect();
         let sentence = String::from_utf8(said[..said_len.min(256)].to_vec()).expect("UTF-8");
         (code, text(node), words, sentence)
     }
@@ -254,7 +278,9 @@ mod tests {
         use abi::operate::rule;
 
         let _: rule::StageWordsFn = xmip_stage_words_v1;
-        let _: rule::StageDeclaredFn = xmip_stage_declared_v1;
+        let _: rule::RoleWordsFn = xmip_role_words_v1;
+        let _: rule::RoleDeclaredFn = xmip_role_declared_v1;
+        let _: rule::RoleStagesFn = xmip_role_stages_v1;
         let _: rule::StagePausableFn = xmip_stage_pausable_v1;
         let _: rule::StageLocationFn = xmip_stage_location_v1;
         let _: rule::CapabilityEntryFn = xmip_capability_entry_v1;
@@ -269,24 +295,60 @@ mod tests {
 
         assert_eq!(code, status::OK);
         assert_eq!(out.map(text), Stage::WORDS);
+
+        let mut out = [Str::empty(); 7];
+        // SAFETY: `out` has 7 entries.
+        let code = unsafe { xmip_role_words_v1(out.as_mut_ptr(), 7, &raw mut len) };
+
+        assert_eq!(code, status::OK);
+        assert_eq!(out.map(text), NodeRole::WORDS);
     }
 
     #[test]
-    fn a_declaration_reads_as_stage_declared_says_and_a_refusal_crosses_whole() {
+    fn every_role_crosses_with_the_stages_it_serves() {
+        for role in NodeRole::ALL {
+            let (mut out, mut len) = ([Str::empty(); 3], 9usize);
+            // SAFETY: the word is static; `out` has 3 entries.
+            let code = unsafe {
+                xmip_role_stages_v1(borrow(role.name()), out.as_mut_ptr(), 3, &raw mut len)
+            };
+            assert_eq!(code, status::OK);
+            let words: Vec<String> = out[..len].iter().map(|word| text(*word)).collect();
+            assert_eq!(
+                words,
+                role.stages().iter().map(|s| s.name()).collect::<Vec<_>>()
+            );
+        }
+        let (mut out, mut len) = ([Str::empty(); 3], 0usize);
+        // SAFETY: as above.
+        let code =
+            unsafe { xmip_role_stages_v1(borrow("receive"), out.as_mut_ptr(), 3, &raw mut len) };
+        assert_eq!(code, status::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_declaration_reads_as_role_declared_says_and_a_refusal_crosses_whole() {
         assert_eq!(
-            declared(" send + receive "),
+            declared(" sending + receiving "),
             (
                 status::OK,
-                vec!["receive".into(), "send".into()],
+                vec!["receiving".into(), "sending".into()],
                 String::new()
             )
         );
+        assert_eq!(
+            declared("receiving,processing,sending"),
+            (status::OK, vec!["executing".into()], String::new())
+        );
         assert_eq!(declared(""), (status::OK, vec![], String::new()));
 
-        let (code, words, said) = declared("Send+relay");
+        let (code, words, said) = declared("Sending+relay");
         assert_eq!(code, status::INVALID);
         assert!(words.is_empty());
-        assert_eq!(said, Stage::declared("Send+relay").expect_err("refused"));
+        assert_eq!(
+            said,
+            NodeRole::declared("Sending+relay").expect_err("refused")
+        );
     }
 
     #[test]
@@ -316,11 +378,11 @@ mod tests {
     #[test]
     fn an_entry_crosses_as_node_reads_it_and_its_name_survives_a_refusal() {
         assert_eq!(
-            entry(" edge-01 =send+receive"),
+            entry(" edge-01 =sending+receiving"),
             (
                 status::OK,
                 "edge-01".to_string(),
-                vec!["receive".into(), "send".into()],
+                vec!["receiving".into(), "sending".into()],
                 String::new()
             )
         );

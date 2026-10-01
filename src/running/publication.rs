@@ -156,9 +156,11 @@ impl Running {
         Publication::whole(source, &self.location(), &snapshot).with_topology(Some(topology))
     }
 
-    /// The stages the node serves — receive where a Receive Location starts,
-    /// process where a Subscription routes, send where a Send Port starts —
-    /// and whether its configuration says it is online (ADR-0045).
+    /// The roles the node's configuration gives it — receiving where a
+    /// Receive Location starts, processing where a Subscription routes,
+    /// sending where a Send Port starts, executing where all three do — and
+    /// whether its configuration says it is online (ADR-0045; ADR-0056,
+    /// amendment 2026-10-01).
     fn declared(&self) -> Capability {
         let serves = |stage: &str| self.locations.iter().any(|(at, _)| *at == stage);
         let stages: Vec<Stage> = [
@@ -169,7 +171,7 @@ impl Running {
         .into_iter()
         .filter_map(|(stage, served)| served.then_some(stage))
         .collect();
-        Capability::of(&stages).with_online(self.online)
+        Capability::serving(&stages).with_online(self.online)
     }
 
     /// What the tally counted, each kind at the stage that counts it.
@@ -272,12 +274,12 @@ mod tests {
 
     #[test]
     fn a_node_is_located_beneath_its_cluster() {
-        assert_eq!(location("C1", "R1"), "xmip:///C1/node/R1");
+        assert_eq!(location("C1", "alpha"), "xmip:///C1/node/alpha");
     }
 
     #[test]
     fn a_stopped_node_is_done_and_keeps_what_it_declared_and_its_pauses() {
-        let at = "xmip:///C1/node/R1";
+        let at = "xmip:///C1/node/alpha";
         let mut snapshot = Snapshot::new();
         for (leaf, health) in [
             ("", Health::Fine),
@@ -290,7 +292,7 @@ mod tests {
         }
         let last = Publication::whole("xmip-service", at, &snapshot).with_orders("orders");
 
-        let left = stopped("C1", "R1", &last, "stopped by the console");
+        let left = stopped("C1", "alpha", &last, "stopped by the console");
         let moods: Vec<(&str, Health)> = left
             .records
             .iter()
@@ -298,10 +300,10 @@ mod tests {
             .collect();
         for (scope, health) in [
             (at, Health::Done),
-            ("xmip:///C1/node/R1/system-process", Health::Done),
-            ("xmip:///C1/node/R1/receive/In", Health::Done),
-            ("xmip:///C1/node/R1/capability", Health::Fine),
-            ("xmip:///C1/node/R1/process/onward", Health::Paused),
+            ("xmip:///C1/node/alpha/system-process", Health::Done),
+            ("xmip:///C1/node/alpha/receive/In", Health::Done),
+            ("xmip:///C1/node/alpha/capability", Health::Fine),
+            ("xmip:///C1/node/alpha/process/onward", Health::Paused),
         ] {
             assert!(moods.contains(&(scope, health)), "{scope}: {moods:?}");
         }
@@ -312,7 +314,7 @@ mod tests {
         );
         assert_eq!(left.orders, "orders");
         let drawn = left.topology.expect("drawn again");
-        assert!(drawn.nodes.iter().any(|node| node.id == "node/R1"));
+        assert!(drawn.nodes.iter().any(|node| node.id == "node/alpha"));
         assert!(
             (drawn.nodes[0].activity).abs() < f64::EPSILON,
             "no process alive"
