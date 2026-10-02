@@ -2,12 +2,14 @@
 //! configuration says and what its program linked (ADR-0018, amendment
 //! 2026-09-30).
 //!
-//! The configuration names the engine and the key store by module name, and
-//! where each keeps its bytes (`configure::store`, every default there);
-//! the program links the engines and key stores it was built with
-//! ([`crate::linked::LinkedEngine`], [`crate::linked::LinkedKeyStore`]), as
-//! it links transports. Phase 3 refuses a store naming either one the
-//! program was not built with; phase 9 opens it — persist's
+//! The configuration names where the store keeps its bytes and the key
+//! store by module name (`configure::store`, every default there); the
+//! engine is `RocksDB`, always, and no node's choice (ADR-0015 and ADR-0018,
+//! amendments 2026-10-01). The program links the engine and the key stores
+//! it was built with ([`crate::linked::LinkedEngine`],
+//! [`crate::linked::LinkedKeyStore`]), as it links transports. Phase 3
+//! refuses a store the program carries no engine for, or one naming a key
+//! store it was not built with; phase 9 opens it — persist's
 //! `EncryptedStore` over the engine, its data key wrapped under the
 //! key-encryption key [`KEK`] of the key store — and refuses a store that
 //! does not open, before anything serves. What the node keeps there is what
@@ -73,8 +75,8 @@ impl Opened {
 /// carries.
 ///
 /// # Errors
-/// Refused at phase 3 where the configuration names an engine or a key
-/// store the program was not built with, or an engine without its place.
+/// Refused at phase 3 where the program carries no engine, or the
+/// configuration names a key store the program was not built with.
 pub fn plan(
     document: &XmipConfigurationDocument,
     path: &str,
@@ -82,18 +84,17 @@ pub fn plan(
 ) -> Result<Planned, Refusal> {
     let file = Path::new(path);
     let data = document.service.data_directory(file);
-    let in_memory = linked.engines.is_empty() && document.store.is_default();
+    let in_memory = linked.engine.is_none() && document.store.is_default();
     if linked.store.is_some() || in_memory {
         return Ok(Planned { data, store: None });
     }
-    let refused = |problem: String| Refusal::at(StartupPhase::ValidateStartup, vec![problem]);
     let base = file.parent().unwrap_or_else(|| Path::new(""));
-    let store = document.store.resolve(&data, base).map_err(refused)?;
+    let store = document.store.resolve(&data, base);
     let mut problems = Vec::new();
-    if linked.engine(&store.engine).is_none() {
+    if linked.engine.is_none() {
         problems.push(format!(
-            "[store] names the engine '{}', which this node was not built with",
-            store.engine
+            "[store] is kept by the engine '{}', which this node was not built with",
+            configure::store::ENGINE
         ));
     }
     if linked.key_store(&store.key_store).is_none() {
@@ -135,7 +136,7 @@ impl Planned {
                 StartupPhase::AcceptWork,
                 vec![format!(
                     "the runtime store {} at {} did not open: {problem}",
-                    configured.engine,
+                    configure::store::ENGINE,
                     configured.place.display()
                 )],
             )
@@ -150,11 +151,12 @@ impl Planned {
 
 fn opened(configured: &Configured, linked: &Linked) -> Result<(Store, String), String> {
     let (Some(engine), Some(key_store)) = (
-        linked.engine(&configured.engine),
+        linked.engine.as_ref(),
         linked.key_store(&configured.key_store),
     ) else {
         return Err("its engine or key store is not linked".to_string());
     };
+    let technology = engine.technology();
     if let Some(parent) = configured.place.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -166,7 +168,7 @@ fn opened(configured: &Configured, linked: &Linked) -> Result<(Store, String), S
     let store = EncryptedStore::open(engine, keys.as_ref(), &kek).map_err(|e| e.to_string())?;
     let said = format!(
         "{} at {}, sealed under {} ({})",
-        configured.engine,
+        technology,
         configured.place.display(),
         configured.key_store,
         keys.store()
@@ -193,7 +195,7 @@ mod tests {
 
     fn linked() -> Linked {
         Linked {
-            engines: vec![LinkedEngine::new("xmip-core-persist-memory", memory)],
+            engine: Some(LinkedEngine::new("xmip-core-persist-memory", memory)),
             key_stores: vec![LinkedKeyStore::new("xmip-core-secret-memory", keys)],
             ..Linked::default()
         }
@@ -207,7 +209,7 @@ mod tests {
     fn a_store_the_program_links_is_opened_where_the_configuration_says() {
         let directory = std::env::temp_dir().join(format!("xmip-store-{}", std::process::id()));
         let text = format!(
-            "{NODE}data = \"state\"\n[store]\nengine = \"xmip-core-persist-memory\"\n\
+            "{NODE}data = \"state\"\n[store]\n\
              place = \"state/store\"\nkey_store = \"xmip-core-secret-memory\"\n"
         );
         let path = directory.join("R1.toml");
@@ -231,13 +233,26 @@ mod tests {
     fn what_the_program_was_not_built_with_is_refused_at_phase_three() {
         let refused = plan(&document(NODE), "R1.toml", &linked())
             .err()
-            .expect("the default engine is not linked here");
+            .expect("the platform's key store is not linked here");
         assert_eq!(refused.phase, StartupPhase::ValidateStartup);
+        assert!(refused.problems[0].contains("key store"), "{refused}");
+        let keys_only = Linked {
+            key_stores: vec![LinkedKeyStore::new("xmip-core-secret-memory", keys)],
+            ..Linked::default()
+        };
+        let named = format!("{NODE}[store]\nkey_store = \"xmip-core-secret-memory\"\n");
+        let refused = plan(&document(&named), "R1.toml", &keys_only)
+            .err()
+            .expect("no engine is linked here");
         assert!(
             refused.problems[0].contains("'xmip-core-persist-rocksdb'"),
             "{refused}"
         );
-        assert!(refused.problems[1].contains("key store"), "{refused}");
+        let engine = format!("{NODE}[store]\nengine = \"xmip-core-persist-sqlite\"\n");
+        assert!(
+            configure::parse_toml(&engine).is_err(),
+            "no engine is chosen"
+        );
     }
 
     #[test]

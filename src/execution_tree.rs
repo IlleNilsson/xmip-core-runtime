@@ -257,6 +257,16 @@ pub fn validate_startup_configuration(
     }
 
     errors.extend(configure::binding_problems(document));
+    // The Storage nodes it reaches, and the database server a Storage node
+    // is in front of, read by Xmip Storage (`deployment-model.md` section 7).
+    errors.extend(document.storage.problems());
+    if let Some(database) = &document.storage.database {
+        errors.extend(persist::storage::database::problems(
+            &database.runtime,
+            &database.administration,
+            &database.password,
+        ));
+    }
 
     StartupValidationReport { errors, warnings }
 }

@@ -84,12 +84,12 @@ fn open<T: Configured + Send + Sync + 'static>(
     Ok(Box::new(T::open(address, side, given)?))
 }
 
-/// How an engine opens its store at a place: a directory for `RocksDB`, a
-/// file for `SQLite`.
+/// How an engine opens its store in a directory.
 pub type OpenEngine = fn(&Path) -> Result<Box<dyn Engine>, PersistError>;
 
-/// A runtime store engine linked into the program, by the module name a
-/// node's `[store]` names it by (`xmip-core-persist-rocksdb`).
+/// The runtime store's engine linked into the program, by its module name
+/// (`xmip-core-persist-rocksdb`, `configure::store::ENGINE`): the one
+/// engine of an embedded runtime database (ADR-0015, amendment 2026-10-01).
 pub struct LinkedEngine {
     technology: &'static str,
     open: OpenEngine,
@@ -165,10 +165,10 @@ pub struct Linked {
     pub policies: Vec<Box<dyn Authorizer>>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
-    /// The runtime store engines the program was built with; the node
-    /// opens the one its `[store]` names (`crate::store`, ADR-0018,
-    /// amendment 2026-09-30).
-    pub engines: Vec<LinkedEngine>,
+    /// The runtime store's engine, where the program was built with it;
+    /// the node opens its store over it (`crate::store`, ADR-0018,
+    /// amendments 2026-09-30 and 2026-10-01).
+    pub engine: Option<LinkedEngine>,
     /// The key stores the program was built with, one of which wraps the
     /// runtime store's data key.
     pub key_stores: Vec<LinkedKeyStore>,
@@ -188,14 +188,6 @@ impl Linked {
     #[must_use]
     pub fn transport(&self, technology: &str) -> Option<&LinkedTransport> {
         self.transports
-            .iter()
-            .find(|linked| linked.technology() == technology)
-    }
-
-    /// The linked engine a `[store]` names.
-    #[must_use]
-    pub fn engine(&self, technology: &str) -> Option<&LinkedEngine> {
-        self.engines
             .iter()
             .find(|linked| linked.technology() == technology)
     }
