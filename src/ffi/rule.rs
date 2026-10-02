@@ -531,7 +531,8 @@ mod tests {
             .with_online(true)
             .evidence();
         let published = |scope: &str, evidence: &str| {
-            let (mut node, mut roles) = (Str::empty(), [Str::empty(); 7]);
+            let (mut node, mut roles) =
+                (Str::empty(), [Str::empty(); ::node::NodeRole::WORDS.len()]);
             let (mut len, mut online, mut said_len) = (0usize, 9u8, 0usize);
             let mut said = [0u8; 256];
             // SAFETY: every buffer has the capacity passed; every out writable.
@@ -549,7 +550,10 @@ mod tests {
                     &raw mut said_len,
                 )
             };
-            let words: Vec<String> = roles[..len.min(7)].iter().map(|s| text(*s)).collect();
+            let words: Vec<String> = roles[..len.min(::node::NodeRole::WORDS.len())]
+                .iter()
+                .map(|s| text(*s))
+                .collect();
             let sentence = String::from_utf8(said[..said_len.min(256)].to_vec()).expect("UTF-8");
             (code, text(node), words, online, sentence)
         };

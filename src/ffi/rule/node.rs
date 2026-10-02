@@ -229,7 +229,7 @@ mod tests {
     }
 
     fn declared(raw: &str) -> (i32, Vec<String>, String) {
-        let mut roles = [Str::empty(); 7];
+        let mut roles = [Str::empty(); NodeRole::WORDS.len()];
         let mut len = 0usize;
         let mut refusal = [0u8; 256];
         let mut refusal_len = 0usize;
@@ -245,14 +245,17 @@ mod tests {
                 &raw mut refusal_len,
             )
         };
-        let words = roles[..len.min(7)].iter().map(|word| text(*word)).collect();
+        let words = roles[..len.min(NodeRole::WORDS.len())]
+            .iter()
+            .map(|word| text(*word))
+            .collect();
         let said = String::from_utf8(refusal[..refusal_len.min(256)].to_vec()).expect("UTF-8");
 
         (code, words, said)
     }
 
     fn entry(raw: &str) -> (i32, String, Vec<String>, String) {
-        let (mut node, mut roles) = (Str::empty(), [Str::empty(); 7]);
+        let (mut node, mut roles) = (Str::empty(), [Str::empty(); NodeRole::WORDS.len()]);
         let (mut len, mut said_len) = (0usize, 0usize);
         let mut said = [0u8; 256];
         // SAFETY: the buffers have the capacities passed; every out writable.
@@ -268,7 +271,10 @@ mod tests {
                 &raw mut said_len,
             )
         };
-        let words = roles[..len.min(7)].iter().map(|s| text(*s)).collect();
+        let words = roles[..len.min(NodeRole::WORDS.len())]
+            .iter()
+            .map(|s| text(*s))
+            .collect();
         let sentence = String::from_utf8(said[..said_len.min(256)].to_vec()).expect("UTF-8");
         (code, text(node), words, sentence)
     }
@@ -296,9 +302,10 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(out.map(text), Stage::WORDS);
 
-        let mut out = [Str::empty(); 7];
-        // SAFETY: `out` has 7 entries.
-        let code = unsafe { xmip_role_words_v1(out.as_mut_ptr(), 7, &raw mut len) };
+        let mut out = [Str::empty(); NodeRole::WORDS.len()];
+        // SAFETY: `out` has as many entries as there are roles.
+        let code =
+            unsafe { xmip_role_words_v1(out.as_mut_ptr(), NodeRole::WORDS.len(), &raw mut len) };
 
         assert_eq!(code, status::OK);
         assert_eq!(out.map(text), NodeRole::WORDS);
