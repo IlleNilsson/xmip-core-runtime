@@ -418,8 +418,11 @@ mod tests {
             out == 1
         };
 
-        assert!(matches("xmip:///C1/node/alpha", "C1/node/A*"));
-        assert!(!matches("xmip:///C1/node/alpha", "xmip:///C1/node"));
+        let cluster = configure::fixture::test_cluster();
+        let (node, initial) = (cluster.node_scope(0), &cluster.node(0).name[..1]);
+        let pattern = format!("{}/node/{}*", cluster.name, initial.to_lowercase());
+        assert!(matches(&node, &pattern));
+        assert!(!matches(&node, &format!("{}/node", cluster.scope())));
         assert!(matches("", "*"));
     }
 
@@ -558,27 +561,34 @@ mod tests {
             (code, text(node), words, online, sentence)
         };
 
-        let (code, node, words, online, said) = published("xmip:///C1/alpha/capability", &evidence);
-        assert_eq!((code, node.as_str(), online), (status::OK, "alpha", 1));
+        let cluster = configure::fixture::test_cluster();
+        let sender = &cluster.with_role("sending").name;
+        let at = format!("{}/{sender}", cluster.scope());
+        let capability = format!("{at}/capability");
+
+        let (code, node, words, online, said) = published(&capability, &evidence);
+        assert_eq!((code, &node, online), (status::OK, sender, 1));
         assert_eq!((words, said), (vec!["sending".to_string()], String::new()));
 
-        let (code, node, _, _, said) = published("xmip:///C1/alpha/capability", "declares relay;");
-        assert_eq!((code, node.as_str()), (status::INVALID, "alpha"));
+        let (code, node, _, _, said) = published(&capability, "declares relay;");
+        assert_eq!((code, &node), (status::INVALID, sender));
         assert!(said.starts_with("REFUSED"), "{said}");
 
         assert_eq!(
-            published("xmip:///C1/alpha/receive", &evidence).0,
+            published(&format!("{at}/receive"), &evidence).0,
             status::NOT_FOUND
         );
     }
 
     #[test]
     fn many_are_ordered_as_standing_orders_them() {
+        let at = configure::fixture::test_cluster().node_scope(0);
+        let scopes = ["a", "d", "h", "e"].map(|leaf| format!("{at}/receive/{leaf}"));
         let entries = [
-            entry(health::FINE, 0, "xmip:///a"),
-            entry(health::DONE, 60, "xmip:///d"),
-            entry(health::HOLDING, 0, "xmip:///h"),
-            entry(health::DONE, 90, "xmip:///e"),
+            entry(health::FINE, 0, &scopes[0]),
+            entry(health::DONE, 60, &scopes[1]),
+            entry(health::HOLDING, 0, &scopes[2]),
+            entry(health::DONE, 90, &scopes[3]),
         ];
         let mut order = [9usize; 4];
 
@@ -588,7 +598,7 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(order, [2, 3, 1, 0]);
 
-        let unknown = [entry(42, 0, "xmip:///a")];
+        let unknown = [entry(42, 0, &scopes[0])];
         // SAFETY: one live entry; `order` has room for it.
         let refused = unsafe { xmip_health_order_v1(unknown.as_ptr(), 1, order.as_mut_ptr()) };
         assert_eq!(refused, status::INVALID);
@@ -599,16 +609,21 @@ mod tests {
 
     #[test]
     fn containment_is_observe_scope_and_nothing_else() {
+        let cluster = configure::fixture::test_cluster();
+        let (name, scope) = (&cluster.name, cluster.scope());
         for (scope, candidate) in [
-            ("xmip:///n", "xmip:///n/receive/a"),
-            ("xmip:///n", "xmip:///nx"),
-            ("", "xmip:///n"),
-            ("xmip://edge-01/n", "xmip:///n/receive"),
-            ("XMIP:///C1", "xmip:///C1"),
+            (scope.clone(), format!("{scope}/receive/a")),
+            (scope.clone(), format!("{scope}x")),
+            (String::new(), scope.clone()),
+            (
+                format!("xmip://localhost/{name}"),
+                format!("{scope}/receive"),
+            ),
+            (format!("XMIP:///{name}"), scope.clone()),
         ] {
             assert_eq!(
-                contains(scope, candidate),
-                Scope::new(scope).contains(Scope::new(candidate)),
+                contains(&scope, &candidate),
+                Scope::new(&scope).contains(Scope::new(&candidate)),
                 "{scope} / {candidate}"
             );
         }
@@ -616,10 +631,11 @@ mod tests {
 
     #[test]
     fn the_parts_are_observe_scope_segments_borrowed_from_the_input() {
-        let (code, read) = parts("xmip://lab:9000/edge-01/receive/orders/");
+        let node = configure::fixture::test_cluster().node(0).name.clone();
+        let (code, read) = parts(&format!("xmip://localhost:9000/{node}/receive/orders/"));
 
         assert_eq!(code, status::OK);
-        assert_eq!(read, ["edge-01", "receive", "orders"]);
+        assert_eq!(read, [node.as_str(), "receive", "orders"]);
         assert!(parts("xmip:///").1.is_empty());
     }
 
@@ -633,16 +649,19 @@ mod tests {
             (text(node), text(stage))
         };
 
+        let cluster = configure::fixture::test_cluster();
+        let (at, first) = (cluster.scope(), cluster.node_scope(0));
+        let received = format!("{first}/receive/tcp");
         for scope in [
-            "xmip:///C1/node/alpha/receive/tcp",
-            "xmip:///C1/node/send/process/x",
-            "xmip:///C1/round-trip/send/tcp/json",
-            "xmip:///C1/node",
-            "xmip:///",
+            received.clone(),
+            format!("{}/process/x", cluster.node_scope(1)),
+            format!("{at}/round-trip/send/tcp/json"),
+            format!("{at}/node"),
+            "xmip:///".to_string(),
         ] {
-            let read = Scope::new(scope);
+            let read = Scope::new(&scope);
             assert_eq!(
-                node(scope),
+                node(&scope),
                 (
                     read.node().unwrap_or_default().to_string(),
                     read.stage().map_or("", ::node::Stage::name).to_string()
@@ -651,24 +670,19 @@ mod tests {
             );
         }
         assert_eq!(
-            node("xmip:///C1/node/alpha/receive/tcp"),
-            ("alpha".to_string(), "receive".to_string())
+            node(&received),
+            (cluster.node(0).name.clone(), "receive".to_string())
         );
-        assert_eq!(node("xmip:///C1/x"), (String::new(), String::new()));
+        assert_eq!(node(&format!("{at}/x")), (String::new(), String::new()));
     }
 
     #[test]
     fn a_short_buffer_is_told_the_true_count() {
         let mut len = 0usize;
+        let scope = format!("{}/b/c", configure::fixture::test_cluster().scope());
         // SAFETY: `cap` is 0, so `out` is never written.
-        let code = unsafe {
-            xmip_scope_parts_v1(
-                borrow("xmip:///a/b/c"),
-                core::ptr::null_mut(),
-                0,
-                &raw mut len,
-            )
-        };
+        let code =
+            unsafe { xmip_scope_parts_v1(borrow(&scope), core::ptr::null_mut(), 0, &raw mut len) };
 
         assert_eq!(code, status::OK);
         assert_eq!(len, 3);

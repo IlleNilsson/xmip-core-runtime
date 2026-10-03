@@ -3,7 +3,7 @@
 //!
 //! Separate from [`crate::arrival`], which is the lifecycle that produces one
 //! of these. The outcome is read by callers that never run the lifecycle —
-//! reporting, the ToDo, anything asking what happened — and they have no
+//! reporting, the Ledger, anything asking what happened — and they have no
 //! business compiling the gates to find out.
 //!
 //! **A refusal is the whole record.** ADR-0013 puts a Journey's beginning after
@@ -28,7 +28,7 @@ use crate::message_path::Carried;
 use authenticate::Refusal;
 use authorize::Decision;
 use context::IdentityFacts;
-use route::{Routing, SourceError};
+use route::{Promoted, Routing, SourceError};
 
 /// Why a Stream never became a Journey.
 #[derive(Clone, Debug)]
@@ -83,12 +83,22 @@ pub enum Arrived {
     /// A disposition rather than a failure: the Stream was valid, it passed its
     /// gates, and no Subscription matched. That is a statement about
     /// configuration, and `routing.declines()` says which Subscription passed
-    /// and why. Kept under retention so the question can be answered later.
+    /// and why. Kept in the node's Dead Message Queue with `promoted`, what
+    /// routing read, so the question can be answered later and the Message
+    /// replayed once a Subscription is added or fixed.
     Unroutable {
         work: ReceivedWork,
         facts: IdentityFacts,
         routing: Routing,
+        promoted: Promoted,
     },
+
+    /// Permitted, and not kept: Xmip Storage did not take the Stream, the
+    /// Message or its Journeys, or the Stream could not be read. The
+    /// receive cycle did not finish, so the sender is not acknowledged and
+    /// may send again; what was written before the failure is a Stream no
+    /// Message refers to (`runtime-model.md` section 5).
+    Failed { reason: String },
 }
 
 impl Arrived {
@@ -102,7 +112,7 @@ impl Arrived {
     pub const fn routing(&self) -> Option<&Routing> {
         match self {
             Self::Routed { routing, .. } | Self::Unroutable { routing, .. } => Some(routing),
-            Self::Refused { .. } => None,
+            Self::Refused { .. } | Self::Failed { .. } => None,
         }
     }
 }
@@ -120,6 +130,9 @@ pub struct Outcomes {
     pub held: u64,
     /// Refused at a gate before a Journey opened.
     pub refused: u64,
+    /// Permitted, and not kept: Xmip Storage did not take it, so it was
+    /// not acknowledged.
+    pub failed: u64,
     /// Departures that left.
     pub sent: u64,
     /// Departures that did not: refused, failed, nowhere to go, or bound
@@ -136,6 +149,7 @@ pub(crate) struct Tally {
     unroutable: AtomicU64,
     held: AtomicU64,
     refused: AtomicU64,
+    failed: AtomicU64,
     sent: AtomicU64,
     not_sent: AtomicU64,
     failures: Mutex<Vec<(String, String)>>,
@@ -152,6 +166,7 @@ impl Tally {
             Arrived::Routed { .. } => &self.routed,
             Arrived::Unroutable { .. } => &self.unroutable,
             Arrived::Refused { .. } => &self.refused,
+            Arrived::Failed { .. } => &self.failed,
         });
         self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
         self.departed(&carried.departed);
@@ -194,6 +209,7 @@ impl Tally {
             unroutable: read(&self.unroutable),
             held: read(&self.held),
             refused: read(&self.refused),
+            failed: read(&self.failed),
             sent: read(&self.sent),
             not_sent: read(&self.not_sent),
         }

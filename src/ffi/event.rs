@@ -31,7 +31,9 @@ use xevent::listener::Listener;
 use crate::ffi::rule::refuse;
 
 mod crossing;
+mod gate;
 mod subscription;
+mod unheard;
 
 use crossing::{Texts, asked, event_of, texts_of, view_of};
 
@@ -42,12 +44,15 @@ struct Held {
     _listening: Option<Listener>,
 }
 
-/// A drained batch: the Events, their texts, and the header's structs
-/// borrowing from both. Nothing here moves while the batch lives.
+/// A drained batch: the Events, their texts, the header's structs
+/// borrowing from both, and who was not heard when it was drained. Nothing
+/// here moves while the batch lives.
 struct Batch {
     _events: Vec<Arc<Event>>,
     _texts: Vec<Texts>,
     views: Vec<Wire>,
+    unheard: Vec<observe::Unheard>,
+    unheard_changed: bool,
 }
 
 /// The program's callback context, carried to the listener's thread.
@@ -203,7 +208,7 @@ pub unsafe extern "C" fn xmip_event_next_v1(
     };
 
     let delivery = subscription.next(Duration::from_millis(u64::from(timeout_ms)), max);
-    if delivery.events.is_empty() && delivery.refused == 0 {
+    if delivery.events.is_empty() && delivery.refused == 0 && !delivery.unheard_changed {
         return status::TIMEOUT;
     }
     let texts: Vec<Texts> = delivery
@@ -221,6 +226,8 @@ pub unsafe extern "C" fn xmip_event_next_v1(
         _events: delivery.events,
         _texts: texts,
         views,
+        unheard: delivery.unheard,
+        unheard_changed: delivery.unheard_changed,
     });
 
     // SAFETY: every out pointer is writable; the views live in the batch,
@@ -313,9 +320,20 @@ mod tests {
         let _: abi::operate::event::BatchFreeFn = xmip_event_batch_free_v1;
         let _: abi::operate::event::UnsubscribeFn = xmip_event_unsubscribe_v1;
         let _: abi::operate::event::PublishFn = xmip_event_publish_v1;
+        let _: abi::operate::event::AuthorizeFn = super::gate::xmip_event_authorize_v1;
+        let _: abi::operate::event::BatchUnheardFn = super::unheard::xmip_event_batch_unheard_v1;
+        let _: abi::operate::event::UnheardFn = super::unheard::xmip_event_unheard_v1;
     }
 
     /// A temporary audit directory of this test's own.
+    /// A cluster's scope kept apart for one test, so no other test's Events
+    /// reach its subscriber, and the test cluster's first node's name.
+    fn apart(test: &str) -> (String, String) {
+        let cluster = configure::fixture::test_cluster();
+        let scope = format!("{}-ffi-{test}", cluster.scope());
+        (scope, cluster.node(0).name.clone())
+    }
+
     fn directory(name: &str) -> String {
         let name = format!("xmip-runtime-event-{name}-{}", std::process::id());
         let at = std::env::temp_dir().join(name);
@@ -326,6 +344,8 @@ mod tests {
     const PARTY: &str = "0198a3c4-0000-7000-8000-000000000042";
 
     fn subscribe(directory: &str, filter: &EventFilter) -> *mut Handle {
+        // Being in this process admits nobody: the test hands its policy.
+        super::gate::allowed::policy();
         let mut out = core::ptr::null_mut();
         let mut said = [0u8; 256];
         let mut said_len = 0;
@@ -403,14 +423,16 @@ mod tests {
     #[test]
     fn a_subscriber_drains_what_it_matches_and_frees_it() {
         let at = directory("drain");
-        let scope = "xmip:///ffi-drain/node/n/receive/orders";
+        let (cluster, node) = apart("drain");
+        let scope = format!("{cluster}/node/{node}/receive/orders");
+        let scope = scope.as_str();
         let failures = [outcome::FAILURE];
         let filter = EventFilter {
             types: core::ptr::null(),
             types_len: 0,
             outcomes: failures.as_ptr(),
             outcomes_len: 1,
-            scope: borrow("xmip:///ffi-drain"),
+            scope: borrow(&cluster),
             party: Str::empty(),
         };
         let handle = subscribe(&at, &filter);
@@ -452,7 +474,9 @@ mod tests {
 
     #[test]
     fn a_listener_is_called_back_with_each_event() {
+        super::gate::allowed::policy();
         let at = directory("listen");
+        let (cluster, node) = apart("listen");
         let (tell, heard) = mpsc::channel();
         let tell = Box::new(Mutex::new(tell));
         let filter = EventFilter {
@@ -460,7 +484,7 @@ mod tests {
             types_len: 0,
             outcomes: core::ptr::null(),
             outcomes_len: 0,
-            scope: borrow("xmip:///ffi-listen"),
+            scope: borrow(&cluster),
             party: Str::empty(),
         };
         let (mut out, mut said, mut said_len) = (core::ptr::null_mut(), [0u8; 64], 0);
@@ -484,7 +508,7 @@ mod tests {
         };
         assert_eq!(code, status::OK);
 
-        publish(&raised("xmip:///ffi-listen/node/n", &[]));
+        publish(&raised(&format!("{cluster}/node/{node}"), &[]));
 
         let kind = heard
             .recv_timeout(Duration::from_secs(2))
@@ -499,10 +523,11 @@ mod tests {
     #[test]
     fn what_the_header_refuses_is_refused() {
         assert_eq!(publish(&raised("", &[])).0, status::INVALID, "a scope");
-        let mut unknown = raised("xmip:///c", &[]);
+        let scope = configure::fixture::test_cluster().scope();
+        let mut unknown = raised(&scope, &[]);
         unknown.outcome = 8;
         assert_eq!(publish(&unknown).0, status::INVALID);
-        let mut malformed = raised("xmip:///c", &[]);
+        let mut malformed = raised(&scope, &[]);
         malformed.journey = borrow("not a uuid");
         assert_eq!(publish(&malformed).0, status::MALFORMED);
 

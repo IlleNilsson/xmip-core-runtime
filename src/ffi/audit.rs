@@ -345,7 +345,8 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let place = directory.to_string_lossy().into_owned();
         let hidden = xaudit::program_audit::ProgramAudit::new("probe", Some(&directory));
-        hidden.locate("xmip:///CT");
+        let scope = configure::fixture::test_cluster().scope();
+        hidden.locate(&scope);
         hidden.hide();
         hidden.failed("start", "a hidden run").expect("recorded");
         assert_eq!(call(&place, phase::BEGIN, &[]).0, status::OK);
@@ -359,7 +360,7 @@ mod tests {
         let answer: Value = serde_json::from_str(&included).expect("JSON");
         assert_eq!(answer["matched"], 2, "{included}");
         assert_eq!(answer["records"][1]["hidden"], true, "the older of the two");
-        assert_eq!(answer["groups"][0]["who"], "xmip:///CT");
+        assert_eq!(answer["groups"][0]["who"], scope.as_str());
         assert_eq!(answer["groups"][0]["hidden"], true);
         let _ = fs::remove_dir_all(&directory);
     }

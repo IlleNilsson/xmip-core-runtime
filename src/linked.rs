@@ -13,27 +13,27 @@
 //! the other way a Module is in a process.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use authenticate::Authenticator;
 use authorize::Authorizer;
 use configure::ConfiguredLocation;
 use identify::{MessageIdentifier, TransportIdentifier};
+use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, Transport};
+use transport::{Configured, NodeLocation, Transport};
 use xaudit::program_audit::ProgramAudit;
 use xcore::settings::{Applies, Given, Settings};
-
-use crate::pickup::Store;
 
 /// A transport built for one Location: the one kept instance its receives or
 /// sends go through.
 pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 
-/// How a Location's transport is built: its address, the side it serves and
-/// what its settings table gave.
-pub type Open = fn(&str, Applies, &[(String, Given)]) -> Opened;
+/// How a Location's transport is built: its address, the side it serves,
+/// what its settings table gave, and the node it is built on.
+pub type Open = fn(&str, Applies, &[(String, Given)], &NodeLocation) -> Opened;
 
 /// A transport technology linked into the program: its declaration, and the
 /// one way a Location builds it (`transport::Configured::open`).
@@ -67,29 +67,41 @@ impl LinkedTransport {
         self.settings
     }
 
-    /// Build it for `location`, on `side`.
+    /// Build it for `location`, on `side`, on the node at `node`.
     ///
     /// # Errors
-    /// What the technology refuses of the Location's address or settings.
-    pub fn open(&self, location: &ConfiguredLocation, side: Applies) -> Opened {
-        (self.open)(&location.address, side, &location.settings.given())
+    /// What the technology refuses of the Location's address or settings,
+    /// or of returning what the node held before it last stopped.
+    pub fn open(
+        &self,
+        location: &ConfiguredLocation,
+        side: Applies,
+        node: &NodeLocation,
+    ) -> Opened {
+        (self.open)(&location.address, side, &location.settings.given(), node)
     }
 }
 
+/// `T` built from a Location and given its node, once, as it is built (the
+/// owner, 2026-10-03; `transport::Configured::on_node`).
 fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
+    node: &NodeLocation,
 ) -> Opened {
-    Ok(Box::new(T::open(address, side, given)?))
+    Ok(Box::new(T::open(address, side, given)?.on_node(node)?))
 }
 
-/// How an engine opens its store in a directory.
+/// How an engine opens its store at a place: a directory for `RocksDB`, a
+/// file for `SQLite`.
 pub type OpenEngine = fn(&Path) -> Result<Box<dyn Engine>, PersistError>;
 
-/// The runtime store's engine linked into the program, by its module name
-/// (`xmip-core-persist-rocksdb`, `configure::store::ENGINE`): the one
-/// engine of an embedded runtime database (ADR-0015, amendment 2026-10-01).
+/// An engine linked into the program, by its module name: the runtime
+/// database's, `xmip-core-persist-rocksdb` (`configure::store::ENGINE`),
+/// or the administration database's, `xmip-core-persist-sqlite`
+/// (`crate::storage::ADMINISTRATION`) — the two engines of an embedded
+/// Storage node (ADR-0015, amendment 2026-10-01).
 pub struct LinkedEngine {
     technology: &'static str,
     open: OpenEngine,
@@ -165,19 +177,23 @@ pub struct Linked {
     pub policies: Vec<Box<dyn Authorizer>>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
-    /// The runtime store's engine, where the program was built with it;
-    /// the node opens its store over it (`crate::store`, ADR-0018,
+    /// The runtime database's engine, where the program was built with
+    /// it: with [`Linked::administration`], what a node that is its own
+    /// Storage node opens Xmip Storage over (`crate::storage`, ADR-0018,
     /// amendments 2026-09-30 and 2026-10-01).
     pub engine: Option<LinkedEngine>,
-    /// The key stores the program was built with, one of which wraps the
-    /// runtime store's data key.
+    /// The administration database's engine, where the program was built
+    /// with it: with [`Linked::engine`], what a node that is its own
+    /// Storage node opens Xmip Storage over (`crate::storage`).
+    pub administration: Option<LinkedEngine>,
+    /// The key stores the program was built with, one of which wraps an
+    /// embedded Storage node's data keys.
     pub key_stores: Vec<LinkedKeyStore>,
-    /// A runtime store the program opened itself, which the node takes
-    /// instead of opening the one its configuration names: where a paused
-    /// Subscription's standing and what it holds are kept, so both survive
-    /// a restart (ADR-0013, amendment 2026-09-30). None, with no engine
-    /// linked and no `[store]` named, holds in memory for the node's life.
-    pub store: Option<Store>,
+    /// Xmip Storage the program opened itself — a test's Storage node, or a
+    /// client of the Storage nodes the program reaches with the identity it
+    /// presents — which the node writes the Ledger through instead of the
+    /// one its configuration leads to (`crate::storage`).
+    pub storage: Option<Arc<dyn XmipStorage>>,
     /// The program's own audit, where an operator's act on a Subscription
     /// is recorded (ADR-0062).
     pub audit: Option<ProgramAudit>,

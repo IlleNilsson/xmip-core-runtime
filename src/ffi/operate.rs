@@ -279,25 +279,30 @@ mod tests {
     use observe::{Count, HealthRecord, Snapshot};
     use observe::{Counted, Health};
 
+    /// The node the snapshot is of: the test cluster's first.
+    fn node() -> String {
+        configure::fixture::test_cluster().node_scope(0)
+    }
+
     fn snapshot() -> Snapshot {
         let mut snapshot = Snapshot::new();
 
         snapshot.record_health(HealthRecord {
-            scope: "xmip:///edge-01/transport/ftp".into(),
+            scope: format!("{}/transport/ftp", node()),
             health: Health::Fine,
             severity: 0,
             evidence: String::new(),
             observed_unix_nanos: 10,
         });
         snapshot.record_health(HealthRecord {
-            scope: "xmip:///edge-01/transport/sftp".into(),
+            scope: format!("{}/transport/sftp", node()),
             health: Health::Done,
             severity: 90,
             evidence: "refused by party-x".into(),
             observed_unix_nanos: 11,
         });
         snapshot.record_count(Count {
-            scope: "xmip:///edge-01/transport/ftp".into(),
+            scope: format!("{}/transport/ftp", node()),
             counted: Counted::Streams,
             value: 40,
             window_start_unix_nanos: 0,
@@ -305,7 +310,7 @@ mod tests {
             observed_unix_nanos: 60,
         });
         snapshot.record_count(Count {
-            scope: "xmip:///edge-01/transport/sftp".into(),
+            scope: format!("{}/transport/sftp", node()),
             counted: Counted::Streams,
             value: 2,
             window_start_unix_nanos: 0,
@@ -344,7 +349,7 @@ mod tests {
         let code = unsafe {
             (table.health.expect("health"))(
                 table.ctx,
-                borrow("xmip:///edge-01"),
+                borrow(&node()),
                 out.as_mut_ptr(),
                 out.len(),
                 &mut len,
@@ -369,7 +374,7 @@ mod tests {
         let code = unsafe {
             (table.health.expect("health"))(
                 table.ctx,
-                borrow("xmip:///edge-01"),
+                borrow(&node()),
                 core::ptr::null_mut(),
                 0,
                 &mut len,
@@ -400,7 +405,7 @@ mod tests {
         let code = unsafe {
             (table.measure.expect("measure"))(
                 table.ctx,
-                borrow("xmip:///edge-01"),
+                borrow(&node()),
                 counted::STREAMS,
                 &mut out,
                 1,
@@ -411,11 +416,12 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(out.value, 42);
 
+        let nowhere = format!("xmip:///{}", configure::fixture::test_cluster().other());
         // SAFETY: as above.
         let missing = unsafe {
             (table.measure.expect("measure"))(
                 table.ctx,
-                borrow("xmip:///nowhere"),
+                borrow(&nowhere),
                 counted::STREAMS,
                 &mut out,
                 1,
@@ -462,7 +468,7 @@ mod tests {
         let found = unsafe {
             (table.health.expect("health"))(
                 table.ctx,
-                borrow("xmip:///edge-01"),
+                borrow(&node()),
                 core::ptr::null_mut(),
                 0,
                 &mut len,
@@ -485,7 +491,7 @@ mod tests {
         let code = unsafe {
             (table.measure.expect("measure"))(
                 table.ctx,
-                borrow("xmip:///edge-01"),
+                borrow(&node()),
                 99,
                 core::ptr::null_mut(),
                 0,

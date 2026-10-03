@@ -340,19 +340,25 @@ mod tests {
     use abi::operate::publication::{self, kind, origin, pattern};
     use abi::operate::{counted, health};
 
-    const ROLL: &str = r#"
-source = "playground — xmip:///C1"
-node = "xmip:///C1"
+    /// A roll of the test cluster, its first two nodes by place.
+    fn roll() -> String {
+        let cluster = configure::fixture::test_cluster();
+        let (name, scope) = (&cluster.name, cluster.scope());
+        let (first, second) = (&cluster.node(0).name, &cluster.node(1).name);
+        format!(
+            r#"
+source = "playground — {scope}"
+node = "{scope}"
 
 [[records]]
-scope = "xmip:///C1/node/alpha/receive/tcp"
+scope = "{scope}/node/{first}/receive/tcp"
 state = "done"
 severity = 90
 evidence = "refused"
 observed_unix_nanos = 9
 
 [[records]]
-scope = "xmip:///C1/node/alpha/capability"
+scope = "{scope}/node/{first}/capability"
 state = "sulking"
 severity = 0
 evidence = "declares receiving; online; x"
@@ -367,11 +373,11 @@ counted = "throughput"
 value = 1
 
 [run]
-cluster = "C1"
+cluster = "{name}"
 tests = ["RoundTrip"]
-nodes = ["alpha"]
-roles = ["alpha=receiving"]
-online = ["alpha"]
+nodes = ["{first}"]
+roles = ["{first}=receiving"]
+online = ["{first}"]
 stress = "harsh"
 
 [topology]
@@ -381,21 +387,23 @@ observed_unix_nanos = 5
 [[topology.nodes]]
 id = "cluster"
 kind = "cluster"
-scope = "xmip:///C1"
+scope = "{scope}"
 state = "fine"
 origin = "configured"
 activity = 0.5
 
 [[topology.links]]
-id = "handoff/alpha/beta"
-from = "node/alpha/receive"
-to = "node/beta/process"
+id = "handoff/{first}/{second}"
+from = "node/{first}/receive"
+to = "node/{second}/process"
 pattern = "retry"
 origin = "observed"
 state = "stressed"
 volume = 3
 attempts = 2
-"#;
+"#
+        )
+    }
 
     fn text(value: Str) -> String {
         if value.ptr.is_null() {
@@ -458,7 +466,8 @@ attempts = 2
 
     #[test]
     fn a_roll_crosses_whole_as_observe_reads_it() {
-        let (code, handle, said) = read(ROLL);
+        let cluster = configure::fixture::test_cluster();
+        let (code, handle, said) = read(&roll());
         assert_eq!((code, said.as_str()), (status::OK, ""));
 
         let mut head = PublicationHead {
@@ -477,7 +486,7 @@ attempts = 2
             unsafe { xmip_publication_head_v1(handle, &raw mut head) },
             status::OK
         );
-        assert_eq!(text(head.node), "xmip:///C1");
+        assert_eq!(text(head.node), cluster.scope());
         assert_eq!((head.has_run, text(head.stress)), (1, "harsh".to_string()));
         assert_eq!(head.hidden, 0, "the roll declared nothing");
         assert_eq!(
@@ -511,7 +520,7 @@ attempts = 2
         let counts = listed(handle, xmip_publication_counts_v1, none);
         assert_eq!(counts.len(), 1, "an unknown kind is skipped");
         assert_eq!((counts[0].counted, counts[0].value), (counted::STREAMS, 4));
-        assert_eq!(text(counts[0].scope), "xmip:///C1");
+        assert_eq!(text(counts[0].scope), cluster.scope());
 
         let blank = Node {
             id: Str::empty(),
@@ -558,7 +567,7 @@ attempts = 2
         };
         assert_eq!(
             (code, len, text(words[0])),
-            (status::OK, 1, "alpha=receiving".to_string())
+            (status::OK, 1, format!("{}=receiving", cluster.node(0).name))
         );
         // SAFETY: as above.
         let unknown =
@@ -571,7 +580,11 @@ attempts = 2
 
     #[test]
     fn a_node_file_has_no_run_and_a_stranger_is_refused_with_the_readers_words() {
-        let (code, handle, _) = read("node = 'xmip:///alpha'");
+        let node = format!(
+            "node = '{}'",
+            configure::fixture::test_cluster().node_scope(0)
+        );
+        let (code, handle, _) = read(&node);
         assert_eq!(code, status::OK);
         let mut len = 9usize;
         // SAFETY: a live handle; nothing is written for no room.

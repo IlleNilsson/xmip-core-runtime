@@ -15,12 +15,18 @@
 //!                          carried into the catalogue; each library opened once
 //! 7 register-capabilities  each capability once, by the Module serving it
 //! 8 verify-extensions      the execution tree's, verified and not loaded
-//! 9 accept-work            each Location's transport built once; the Runtime
-//!                          built once; every Receive Location serving
+//! 9 accept-work            each Location's transport built once; Xmip Storage
+//!                          reached; the Runtime built once; every Receive
+//!                          Location serving
 //! ```
+//!
+//! Phase 3 also holds how the node reaches Xmip Storage to what its program
+//! linked, and phase 9 reaches it (`crate::storage`): every Stream a
+//! Receive Location takes in is written to the Ledger through it.
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -31,6 +37,8 @@ use configure::{ConfiguredLocation, Declarations};
 use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
 use route::Gathering;
+use xaudit::origin::Origin;
+use xaudit::program_audit::ProgramAudit;
 use xcore::{SystemClock, UuidV7Generator};
 
 use crate::capability_registry::CapabilityRegistry;
@@ -47,7 +55,7 @@ use crate::sending::Sends;
 use crate::service::StartupPhase;
 use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
-use crate::store::Opened;
+use crate::storage::Reached;
 
 pub mod publication;
 
@@ -85,7 +93,8 @@ pub struct Running {
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
     pickup: Arc<Pickup>,
-    store: Opened,
+    data: PathBuf,
+    storage: Reached,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
 }
@@ -104,7 +113,8 @@ impl Running {
     pub fn start(path: &str, mut linked: Linked) -> Result<Self, Refusal> {
         let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
-        let planned = crate::store::plan(&document, path, &linked)?;
+        let data = document.service.data_directory(Path::new(path));
+        let reaching = crate::storage::plan(&document, path, &linked)?;
 
         let declared: Declarations = linked
             .transports
@@ -140,9 +150,14 @@ impl Running {
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
-        let store = planned.open(&linked)?;
-        let pickup = Pickup::open(&scope, configured, store.held(), linked.audit.clone())
-            .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))?;
+        let storage = reaching.open(&linked, tree.tuning.chunk())?;
+        let pickup = Pickup::open(
+            &scope,
+            configured,
+            Arc::clone(storage.storage()),
+            linked.audit.clone(),
+        )
+        .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))?;
 
         // Only what the configuration named goes on: the authenticators its
         // Receive Locations accept. Policies and identifiers are consulted at
@@ -167,8 +182,12 @@ impl Running {
             .collect();
         let stopping = Arc::new(AtomicBool::new(false));
         let tally = Arc::new(Tally::default());
+        let origin = origin(linked.audit.as_ref(), &scope);
         let serving = serve(
             Served {
+                storage: Arc::clone(storage.storage()),
+                chunk: storage.chunk(),
+                origin,
                 linked,
                 gathering,
                 subscriptions: tree.subscriptions,
@@ -191,7 +210,8 @@ impl Running {
             serving: Some(serving),
             tally,
             pickup,
-            store,
+            data,
+            storage,
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
@@ -228,10 +248,19 @@ impl Running {
         &self.pickup
     }
 
-    /// Its runtime store as opened, and its data directory.
+    /// Its data directory (`configure::ServiceConfiguration::data`):
+    /// where the orders an operator leaves for it and its last snapshot
+    /// are kept.
     #[must_use]
-    pub const fn store(&self) -> &Opened {
-        &self.store
+    pub fn data(&self) -> &Path {
+        &self.data
+    }
+
+    /// How the node reaches Xmip Storage, which its receives write the
+    /// Ledger through.
+    #[must_use]
+    pub const fn storage(&self) -> &Reached {
+        &self.storage
     }
 
     /// What became of every Stream so far.
@@ -273,6 +302,9 @@ impl Drop for Running {
 
 /// What the serving thread owns for the node's life.
 struct Served {
+    storage: Arc<dyn persist::storage::XmipStorage>,
+    chunk: usize,
+    origin: Origin,
     linked: Linked,
     gathering: Gathering,
     subscriptions: Vec<route::Subscription>,
@@ -288,6 +320,9 @@ struct Served {
 fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let Served {
+            storage,
+            chunk,
+            origin,
             linked,
             gathering,
             subscriptions,
@@ -323,14 +358,18 @@ fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHa
             message_identifiers: &message_identifiers,
             policies: &policies,
             clock: &SystemClock,
+            storage: &storage,
+            chunk,
+            origin: &origin,
         };
 
         std::thread::scope(|scope| {
             for location in &receiving {
                 let (runtime, pickup, stopping, tally) = (&runtime, &*pickup, &*stopping, &*tally);
                 scope.spawn(move || {
-                    let served =
-                        location.serve(runtime, pickup, stopping, |carried| tally.record(carried));
+                    let served = location.serve(scope, runtime, pickup, stopping, |carried| {
+                        tally.record(carried);
+                    });
                     if let Err(why) = served {
                         tally.fail(&location.configured.name, why);
                     }
@@ -342,14 +381,25 @@ fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHa
     })
 }
 
+/// Who a running node's audit records say they came from: the program's
+/// origin where it audits, this process as the runtime otherwise, and the
+/// node's location on each (ADR-0062, amendment 2026-09-29).
+#[must_use]
+pub fn origin(program: Option<&ProgramAudit>, node: &str) -> Origin {
+    Origin {
+        location: Some(node.to_string()),
+        ..program.map_or_else(
+            || Origin::here(env!("CARGO_PKG_NAME")),
+            |audit| audit.origin(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::{Always, Open};
     use crate::linked::{LinkedTransport, Opened};
-    use authenticate::AuthenticateError;
-    use authorize::{Attempt, Decision};
-    use context::{IdentityFacts, Verified};
-    use identify::Presented;
     use observe::Health;
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
@@ -357,93 +407,104 @@ mod tests {
     use tcp::TcpTransport;
     use transport::{Configured, Transport};
     use xcore::settings::{Applies, Given};
-    use xcore::{Layer, Mechanism, mechanism};
-
-    /// ADR-0019 clause 7: where nothing was presented, the circumstance is
-    /// the transport identity, and is authenticated as that — claimed, since
-    /// nothing cryptographic stands behind a loopback connection.
-    struct Circumstance;
-
-    impl Authenticator for Circumstance {
-        fn mechanism(&self) -> Mechanism {
-            mechanism::circumstance()
-        }
-
-        fn verify(&self, _presented: &Presented) -> Result<Verified, AuthenticateError> {
-            Ok(Verified::Claimed)
-        }
-    }
-
-    /// Allows what the gates authenticated. The estate's real policies are
-    /// technologies; this is the smallest thing that is not "nothing
-    /// configured", which permits nothing.
-    struct Open;
-
-    impl Authorizer for Open {
-        fn name(&self) -> &str {
-            "open"
-        }
-
-        fn layer(&self) -> Layer {
-            Layer::Transport
-        }
-
-        fn decide(&self, _identity: &IdentityFacts, _attempt: &Attempt) -> Option<Decision> {
-            Some(Decision::Allowed)
-        }
-    }
 
     thread_local! {
         /// How often this test's thread built a tcp transport: startup runs on
         /// the thread that calls it, so each test counts its own.
         static OPENED: Cell<usize> = const { Cell::new(0) };
+        /// The node each of this test's thread's transports was given.
+        static GIVEN: std::cell::RefCell<Vec<String>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
     }
 
-    fn counted(address: &str, side: Applies, given: &[(String, Given)]) -> Opened {
+    fn counted(
+        address: &str,
+        side: Applies,
+        given: &[(String, Given)],
+        node: &transport::NodeLocation,
+    ) -> Opened {
         OPENED.with(|opened| opened.set(opened.get() + 1));
-        Ok(Box::new(TcpTransport::open(address, side, given)?))
+        GIVEN.with(|nodes| nodes.borrow_mut().push(node.to_string()));
+        Ok(Box::new(
+            TcpTransport::open(address, side, given)?.on_node(node)?,
+        ))
     }
 
-    fn linked() -> Linked {
+    /// What the tests' program links, and the test Storage node it opened
+    /// beside the configuration at `file`: `RocksDB` on disk for the runtime
+    /// database, `SQLite` in memory for the administration database.
+    fn linked(file: &Path) -> Linked {
+        static PLACES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let place = file.parent().expect("its directory").join(format!(
+            "ledger-{}",
+            PLACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        let storage = persist::storage::Embedded::open(
+            rocksdb::RocksDb::open(&place).expect("the runtime database"),
+            sqlite::Sqlite::in_memory().expect("the administration database"),
+            &keys,
+            &secret::KekName::new(crate::storage::KEK).expect("a name"),
+        )
+        .expect("the test Storage node");
         Linked {
             transports: vec![LinkedTransport::new(TcpTransport::SETTINGS, counted)],
-            authenticators: vec![Box::new(Circumstance)],
+            authenticators: vec![Box::new(Always::circumstance())],
             policies: vec![Box::new(Open)],
+            storage: Some(Arc::new(storage)),
             ..Linked::default()
         }
     }
 
-    const APPLICATION: &str = r#"[application]
+    /// The Loopback Application, as its section of the node's configuration.
+    const APPLICATION: &str = r#"
+[[xmip_applications]]
 name = "Loopback"
 
-[[receive_locations]]
-name = "In"
+[[xmip_applications.receive_ports]]
+name = "Loopback"
 
-[[send_ports]]
+[[xmip_applications.receive_locations]]
+name = "In"
+receive_port = "Loopback"
+interaction = "data-transfer"
+depth = "light"
+
+[[xmip_applications.send_ports]]
 name = "Out"
 
-[[subscriptions]]
+[[xmip_applications.subscriptions]]
 id = "onward"
 destination = { send-port = "Out" }
 filter = "xmip.transport.mechanism = 'circumstance'"
 "#;
 
-    /// Node alpha takes both ends of the Application: a tcp Receive Location
-    /// on `receive`, and a tcp Send Port to `far`.
+    /// The test cluster's first node, and its scope.
+    fn first() -> (String, String) {
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node(0).name.clone();
+        let scope = format!("xmip:///{}/node/{node}", cluster.name);
+        (node, scope)
+    }
+
+    /// The test cluster's first node takes both ends of the Application: a
+    /// tcp Receive Location on `receive`, and a tcp Send Port to `far`.
     fn node(receive: &str, far: &str) -> String {
+        let cluster = configure::fixture::test_cluster();
+        let (node, _) = first();
         format!(
             r#"[service]
-name = "xmip-alpha"
-cluster_name = "loopback"
-node_name = "alpha"
+name = "xmip"
+cluster_name = "{cluster}"
+node_name = "{node}"
 
 [[applications]]
 name = "Loopback"
-document = "loopback.application.toml"
 
 [[applications.receive_locations]]
 name = "In"
-node = "alpha"
+node = "{node}"
 start = true
 transport = "xmip-core-transport-tcp"
 address = "{receive}"
@@ -454,23 +515,22 @@ mechanism = ["circumstance"]
 
 [[applications.send_ports]]
 name = "Out"
-node = "alpha"
+node = "{node}"
 start = true
 transport = "xmip-core-transport-tcp"
 address = "{far}"
-"#
+{APPLICATION}"#,
+            cluster = cluster.name
         )
     }
 
-    /// A directory of its own holding `configuration` beside the
-    /// Application, and the configuration's path.
+    /// A directory of its own holding `configuration`, and the
+    /// configuration's path.
     fn written(test: &str, configuration: &str) -> PathBuf {
         let directory =
             std::env::temp_dir().join(format!("xmip-running-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("a directory");
-        std::fs::write(directory.join("loopback.application.toml"), APPLICATION)
-            .expect("writes the Application");
-        let path = directory.join("alpha.toml");
+        let path = directory.join("node.toml");
         std::fs::write(&path, configuration).expect("writes the node");
         path
     }
@@ -510,7 +570,7 @@ address = "{far}"
         let path = written("carries", &node(&receive, &far_address));
 
         OPENED.with(|opened| opened.set(0));
-        let running = Running::start(path_text(&path), linked()).expect("the node starts");
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
 
         // One module per technology, however many Locations use it; one
         // transport instance per Location.
@@ -534,19 +594,47 @@ address = "{far}"
         );
 
         deliver(&receive, b"order 0");
-        let first = far.accept_one(&listener).expect("the first arrives");
+        let first = far
+            .accept_one(&listener)
+            .expect("the first arrives")
+            .taken()
+            .expect("read whole");
         assert_eq!(first.bytes, b"order 0");
 
-        let started = Instant::now();
+        // Each Message timed on its own, and the load sampled between them,
+        // so both meet the same machine; the medians decide.
+        let (load_far, (load_listener, load_address)) = {
+            let far = TcpTransport::loopback();
+            let bound = far.bind().expect("a far end for the load binds");
+            (far, bound)
+        };
+        let mut times = Vec::new();
+        let mut loads = Vec::new();
         for message in 1..=MESSAGES {
             let payload = format!("order {message}");
+            let started = Instant::now();
             TcpTransport::loopback()
                 .send(&receive, payload.as_bytes())
                 .expect("the node takes it");
-            let arrived = far.accept_one(&listener).expect("it reaches the far end");
+            let arrived = far
+                .accept_one(&listener)
+                .expect("it reaches the far end")
+                .taken()
+                .expect("read whole");
+            times.push(started.elapsed());
             assert_eq!(arrived.bytes, payload.as_bytes());
+            if message % 5 == 0 {
+                loads.push(load_of_one_message(
+                    &running,
+                    (&load_far, &load_listener, &load_address),
+                    message,
+                ));
+            }
         }
-        let each = started.elapsed() / MESSAGES;
+        let each = median(times);
+        let load = median(loads);
+        eprintln!("LEDGER loopback end to end: {each:?} per Message, median");
+        eprintln!("LEDGER the load of one Message here: {load:?}, median");
 
         let outcomes = running.stop();
         let carried = u64::from(MESSAGES) + 1;
@@ -554,13 +642,111 @@ address = "{far}"
         assert_eq!(outcomes.routed, carried, "{outcomes:?}");
         assert_eq!(outcomes.sent, carried, "{outcomes:?}");
         assert_eq!(
-            outcomes.refused + outcomes.unroutable + outcomes.not_sent,
+            outcomes.refused + outcomes.failed + outcomes.unroutable + outcomes.not_sent,
             0
         );
-        // Two loopback connections and the whole message path, per Message —
-        // about a millisecond in a debug build on a quiet machine, 2026-09-28.
-        // Five is generous for one under load; beyond it, something around
-        // the payload is taking longer than its load (the millisecond rule).
+        // The millisecond rule, with the load counted as load (the owner,
+        // 2026-10-03: *Go for A*): each Message costs one durable sync on
+        // this machine's disk and the test's own two loopback connections,
+        // measured here; the whole message path around them may add a
+        // millisecond, no more.
+        assert!(
+            each < load + Duration::from_millis(1),
+            "{each:?} per Message against {load:?} of load"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
+    }
+
+    /// The middle one of `times`, so one slow round decides nothing.
+    fn median(mut times: Vec<Duration>) -> Duration {
+        times.sort();
+        times[times.len() / 2]
+    }
+
+    /// What one Message costs that is not the message path, sampled once:
+    /// one durable write through the node's own Xmip Storage — its sync —
+    /// and two loopback connections carrying a few bytes to `far`.
+    fn load_of_one_message(
+        running: &Running,
+        (far, listener, address): (&TcpTransport, &std::net::TcpListener, &str),
+        round: u32,
+    ) -> Duration {
+        let record = persist::storage::JourneyRecord {
+            journey: xcore::JourneyId::new(u128::MAX - u128::from(round)),
+            body: vec![0; 512],
+        };
+        let started = Instant::now();
+        running
+            .storage()
+            .storage()
+            .write_journey(&record)
+            .expect("written durably");
+        let sync = started.elapsed();
+        let started = Instant::now();
+        TcpTransport::loopback()
+            .send(address, b"load")
+            .expect("sent");
+        far.accept_one(listener)
+            .expect("taken")
+            .taken()
+            .expect("read whole");
+        sync + 2 * started.elapsed()
+    }
+
+    #[test]
+    fn eight_senders_at_once_are_carried_side_by_side() {
+        // A TCP Receive Location's arrivals are unordered — each
+        // connection its own — so eight senders' Streams are carried at
+        // once on the Location's pool, and their Ledger writes share a
+        // group commit's disk sync rather than waiting one by one.
+        const SENDERS: u32 = 8;
+        const EACH: u32 = 50;
+        let far = TcpTransport::loopback();
+        let (listener, far_address) = far.bind().expect("the far end binds");
+        let receive = free_address();
+        let path = written("eight", &node(&receive, &far_address));
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+        deliver(&receive, b"warm");
+        far.accept_one(&listener)
+            .expect("the first arrives")
+            .taken()
+            .expect("read whole");
+
+        let started = Instant::now();
+        let taking = std::thread::spawn(move || {
+            let mut taken = Vec::new();
+            for _ in 0..SENDERS * EACH {
+                let arrived = far.accept_one(&listener).expect("it reaches the far end");
+                taken.push(arrived.taken().expect("read whole").bytes);
+            }
+            taken.sort();
+            taken.dedup();
+            taken.len()
+        });
+        let senders: Vec<_> = (0..SENDERS)
+            .map(|sender| {
+                let at = receive.clone();
+                std::thread::spawn(move || {
+                    for message in 0..EACH {
+                        TcpTransport::loopback()
+                            .send(&at, format!("S{sender} {message}").as_bytes())
+                            .expect("the node takes it");
+                    }
+                })
+            })
+            .collect();
+        for sender in senders {
+            sender.join().expect("a sender");
+        }
+        assert_eq!(
+            taking.join().expect("the far end"),
+            (SENDERS * EACH) as usize
+        );
+        let each = started.elapsed() / (SENDERS * EACH);
+        eprintln!("eight senders, loopback end to end: {each:?} per Message");
+
+        let outcomes = running.stop();
+        assert_eq!(outcomes.sent, u64::from(SENDERS * EACH) + 1, "{outcomes:?}");
         assert!(each < Duration::from_millis(5), "{each:?} per Message");
         let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
@@ -571,7 +757,7 @@ address = "{far}"
             .replace("timeout = \"100ms\"", "timeout = 5\ncolour = \"lime\"");
         let path = written("declared", &unsound);
 
-        let refused = Running::start(path_text(&path), linked())
+        let refused = Running::start(path_text(&path), linked(&path))
             .err()
             .expect("refused");
 
@@ -591,7 +777,7 @@ address = "{far}"
         // Once a node has loaded tcp, a surface validating in this process
         // holds a tcp Location to the same declaration (xmip_validate_v1).
         let sound = written("declared-sound", &node(&free_address(), &free_address()));
-        Running::start(path_text(&sound), linked())
+        Running::start(path_text(&sound), linked(&sound))
             .expect("the node starts")
             .stop();
         let problems = crate::start::validate(&unsound);
@@ -605,16 +791,39 @@ address = "{far}"
     }
 
     #[test]
+    fn every_transport_is_given_its_nodes_location_as_it_is_built() {
+        let path = written("given", &node(&free_address(), &free_address()));
+        GIVEN.with(|nodes| nodes.borrow_mut().clear());
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+        let given = GIVEN.with(|nodes| nodes.borrow().clone());
+        assert_eq!(
+            given.len(),
+            2,
+            "the Receive and the Send Location: {given:?}"
+        );
+        assert!(
+            given.iter().all(|node| *node == running.location()),
+            "{given:?}"
+        );
+        assert_eq!(running.location(), first().1);
+        running.stop();
+        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
+    }
+
+    #[test]
     fn a_node_stops_cleanly_and_lets_its_listener_go() {
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = free_address();
         let path = written("stops", &node(&receive, &far_address));
-        let running = Running::start(path_text(&path), linked()).expect("the node starts");
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&receive, b"before the stop");
-        far.accept_one(&listener).expect("it reaches the far end");
+        far.accept_one(&listener)
+            .expect("it reaches the far end")
+            .taken()
+            .expect("read whole");
 
-        let health = running.snapshot().health("xmip:///loopback/node/alpha");
+        let health = running.snapshot().health(&first().1);
         assert!(
             !health.is_empty() && health.iter().all(|record| record.health == Health::Fine),
             "{health:?}"
@@ -635,9 +844,12 @@ address = "{far}"
         );
 
         // Dropped without a stop, a node stops all the same.
-        let again = Running::start(path_text(&path), linked()).expect("starts again");
+        let again = Running::start(path_text(&path), linked(&path)).expect("starts again");
         deliver(&receive, b"after");
-        far.accept_one(&listener).expect("it reaches the far end");
+        far.accept_one(&listener)
+            .expect("it reaches the far end")
+            .taken()
+            .expect("read whole");
         drop(again);
         assert!(
             std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err()
@@ -673,7 +885,7 @@ address = "{far}"
 
         for (configuration, reason) in cases {
             let path = written("unlinked", &configuration);
-            let refused = Running::start(path_text(&path), linked())
+            let refused = Running::start(path_text(&path), linked(&path))
                 .err()
                 .expect("refused");
             assert_eq!(refused.phase, StartupPhase::ValidateStartup);
@@ -686,16 +898,11 @@ address = "{far}"
 
         // ADR-0066 clause 1: a filter naming what no route technology this
         // node was built with reads is refused now, not at the first Message.
-        let directory = written("unread", &base);
-        std::fs::write(
-            directory
-                .parent()
-                .expect("its directory")
-                .join("loopback.application.toml"),
-            APPLICATION.replace("xmip.transport.mechanism", "party:sender"),
-        )
-        .expect("writes");
-        let refused = Running::start(path_text(&directory), linked())
+        let directory = written(
+            "unread",
+            &base.replace("xmip.transport.mechanism", "party:sender"),
+        );
+        let refused = Running::start(path_text(&directory), linked(&directory))
             .err()
             .expect("refused");
         assert_eq!(refused.phase, StartupPhase::ValidateStartup);
@@ -721,7 +928,7 @@ address = "{far}"
         );
         let path = written("library", &configuration);
 
-        let refused = Running::start(path_text(&path), linked())
+        let refused = Running::start(path_text(&path), linked(&path))
             .err()
             .expect("refused");
 
@@ -763,7 +970,7 @@ address = "{far}"
         );
         let path = written("opened", &configuration);
 
-        let running = Running::start(path_text(&path), linked()).expect("the node starts");
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
 
         let contract = running
             .capabilities()
@@ -785,34 +992,48 @@ address = "{far}"
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = free_address();
         let path = written("paused", &node(&receive, &far_address));
-        let running = Running::start(path_text(&path), linked()).expect("the node starts");
+        let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&receive, b"before the pause");
-        far.accept_one(&listener).expect("it reaches the far end");
+        far.accept_one(&listener)
+            .expect("it reaches the far end")
+            .taken()
+            .expect("read whole");
 
         let pickup = running.pickup();
-        assert_eq!(pickup.node(), "xmip:///loopback/node/alpha");
+        assert_eq!(pickup.node(), first().1);
         let standing = &pickup.standing()[0];
         assert_eq!(standing.name, "onward");
         assert_eq!(standing.application, "Loopback");
-        assert!(standing.file.ends_with("loopback.application.toml"));
-        assert!(standing.configuration.starts_with("[[subscriptions]]"));
+        assert!(standing.file.ends_with("node.toml"));
+        assert!(
+            standing
+                .configuration
+                .starts_with("[[xmip_applications.subscriptions]]")
+        );
         pickup
             .act("onward", observe::Act::Pause, "ilian")
             .expect("paused");
+        // Each held before the next is sent: TCP's connections arrive in no
+        // order of their own (`Arrivals::Unordered`), so the order held is
+        // the order the receive cycles finished.
         for n in 1..=3 {
             deliver(&receive, format!("held {n}").as_bytes());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while pickup.standing()[0].held < n && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert_eq!(pickup.standing()[0].held, n, "held, not sent");
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while pickup.standing()[0].held < 3 && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(pickup.standing()[0].held, 3, "held, not sent");
 
         pickup
             .act("onward", observe::Act::Resume, "ilian")
             .expect("resumed");
         for n in 1..=3 {
-            let arrived = far.accept_one(&listener).expect("it reaches the far end");
+            let arrived = far
+                .accept_one(&listener)
+                .expect("it reaches the far end")
+                .taken()
+                .expect("read whole");
             assert_eq!(
                 arrived.bytes,
                 format!("held {n}").as_bytes(),

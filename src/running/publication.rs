@@ -1,5 +1,6 @@
-//! What a running node says of itself: its snapshot — health, figures and
-//! Subscriptions — and its publication, the snapshot with the node drawn as
+//! What a running node says of itself: its snapshot — health, figures,
+//! Subscriptions and the oldest of its Dead Message Queue — and its
+//! publication, the snapshot with the node drawn as
 //! a topology, which the program running it writes where a surface reads it
 //! (`observe::Publication::write`; ADR-0018, amendment 2026-09-30).
 //!
@@ -39,6 +40,7 @@ use observe::{
 
 use super::Running;
 use crate::capability_registry::Load;
+use crate::pickup::PUBLISHED;
 
 /// The Party a node draws on each side while its configuration can name
 /// none.
@@ -143,6 +145,13 @@ impl Running {
         for subscription in subscriptions {
             snapshot.record_subscription(subscription);
         }
+        // The oldest of its Dead Message Queue; one that cannot be read now
+        // is published at the next look.
+        if let Ok((_, dead)) = self.pickup.dead_messages(PUBLISHED) {
+            for entry in dead {
+                snapshot.record_dead_message(entry);
+            }
+        }
         self.count(&mut snapshot, &node, now);
         snapshot
     }
@@ -181,7 +190,11 @@ impl Running {
             (Some(Stage::Receive), Counted::Streams, outcomes.received),
             (Some(Stage::Process), Counted::Journeys, outcomes.routed),
             (Some(Stage::Send), Counted::Messages, outcomes.sent),
-            (None, Counted::Failed, outcomes.refused + outcomes.not_sent),
+            (
+                None,
+                Counted::Failed,
+                outcomes.refused + outcomes.failed + outcomes.not_sent,
+            ),
         ] {
             snapshot.record_count(Count {
                 scope: scope.map_or_else(|| node.to_string(), |at| format!("{node}/{}", at.name())),
@@ -274,12 +287,19 @@ mod tests {
 
     #[test]
     fn a_node_is_located_beneath_its_cluster() {
-        assert_eq!(location("C1", "alpha"), "xmip:///C1/node/alpha");
+        let cluster = configure::fixture::test_cluster();
+        assert_eq!(
+            location(&cluster.name, &cluster.node(0).name),
+            cluster.node_scope(0)
+        );
     }
 
     #[test]
     fn a_stopped_node_is_done_and_keeps_what_it_declared_and_its_pauses() {
-        let at = "xmip:///C1/node/alpha";
+        let cluster = configure::fixture::test_cluster();
+        let (name, node) = (&cluster.name, &cluster.node(0).name);
+        let at = cluster.node_scope(0);
+        let at = at.as_str();
         let mut snapshot = Snapshot::new();
         for (leaf, health) in [
             ("", Health::Fine),
@@ -292,29 +312,34 @@ mod tests {
         }
         let last = Publication::whole("xmip-service", at, &snapshot).with_orders("orders");
 
-        let left = stopped("C1", "alpha", &last, "stopped by the console");
+        let left = stopped(name, node, &last, "stopped by the console");
         let moods: Vec<(&str, Health)> = left
             .records
             .iter()
             .map(|record| (record.scope.as_str(), record.health))
             .collect();
-        for (scope, health) in [
-            (at, Health::Done),
-            ("xmip:///C1/node/alpha/system-process", Health::Done),
-            ("xmip:///C1/node/alpha/receive/In", Health::Done),
-            ("xmip:///C1/node/alpha/capability", Health::Fine),
-            ("xmip:///C1/node/alpha/process/onward", Health::Paused),
+        for (leaf, health) in [
+            ("", Health::Done),
+            ("/system-process", Health::Done),
+            ("/receive/In", Health::Done),
+            ("/capability", Health::Fine),
+            ("/process/onward", Health::Paused),
         ] {
-            assert!(moods.contains(&(scope, health)), "{scope}: {moods:?}");
+            let scope = format!("{at}{leaf}");
+            assert!(
+                moods.contains(&(scope.as_str(), health)),
+                "{scope}: {moods:?}"
+            );
         }
-        let node = left.records.iter().find(|record| record.scope == at);
+        let record = left.records.iter().find(|record| record.scope == at);
         assert_eq!(
-            node.map(|record| record.evidence.as_str()),
+            record.map(|record| record.evidence.as_str()),
             Some("stopped by the console")
         );
         assert_eq!(left.orders, "orders");
         let drawn = left.topology.expect("drawn again");
-        assert!(drawn.nodes.iter().any(|node| node.id == "node/alpha"));
+        let id = format!("node/{node}");
+        assert!(drawn.nodes.iter().any(|drawn| drawn.id == id));
         assert!(
             (drawn.nodes[0].activity).abs() < f64::EPSILON,
             "no process alive"

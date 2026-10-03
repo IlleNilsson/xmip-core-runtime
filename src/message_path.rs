@@ -3,20 +3,30 @@
 //! Arrival and departure are mirror images and share one runtime. Putting the
 //! shared thing here keeps `arrival.rs` and `departure.rs` about what happens
 //! rather than about what is wired up. [`carry`] is the join: one Stream in,
-//! arrival, routing, and a departure to every destination it matched.
+//! arrival — its Stream into the Ledger once the transport gates have
+//! passed — routing, Publication into the Ledger, and a departure to every
+//! destination it matched. What it returns says whether the receive cycle
+//! finished ([`Carried::cycle`]), so the Receive Location acknowledges the
+//! sender, or not.
+
+use std::sync::Arc;
 
 use authenticate::{Authenticator, PartyRegistry};
 use authorize::Authorizer;
 use identify::{MessageIdentifier, TransportIdentifier};
+use journey::Journey;
 use message::MessageTreatment;
 use party::Party;
+use persist::storage::XmipStorage;
 use receive::ReceivedStream;
 use route::{Gathering, Subscription};
+use xaudit::origin::Origin;
 use xcore::{Clock, IdGenerator, PartyId, Purpose};
 
 use crate::arrival::arrive;
+use crate::dead_message::Unmatched;
 use crate::departure::{Departed, depart};
-use crate::held_work::held;
+use crate::ledger::{self, Published};
 use crate::outcome::Arrived;
 use crate::pickup::Pickup;
 use crate::receiving::ReceiveGate;
@@ -95,6 +105,35 @@ pub struct Runtime<'a> {
     /// Read at each gate rather than once. A Journey may wait days between
     /// arriving and sending, and both gates need to know when they are.
     pub clock: &'a dyn Clock,
+
+    /// Xmip Storage, the doorway to the Ledger: every Stream permitted in is
+    /// written there in chunks, and every Publication's Message and
+    /// Journeys, durably, before the receive cycle finishes
+    /// ([`crate::ledger`]).
+    pub storage: &'a Arc<dyn XmipStorage>,
+
+    /// The size a Stream is written to the Ledger in ([`ledger::CHUNK`]).
+    pub chunk: usize,
+
+    /// Where the node's audit records say they came from: a Publication's
+    /// among them.
+    pub origin: &'a Origin,
+}
+
+/// How a receive cycle ended, which is what the sender is told: only a
+/// completed one is acknowledged (`runtime-model.md` section 5: *The sender
+/// is acknowledged after the whole receive cycle*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveCycle {
+    /// Accepted and durable: the Stream, the Message and its Journeys are
+    /// in the Ledger. Acknowledge it.
+    Completed,
+    /// Refused at a gate: nothing is kept before Message creation, and the
+    /// sender is refused, not acknowledged.
+    Refused,
+    /// Permitted and not kept: Xmip Storage did not take it, or the Stream
+    /// could not be read. Not acknowledged, so the sender sends again.
+    Failed,
 }
 
 /// What became of one Stream: its arrival, a departure for every
@@ -104,38 +143,120 @@ pub struct Runtime<'a> {
 pub struct Carried {
     pub arrived: Arrived,
     pub departed: Vec<Departed>,
-    /// Paused Subscriptions that matched it and hold it (ADR-0013,
-    /// amendment 2026-09-30).
+    /// Paused Subscriptions that matched it and hold its Journey in the
+    /// Ledger (ADR-0013, amendment 2026-09-30).
     pub held: usize,
+    /// The Journeys its Publication wrote to the Ledger, one per matched
+    /// Subscription; none where it was refused, failed or matched nothing.
+    pub journeys: Vec<Journey>,
 }
 
-/// One Stream along the whole path: arrival at `gate`, routing, and
-/// departure to every destination the Message matched whose Subscription
-/// `pickup` does not hold it for.
+impl Carried {
+    /// How the receive cycle ended: whether to acknowledge the sender.
+    #[must_use]
+    pub const fn cycle(&self) -> ReceiveCycle {
+        match self.arrived {
+            Arrived::Routed { .. } | Arrived::Unroutable { .. } => ReceiveCycle::Completed,
+            Arrived::Refused { .. } => ReceiveCycle::Refused,
+            Arrived::Failed { .. } => ReceiveCycle::Failed,
+        }
+    }
+}
+
+/// One Stream along the whole path: arrival at `gate` — the Stream into
+/// the Ledger once its transport gates pass — routing, Publication into the
+/// Ledger, with what a paused Subscription of `pickup`'s holds, and
+/// departure to every other destination the Message matched. The receive
+/// cycle has finished, or failed, before anything departs: departure runs
+/// inline until the send step reads its Journeys from the Ledger.
 pub fn carry(
     runtime: &Runtime<'_>,
     pickup: &Pickup,
     gate: &ReceiveGate,
     received: ReceivedStream,
 ) -> Carried {
-    let arrived = arrive(runtime, gate, received);
-
-    let (departed, held) = match &arrived {
+    // One statement, one Storage node: the Stream's chunks, the Publication
+    // and its Journeys, and the chunks read back as it departs (the owner,
+    // 2026-10-03).
+    let statement = persist::storage::statement(runtime.storage);
+    let runtime = &Runtime {
+        storage: &statement,
+        ..*runtime
+    };
+    let (arrived, published) = published(runtime, pickup, gate, arrive(runtime, gate, received));
+    let Some(Published { journeys, holding }) = published else {
+        return Carried {
+            arrived,
+            departed: Vec::new(),
+            held: 0,
+            journeys: Vec::new(),
+        };
+    };
+    let departed = match &arrived {
         Arrived::Routed {
             work,
             facts,
             routing,
-        } => {
-            let picked = pickup.route(routing, &|| held(work, facts));
-            let held = routing.destinations().len() - picked.destinations().len();
-            (depart(runtime, work, facts, &picked), held)
-        }
-        Arrived::Refused { .. } | Arrived::Unroutable { .. } => (Vec::new(), 0),
+        } => depart(runtime, work, facts, &holding.picked(routing)),
+        Arrived::Refused { .. } | Arrived::Unroutable { .. } | Arrived::Failed { .. } => Vec::new(),
     };
-
     Carried {
         arrived,
         departed,
-        held,
+        held: holding.holds().len(),
+        journeys,
+    }
+}
+
+/// Publication into the Ledger of what arrival published: the Message
+/// record, its Journeys, what a paused Subscription holds — or, where
+/// nothing matched, its Dead Message Queue entry — and the audit record,
+/// durable, or the cycle failed.
+fn published(
+    runtime: &Runtime<'_>,
+    pickup: &Pickup,
+    gate: &ReceiveGate,
+    arrived: Arrived,
+) -> (Arrived, Option<Published>) {
+    let (work, facts, routing, unmatched) = match &arrived {
+        Arrived::Routed {
+            work,
+            facts,
+            routing,
+        } => (work, facts, routing, Unmatched::default()),
+        Arrived::Unroutable {
+            work,
+            facts,
+            routing,
+            promoted,
+        } => (
+            work,
+            facts,
+            routing,
+            Unmatched {
+                promoted: Some(promoted),
+                facts: Some(facts),
+            },
+        ),
+        Arrived::Refused { .. } | Arrived::Failed { .. } => return (arrived, None),
+    };
+    let publisher = ledger::Publisher {
+        storage: runtime.storage.as_ref(),
+        ids: runtime.ids,
+        clock: runtime.clock,
+        origin: runtime.origin,
+    };
+    let (message, location) = (&work.message, &gate.location);
+    match ledger::publish(
+        &publisher,
+        pickup,
+        location,
+        message,
+        routing,
+        &unmatched,
+        || facts.record(),
+    ) {
+        Ok(published) => (arrived, Some(published)),
+        Err(reason) => (Arrived::Failed { reason }, None),
     }
 }

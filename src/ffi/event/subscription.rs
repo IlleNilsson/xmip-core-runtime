@@ -6,12 +6,13 @@
 //! acts' words and the order a surface leaves for a node it reads through a
 //! publication are `observe`'s (`ffi/order.rs` leaves it); this writes one
 //! list's JSON, once, for this process's hub and for a read publication
-//! alike. It is not section 14, a node's Subscriptions.
+//! alike, the members of the cluster not heard beside the list (amendment
+//! 2026-10-02). It is not section 14, a node's Subscriptions.
 #![allow(unsafe_code)]
 
 use abi::ffi::{Str, status};
 use abi::operate::publication::Publication as Handle;
-use observe::{EventSubscription, Noun, PauseState};
+use observe::{EventSubscription, Noun, PauseState, Unheard};
 use serde_json::{Value, json};
 use xevent::hub::Hub;
 
@@ -19,8 +20,13 @@ use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
 
-/// A list of Event subscriptions as the header writes it.
-fn listed<'a>(orders: &str, subscriptions: impl Iterator<Item = &'a EventSubscription>) -> String {
+/// A list of Event subscriptions, and the members not heard, as the header
+/// writes it.
+fn listed<'a>(
+    orders: &str,
+    subscriptions: impl Iterator<Item = &'a EventSubscription>,
+    unheard: &[Unheard],
+) -> String {
     let subscriptions: Vec<Value> = subscriptions
         .map(|subscription| {
             json!({
@@ -40,7 +46,12 @@ fn listed<'a>(orders: &str, subscriptions: impl Iterator<Item = &'a EventSubscri
             })
         })
         .collect();
-    json!({ "orders": orders, "event_subscriptions": subscriptions }).to_string()
+    json!({
+        "orders": orders,
+        "event_subscriptions": subscriptions,
+        "unheard": super::unheard::listed(unheard),
+    })
+    .to_string()
 }
 
 /// `xevent::hub::Hub::standing` on the process's hub, forwarded.
@@ -59,10 +70,11 @@ pub unsafe extern "C" fn xmip_event_subscriptions_v1(
     let Some(node) = (unsafe { scope_text(node) }) else {
         return status::MALFORMED;
     };
-    let standing = Hub::process().standing(node);
+    let hub = Hub::process();
+    let text = listed("", hub.standing(node).iter(), &hub.unheard());
 
     // SAFETY: `out` and `out_len` per the contract.
-    unsafe { refuse(&listed("", standing.iter()), out, cap, out_len) };
+    unsafe { refuse(&text, out, cap, out_len) };
     status::OK
 }
 
@@ -115,7 +127,11 @@ pub unsafe extern "C" fn xmip_publication_event_subscriptions_v1(
         return status::INVALID;
     };
     let publication = &read.publication;
-    let text = listed(&publication.orders, publication.event_subscriptions.iter());
+    let text = listed(
+        &publication.orders,
+        publication.event_subscriptions.iter(),
+        &publication.unheard,
+    );
 
     // SAFETY: `out` and `out_len` per the contract.
     unsafe { refuse(&text, out, cap, out_len) };
@@ -184,16 +200,19 @@ mod tests {
     #[test]
     fn the_process_hub_is_listed_and_acted_on_and_a_stranger_act_is_refused() {
         let at = std::env::temp_dir().join("xmip-runtime-subscription-ffi");
+        super::super::gate::allowed::policy();
         let subscriber = Subscriber::in_process(
             PartyId::new(9),
             ProgramAudit::new("xmip-runtime tests", Some(&at)),
         );
+        let cluster = configure::fixture::test_cluster();
+        let (scope, node) = (cluster.scope(), cluster.node_scope(0));
         let subscription = Hub::process()
-            .subscribe(subscriber, Filter::everything().beneath("xmip:///CT"), 4)
+            .subscribe(subscriber, Filter::everything().beneath(&scope), 4)
             .expect("allowed");
         let id = subscription.id();
         let find = || {
-            listed_here("xmip:///CT/node/alpha")["event_subscriptions"]
+            listed_here(&node)["event_subscriptions"]
                 .as_array()
                 .expect("a list")
                 .iter()
@@ -202,9 +221,9 @@ mod tests {
         };
 
         let entry = find().expect("listed");
-        assert_eq!(entry["node"], "xmip:///CT/node/alpha");
+        assert_eq!(entry["node"], node.as_str());
         assert_eq!(entry["state"], "active");
-        assert_eq!(entry["scope"], "xmip:///CT");
+        assert_eq!(entry["scope"], scope.as_str());
         assert_eq!(entry["capacity"], 4);
         assert_eq!(entry["party"], PartyId::new(9).to_string().as_str());
         assert_eq!(
@@ -228,16 +247,21 @@ mod tests {
 
     #[test]
     fn a_read_publications_event_subscriptions_are_listed_with_where_orders_go() {
-        let text = "node = \"xmip:///CT\"\norders = 'shared/orders'\n\
-                    [[event_subscriptions]]\nnode = \"xmip:///CT/node/alpha\"\nid = 3\n\
-                    subscriber = \"p\"\nstate = \"paused\"\n";
+        let cluster = configure::fixture::test_cluster();
+        let text = format!(
+            "node = \"{}\"\norders = 'shared/orders'\n\
+             [[event_subscriptions]]\nnode = \"{}\"\nid = 3\n\
+             subscriber = \"p\"\nstate = \"paused\"\n",
+            cluster.scope(),
+            cluster.node_scope(0)
+        );
         let mut handle = core::ptr::null_mut();
         let mut buffer = vec![0u8; 4096];
         let mut length = 0usize;
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let read = unsafe {
             xmip_publication_read_v1(
-                borrow(text),
+                borrow(&text),
                 &raw mut handle,
                 buffer.as_mut_ptr(),
                 buffer.len(),

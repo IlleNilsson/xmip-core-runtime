@@ -384,22 +384,24 @@ mod tests {
 
     #[test]
     fn an_entry_crosses_as_node_reads_it_and_its_name_survives_a_refusal() {
+        let cluster = configure::fixture::test_cluster();
+        let [first, second, third] = [0, 1, 2].map(|place| cluster.node(place).name.clone());
         assert_eq!(
-            entry(" edge-01 =sending+receiving"),
+            entry(&format!(" {first} =sending+receiving")),
             (
                 status::OK,
-                "edge-01".to_string(),
+                first,
                 vec!["receiving".into(), "sending".into()],
                 String::new()
             )
         );
         assert_eq!(
-            entry("edge-02"),
-            (status::OK, "edge-02".into(), vec![], String::new())
+            entry(&second),
+            (status::OK, second.clone(), vec![], String::new())
         );
 
-        let (code, node, words, said) = entry("edge-03=relay");
-        assert_eq!((code, node.as_str()), (status::INVALID, "edge-03"));
+        let (code, node, words, said) = entry(&format!("{third}=relay"));
+        assert_eq!((code, node), (status::INVALID, third));
         assert!(words.is_empty() && said.starts_with("REFUSED"), "{said}");
     }
 }

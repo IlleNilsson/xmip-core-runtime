@@ -74,6 +74,12 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
+# This crate with its `test-support`, so the integration tests (tests/) take
+# the same fixtures its unit tests do.
+xmip-core-runtime = { path = ".", features = ["test-support"] }
+# The test cluster's names, from its `xmip.toml` (`configure::fixture`;
+# ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.
+configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", features = ["test-support"] }
 # A runtime store in memory, sealed under a key held in memory, so a test
 # stops and starts a node over the same records without a machine's key store.
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }
@@ -86,6 +92,20 @@ path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-
 # One real transport with a loopback far end, so a test starts a node that
 # receives and sends over it rather than over a stand-in.
 tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main" }
+# The test Storage node (the owner, 2026-10-01: *for testing purposes the
+# Xmip Nodes of Storage type can use SQLite in memory for administration and
+# RocksDB for runtime*), so the receive path is proved, timed and killed
+# over the engines a node keeps the Ledger in.
+rocksdb = { package = "xmip-core-persist-rocksdb", git = "https://github.com/IlleNilsson/xmip-core-persist-rocksdb", branch = "main" }
+sqlite = { package = "xmip-core-persist-sqlite", git = "https://github.com/IlleNilsson/xmip-core-persist-sqlite", branch = "main" }
+
+# The platform's key store, so a test that kills a process holding the
+# Ledger reopens it under the same data key (ADR-0063 clause 4).
+[target.'cfg(windows)'.dev-dependencies]
+secret-dpapi = { package = "xmip-core-secret-dpapi", git = "https://github.com/IlleNilsson/xmip-core-secret-dpapi", branch = "main" }
+
+[target.'cfg(unix)'.dev-dependencies]
+secret-file = { package = "xmip-core-secret-file", git = "https://github.com/IlleNilsson/xmip-core-secret-file", branch = "main" }
 
 [features]
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
@@ -93,6 +113,10 @@ tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilss
 # Declared so the cfg is a real switch rather than a condition that is
 # silently always false.
 dynamic-loading = ["dep:libloading"]
+# The gates' stand-ins the runtime's tests run a node with (`fixture`),
+# placed once for its unit tests and its integration tests. Enabled only by
+# the dev-dependency on this crate below, so never in a production build.
+test-support = []
 
 [profile.dev.package."*"]
 opt-level = 3

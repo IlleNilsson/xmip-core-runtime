@@ -1,28 +1,25 @@
-//! `xmip_operate.h` section 10: an Xmip Application read and edited for a
-//! designer (ADR-0064), what the exports do. The exports are
-//! `ffi/design.rs`'s; each reads its text, calls this, and writes back what
-//! it answers.
+//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read and edited
+//! for the designer (ADR-0064, amendment 2026-10-03), what the exports do.
+//! The exports are `ffi/design.rs`'s; each reads its text, calls this, and
+//! writes back what it answers.
 //!
-//! Nothing here is a rule. The Application, its routes, a filter's text and
-//! structure and every edit are `xmip-core-configure`'s; this reads the JSON
-//! a surface hands over into configure's types and writes configure's
-//! answers as JSON, which is how they cross — in memory, never to disk
-//! (ADR-0031 clause 2).
+//! Nothing here is a rule. The file's views, an Xmip Application's routes,
+//! a filter's text and structure and every edit are
+//! `xmip-core-configure`'s; this reads the JSON a surface hands over into
+//! configure's types and writes configure's answers as JSON, which is how
+//! they cross — in memory, never to disk (ADR-0031 clause 2).
 
-use configure::edit::{ApplicationEdit, apply};
 use configure::filter::{self, FilterPart};
-use configure::routes::Routes;
-use configure::{PARSE_FAILED, parse_application};
+use configure::view_edit::{ClusterEdit, apply};
+use configure::views::Views;
 use serde::Serialize;
 
-/// An Application's routes as a graph, [`Routes::of`].
+/// The cluster's file as one view per artifact kind, [`Views::of`].
 ///
 /// # Errors
-/// The reader's words when the text is not an Xmip Application.
-pub fn routes(application: &str) -> Result<String, String> {
-    let document =
-        parse_application(application).map_err(|error| format!("{PARSE_FAILED}: {error}"))?;
-    json(&Routes::of(&document))
+/// The reader's words when the text is not TOML.
+pub fn views(cluster: &str) -> Result<String, String> {
+    json(&Views::of(cluster)?)
 }
 
 /// A filter's text as rows and groups, [`filter::structure`].
@@ -43,14 +40,14 @@ pub fn filter_text(structure: &str) -> Result<String, String> {
     filter::text(&part)
 }
 
-/// The Application with an edit made to it, [`apply`].
+/// The cluster's file with an edit made to it, [`apply`].
 ///
 /// # Errors
 /// When the JSON is not an edit, or configure refuses it.
-pub fn edit(application: &str, edit: &str) -> Result<String, String> {
-    let edit: ApplicationEdit =
+pub fn edit(cluster: &str, edit: &str) -> Result<String, String> {
+    let edit: ClusterEdit =
         serde_json::from_str(edit).map_err(|error| format!("not an edit: {error}"))?;
-    apply(application, &edit)
+    apply(cluster, &edit)
 }
 
 fn json(answer: &impl Serialize) -> Result<String, String> {
@@ -61,23 +58,28 @@ fn json(answer: &impl Serialize) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    const ORDERS: &str = "[application]\nname = \"Orders\"\n\n[[send_ports]]\n\
-                          name = \"Billing\"\n\n[[subscriptions]]\nid = \"billing\"\n\
-                          destination = { send-port = \"Billing\" }\nfilter = \"true\"\n";
+    /// A cluster holding one Xmip Application as a section; no node is
+    /// named, so no name is written here.
+    const CLUSTER: &str = "[service]\nname = \"xmip\"\n\n[[xmip_applications]]\n\
+                           name = \"Orders\"\n\n[[xmip_applications.send_ports]]\n\
+                           name = \"Billing\"\n\n[[xmip_applications.subscriptions]]\n\
+                           id = \"billing\"\ndestination = { send-port = \"Billing\" }\n\
+                           filter = \"true\"\n";
 
     #[test]
-    fn the_routes_cross_as_the_graph_configure_draws() {
+    fn the_views_cross_as_configure_answers_them() {
         let answer: serde_json::Value =
-            serde_json::from_str(&routes(ORDERS).expect("routes")).expect("JSON");
+            serde_json::from_str(&views(CLUSTER).expect("views")).expect("JSON");
 
-        assert_eq!(answer["application"], "Orders");
-        assert_eq!(answer["nodes"][0]["id"], "subscription:billing");
-        assert_eq!(answer["edges"][0]["to"], "send-port:Billing");
-        assert!(
-            routes("[service]\n")
-                .expect_err("not one")
-                .starts_with(PARSE_FAILED)
+        assert_eq!(answer["views"][0]["kind"], "cluster");
+        let route = &answer["views"][10];
+        assert_eq!(route["kind"], "route");
+        assert_eq!(route["entries"][0]["routes"]["application"], "Orders");
+        assert_eq!(
+            route["entries"][0]["routes"]["edges"][0]["to"],
+            "send-port:Billing"
         );
+        assert!(views("not = [toml").is_err());
     }
 
     #[test]
@@ -92,9 +94,15 @@ mod tests {
 
     #[test]
     fn an_edit_crosses_as_json_and_comes_back_as_the_text() {
-        let edited = edit(ORDERS, r#"{"add-send-port":{"name":"Ledger"}}"#).expect("edits");
+        let edited = edit(
+            CLUSTER,
+            &serde_json::json!({ "application": {
+                "application": "Orders", "edit": { "add-send-port": { "name": "Ledger" } } } })
+            .to_string(),
+        )
+        .expect("edits");
 
         assert!(edited.contains("name = \"Ledger\""), "{edited}");
-        assert!(edit(ORDERS, r#"{"remove-everything":{}}"#).is_err());
+        assert!(edit(CLUSTER, r#"{"remove-everything":{}}"#).is_err());
     }
 }
