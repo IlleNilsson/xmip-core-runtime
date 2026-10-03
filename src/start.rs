@@ -13,17 +13,13 @@
 //! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
 //! they do is here.
 
-use std::path::Path;
-
-use configure::{
-    DocumentKind, XmipApplicationDocument, XmipConfigurationDocument, application_problems,
-    document_kind, parse_application,
-};
+use configure::{DocumentKind, XmipApplication, XmipConfigurationDocument, document_kind};
 use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 
 use crate::catalogue;
 use crate::execution_tree::{build_execution_tree, validate_startup_configuration};
 use crate::operator::publish;
+use crate::running::publication::location;
 use crate::service::read_node;
 
 /// What a runtime says about itself before any node has published: it is
@@ -59,30 +55,30 @@ pub struct Unread {
 /// Applications it binds, and the file each was read from.
 pub type Read = (
     XmipConfigurationDocument,
-    Vec<XmipApplicationDocument>,
+    Vec<XmipApplication>,
     Vec<ApplicationFile>,
 );
 
-/// A bound Xmip Application's file as it was read: what an operator is
-/// shown a Subscription's configuration from (ADR-0013, amendment
-/// 2026-09-30), so nothing reads the file a second time.
+/// The file a bound Xmip Application was read from, as it was read: what an
+/// operator is shown a Subscription's configuration from (ADR-0013,
+/// amendment 2026-09-30), so nothing reads the file a second time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationFile {
     /// The Application's name, as its binding names it.
     pub name: String,
-    /// Where it was read from.
+    /// The node's configuration it is a section of.
     pub file: String,
     /// What the file said.
     pub text: String,
 }
 
 /// Startup phase 1: the node configuration at `path`, and every Xmip
-/// Application it binds, each read from the file its binding names, relative
-/// to the configuration (ADR-0064).
+/// Application it binds, each its section of the configuration
+/// (`configure::section`, ADR-0064 amendment 2026-10-03).
 ///
 /// # Errors
-/// The file cannot be read or does not parse, or a bound Application cannot
-/// be read or does not parse.
+/// The file cannot be read or does not parse, or a bound Application is not
+/// held or does not read.
 pub fn read(path: &str) -> Result<Read, Unread> {
     let root = |reason: String| Unread {
         scope: "xmip:///".to_string(),
@@ -96,10 +92,11 @@ pub fn read(path: &str) -> Result<Read, Unread> {
             report.errors.join("; ")
         ))
     })?;
-    let (applications, files) = bound_applications(path, &document).map_err(|reason| Unread {
-        scope: format!("xmip:///{}", document.service.node_name),
-        reason: format!("configuration refused: {reason}"),
-    })?;
+    let (applications, files) =
+        bound_applications(path, &source, &document).map_err(|reason| Unread {
+            scope: format!("xmip:///{}", document.service.node_name),
+            reason: format!("configuration refused: {reason}"),
+        })?;
 
     Ok((document, applications, files))
 }
@@ -206,33 +203,29 @@ pub fn start(path: &str) -> Snapshot {
     snapshot
 }
 
-/// The Xmip Applications `document` binds, each read from the file its
-/// binding names, relative to the configuration at `path` (ADR-0064).
+/// The Xmip Applications `document` binds, each its section of the
+/// configuration `source` read from `path`.
 fn bound_applications(
     path: &str,
+    source: &str,
     document: &XmipConfigurationDocument,
-) -> Result<(Vec<XmipApplicationDocument>, Vec<ApplicationFile>), String> {
-    let base = Path::new(path).parent().unwrap_or_else(|| Path::new(""));
-
+) -> Result<(Vec<XmipApplication>, Vec<ApplicationFile>), String> {
     document
         .applications
         .iter()
         .map(|binding| {
-            let file = base.join(&binding.document);
-            let source = std::fs::read_to_string(&file).map_err(|error| {
+            let held = configure::binding::section(document, &binding.name).ok_or_else(|| {
                 format!(
-                    "cannot read the Xmip Application {}: {error}",
-                    file.display()
+                    "{path} binds the Xmip Application '{}' and holds no section of it",
+                    binding.name
                 )
             })?;
-            let application = parse_application(&source)
-                .map_err(|error| format!("{} does not parse: {error}", file.display()))?;
             let read = ApplicationFile {
                 name: binding.name.clone(),
-                file: file.display().to_string(),
-                text: source,
+                file: path.to_string(),
+                text: source.to_string(),
             };
-            Ok((application, read))
+            Ok((held.application()?, read))
         })
         .collect::<Result<Vec<_>, String>>()
         .map(|read| read.into_iter().unzip())
@@ -257,31 +250,64 @@ pub(crate) fn start_published(path: &str) -> bool {
 /// Publishes nothing — the running estate is untouched. ADR-0027 clause 9,
 /// the editor's Validate.
 ///
-/// Either document `configure` reads, which it tells apart: an Xmip
-/// Application is checked as a design (ADR-0064), and a node configuration
-/// as startup would check it before building the tree, its bindings as far
-/// as they say on their own — the Applications they join are files beside
-/// it, which a text does not have, and [`start`] reads them. Each Location
-/// is held to the declaration of every technology this runtime carries.
+/// Both documents `configure` reads, which it tells apart: a node
+/// configuration is checked as startup would check it before building the
+/// tree, its bindings with the Xmip Application sections they bind
+/// (ADR-0064, amendment 2026-10-03). Each Location
+/// is held to the declaration of every technology this runtime carries, and
+/// `[tuning]` to the runtime's own. A cluster's `xmip.toml` is checked node
+/// by node, each as the slice `configure::slice` writes it, every problem
+/// opening with its node's location, `xmip:///<cluster>/node/<name>`
+/// (ADR-0027 clause 4; ADR-0031, amendment 2026-10-03).
 ///
 /// Empty when the document is good. Each string is one problem, in the
 /// words `xmip-core-configure` and the execution-tree validator use.
 #[must_use]
 pub fn validate(source: &str) -> Vec<String> {
     match document_kind(source) {
-        DocumentKind::Application => application_problems(source),
-        DocumentKind::Node => match read_node(source) {
-            Ok(document) => {
-                validate_startup_configuration(&document, &catalogue::declarations()).errors
-            }
-            Err(report) => report.errors,
+        DocumentKind::Node => validate_node(source),
+        DocumentKind::Cluster => match configure::slices(source) {
+            Ok(slices) => slices
+                .iter()
+                .flat_map(|(node, slice)| {
+                    let cluster = configure::parse_toml(slice)
+                        .map(|document| document.service.cluster_name)
+                        .unwrap_or_default();
+                    let located = location(&cluster, node);
+                    validate_node(slice)
+                        .into_iter()
+                        .map(move |problem| format!("{located}: {problem}"))
+                })
+                .collect(),
+            Err(problem) => vec![problem],
         },
+    }
+}
+
+fn validate_node(source: &str) -> Vec<String> {
+    match read_node(source) {
+        Ok(document) => {
+            validate_startup_configuration(&document, &catalogue::declarations()).errors
+        }
+        Err(report) => report.errors,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `[service]` section of the test cluster's first node, and its
+    /// name.
+    fn service() -> (String, String) {
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node(0).name.clone();
+        let head = format!(
+            "[service]\nname = \"xmip-{node}\"\ncluster_name = \"{}\"\nnode_name = \"{node}\"\n",
+            cluster.name
+        );
+        (head, node)
+    }
 
     #[test]
     fn starting_from_a_missing_file_is_done_and_says_which_file() {
@@ -298,14 +324,12 @@ mod tests {
     #[test]
     fn starting_from_a_valid_file_plans_the_node_and_says_it_is_not_running() {
         let path = std::env::temp_dir().join("xmip-operate-start-test.toml");
+        let (head, node) = service();
         std::fs::write(
             &path,
-            r#"
-[service]
-name = "xmip-edge-01"
-cluster_name = "lab"
-node_name = "edge-01"
-
+            format!(
+                r#"
+{head}
 [[modules]]
 name = "file"
 start = true
@@ -338,49 +362,38 @@ name = "billing-out"
 start = true
 transport = "file"
 address = "C:/out"
-"#,
+"#
+            ),
         )
         .expect("write fixture");
 
         let snapshot = start(path.to_str().expect("utf-8 path"));
 
-        let records = snapshot.health("xmip:///edge-01");
+        let at = format!("xmip:///{node}");
+        let records = snapshot.health(&at);
         assert_eq!(records.len(), 5, "node, module, process, receive, send");
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/receive/orders-in")
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/send/billing-out")
-        );
+        for leaf in [
+            "receive/orders-in",
+            "send/billing-out",
+            "module/file",
+            "process/approval",
+        ] {
+            let scope = format!("{at}/{leaf}");
+            assert!(records.iter().any(|r| r.scope == scope), "{scope}");
+        }
         assert!(
             records.iter().all(|r| r.health == Health::Stressed),
             "planned, not running"
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/module/file")
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r.scope == "xmip:///edge-01/process/approval")
         );
         assert!(records[0].evidence.contains("not running"));
     }
 
     #[test]
     fn a_good_configuration_validates_with_no_problems() {
-        let source = r#"
-[service]
-name = "xmip-edge-01"
-cluster_name = "lab"
-node_name = "edge-01"
-
+        let (head, _) = service();
+        let source = format!(
+            r#"
+{head}
 [[modules]]
 name = "file"
 start = true
@@ -394,10 +407,11 @@ trusted_required = true
 [modules.manifest.entrypoint]
 library_path = "xmip_core_transport_file"
 symbol = "xmip_create_module_v1"
-"#;
+"#
+        );
 
         assert!(
-            validate(source).is_empty(),
+            validate(&source).is_empty(),
             "a well-formed node has no problems"
         );
     }
@@ -406,15 +420,15 @@ symbol = "xmip_create_module_v1"
     fn a_minimal_process_validates() {
         // ADR-0031, amendment 2026-09-24: a Process that needs no module and
         // has no Subprocess or Extension need not say so.
-        let source = "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n\
-                      [[xmip_processes]]\nname = \"minimal\"\nstart = true\n";
+        let (head, _) = service();
+        let source = format!("{head}[[xmip_processes]]\nname = \"minimal\"\nstart = true\n");
 
-        assert!(validate(source).is_empty(), "{:?}", validate(source));
+        assert!(validate(&source).is_empty(), "{:?}", validate(&source));
     }
 
     #[test]
     fn a_location_missing_start_or_transport_is_refused_not_defaulted() {
-        let head = "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n";
+        let (head, _) = service();
         let no_start = format!(
             "{head}[[receive_locations]]\nname = \"in\"\ntransport = \"file\"\naddress = \"a\"\n"
         );
@@ -440,58 +454,94 @@ symbol = "xmip_create_module_v1"
         );
     }
 
-    const ORDERS: &str = "[application]\nname = \"Orders\"\n\n[[receive_locations]]\n\
-                          name = \"OrdersIn\"\n\n[[send_ports]]\nname = \"Billing\"\n\n\
-                          [[subscriptions]]\nid = \"billing\"\n\
-                          destination = { send-port = \"Billing\" }\nfilter = \"true\"\n";
+    /// A node of the test cluster binding the Orders Application it holds
+    /// as a section, taking its Receive Location.
+    fn orders() -> (String, String) {
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node(0).name.clone();
+        let text = format!(
+            r#"[service]
+name = "xmip"
+cluster_name = "{name}"
+node_name = "{node}"
 
-    const ALPHA: &str = "[service]\nname = \"xmip-alpha\"\ncluster_name = \"orders\"\n\
-                      node_name = \"alpha\"\n\n[[applications]]\nname = \"Orders\"\n\
-                      document = \"orders.application.toml\"\n\n\
-                      [[applications.receive_locations]]\nname = \"OrdersIn\"\nnode = \"alpha\"\n\
-                      start = true\ntransport = \"xmip-core-transport-file\"\n\
-                      address = \"/var/xmip/in/orders\"\n";
+[[applications]]
+name = "Orders"
+
+[[applications.receive_locations]]
+name = "OrdersIn"
+node = "{node}"
+start = true
+transport = "xmip-core-transport-file"
+address = "/var/xmip/in/orders"
+
+[[xmip_applications]]
+name = "Orders"
+
+[[xmip_applications.receive_ports]]
+name = "Orders"
+
+[[xmip_applications.receive_locations]]
+name = "OrdersIn"
+receive_port = "Orders"
+interaction = "data-transfer"
+depth = "light"
+
+[[xmip_applications.send_ports]]
+name = "Billing"
+
+[[xmip_applications.subscriptions]]
+id = "billing"
+destination = {{ send-port = "Billing" }}
+filter = "true"
+"#,
+            name = cluster.name
+        );
+        (text, node)
+    }
+
+    /// `text` written as a node's configuration in a directory of its own.
+    fn written(text: &str, what: &str) -> (std::path::PathBuf, String) {
+        let directory = std::env::temp_dir().join(format!("xmip-{what}-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let node = directory.join("node.toml");
+        std::fs::write(&node, text).expect("writes");
+        let path = node.to_str().expect("utf-8 path").to_string();
+        (directory, path)
+    }
 
     #[test]
-    fn an_application_validates_as_a_design() {
-        assert!(validate(ORDERS).is_empty(), "{:?}", validate(ORDERS));
+    fn a_node_binding_an_application_validates_its_binding_and_its_section() {
+        let (text, node) = orders();
+        assert!(validate(&text).is_empty(), "{:?}", validate(&text));
 
-        let astray = ORDERS.replace("{ send-port = \"Billing\" }", "{ process = \"Approval\" }");
+        let nowhere = text.replace(&format!("node = \"{node}\""), "node = \"\"");
+        assert_eq!(
+            validate(&nowhere),
+            ["the Receive Location 'OrdersIn' of 'Orders' requires the node that takes it"]
+        );
+
+        let astray = text.replace("{ send-port = \"Billing\" }", "{ process = \"Approval\" }");
         assert_eq!(
             validate(&astray),
             [
-                "Subscription 'billing' routes to the Xmip Process 'Approval', which the \
-              Application does not declare"
+                "Xmip Application 'Orders': Subscription 'billing' routes to the Xmip Process \
+                 'Approval', which the Application does not declare"
             ]
         );
     }
 
     #[test]
-    fn a_node_binding_an_application_validates_its_binding_as_far_as_it_says() {
-        assert!(validate(ALPHA).is_empty(), "{:?}", validate(ALPHA));
+    fn starting_a_node_reads_the_applications_it_holds_as_sections() {
+        let (text, node) = orders();
+        let (directory, path) = written(&text, "section");
 
-        let nowhere = ALPHA.replace("node = \"alpha\"", "node = \"\"");
-        assert_eq!(
-            validate(&nowhere),
-            ["the Receive Location 'OrdersIn' of 'Orders' requires the node that takes it"]
-        );
-    }
-
-    #[test]
-    fn starting_a_node_reads_the_applications_it_binds_beside_it() {
-        let directory = std::env::temp_dir().join(format!("xmip-bind-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("a directory");
-        std::fs::write(directory.join("orders.application.toml"), ORDERS).expect("writes");
-        let node = directory.join("r1.toml");
-        std::fs::write(&node, ALPHA).expect("writes");
-
-        let snapshot = start(node.to_str().expect("utf-8 path"));
-        let records = snapshot.health("xmip:///alpha");
-
+        let snapshot = start(&path);
+        let records = snapshot.health(&format!("xmip:///{node}"));
         assert!(
             records
                 .iter()
-                .any(|r| r.scope == "xmip:///alpha/receive/OrdersIn"),
+                .any(|r| r.scope == format!("xmip:///{node}/receive/OrdersIn")),
             "{records:?}"
         );
         assert!(
@@ -499,14 +549,19 @@ symbol = "xmip_create_module_v1"
             "{}",
             records[0].evidence
         );
+        let read = read(&path).expect("reads");
+        assert_eq!(read.1[0].subscriptions[0].id, "billing");
+        assert_eq!(read.2[0].file, path);
+        assert_eq!(read.2[0].text, text);
 
-        std::fs::remove_file(directory.join("orders.application.toml")).expect("removes");
-        let snapshot = start(node.to_str().expect("utf-8 path"));
-        assert_eq!(snapshot.health("xmip:///alpha")[0].health, Health::Done);
+        let unheld = text[..text.find("[[xmip_applications]]").expect("held")].to_string();
+        std::fs::write(&path, unheld).expect("writes");
+        let refused = &start(&path).health(&format!("xmip:///{node}"))[0];
+        assert_eq!(refused.health, Health::Done);
         assert!(
-            snapshot.health("xmip:///alpha")[0]
-                .evidence
-                .contains("cannot read the Xmip Application"),
+            refused.evidence.contains("holds no section"),
+            "{}",
+            refused.evidence
         );
         let _ = std::fs::remove_dir_all(&directory);
     }
@@ -515,31 +570,42 @@ symbol = "xmip_create_module_v1"
     /// that does not compile refuses the node then, not at the first Message.
     #[test]
     fn a_filter_that_does_not_compile_refuses_the_node_at_start() {
-        let directory = std::env::temp_dir().join(format!("xmip-filter-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("a directory");
-        let broken = ORDERS.replace(
+        let (text, node) = orders();
+        let broken = text.replace(
             "filter = \"true\"",
             "filter = \"MessageType = 'Order' + 1\"",
         );
-        assert_ne!(broken, ORDERS);
-        std::fs::write(directory.join("orders.application.toml"), broken).expect("writes");
-        let node = directory.join("r1.toml");
-        std::fs::write(&node, ALPHA).expect("writes");
+        assert_ne!(broken, text);
+        let (directory, path) = written(&broken, "filter");
 
-        let snapshot = start(node.to_str().expect("utf-8 path"));
-        let refused = &snapshot.health("xmip:///alpha")[0];
+        let snapshot = start(&path);
+        let refused = &snapshot.health(&format!("xmip:///{node}"))[0];
 
         assert_eq!(refused.health, Health::Done);
-        assert!(
-            refused.evidence.contains("does not parse"),
-            "{}",
-            refused.evidence
-        );
         assert!(
             refused.evidence.contains("arithmetic"),
             "{}",
             refused.evidence
         );
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_clusters_file_validates_node_by_node_and_its_tuning_is_held_to_bounds() {
+        let test = configure::fixture::test_cluster();
+        let (name, first, second) = (&test.name, &test.node(0).name, &test.node(1).name);
+        let cluster = format!(
+            "[service]\nname = \"n\"\ncluster_name = \"{name}\"\n[tuning]\nsegments = 44\n\
+             [nodes.{first}]\n[nodes.{second}.tuning]\nsegments = 0\n"
+        );
+        let problems = validate(&cluster);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        let located = format!("{}: ", location(name, second));
+        assert!(
+            problems[0].starts_with(&located) && problems[0].contains("segments"),
+            "{problems:?}"
+        );
+        let good = cluster.replace("segments = 0", "segments = 8");
+        assert!(validate(&good).is_empty(), "{:?}", validate(&good));
     }
 }

@@ -14,13 +14,16 @@
 
 use abi::ExtensionManifest;
 use configure::{
-    ConfiguredLocation, Declarations, ModuleConfiguration, SendPortGroup, ServiceConfiguration,
-    XmipApplicationDocument, XmipConfigurationDocument, XmipProcessConfiguration,
+    BoundReceivePort, ConfiguredLocation, Declarations, DesignedSendPort, ModuleConfiguration,
+    SendPortGroup, ServiceConfiguration, XmipApplication, XmipConfigurationDocument,
+    XmipProcessConfiguration,
 };
 use route::Subscription;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use xcore::settings::Applies;
+
+use crate::tuning::Tuning;
 
 /// What a node starts, taken from its configuration document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +32,15 @@ pub struct ExecutionTree {
     pub modules_to_start: Vec<ModuleConfiguration>,
     pub xmip_processes_to_start: Vec<XmipProcessConfiguration>,
     pub receive_locations_to_start: Vec<ConfiguredLocation>,
+    /// The Receive Ports of the Applications the node binds that its bound
+    /// Receive Locations are at, each Location with the interaction and
+    /// depth it states (ADR-0031, amendment 2026-10-01).
+    pub receive_ports: Vec<BoundReceivePort>,
     pub send_locations_to_start: Vec<ConfiguredLocation>,
+    /// The Send Ports the node takes of the Applications it binds, with
+    /// their policy: Send Locations in order, retry, failover, execution
+    /// style, order key and failure policy (the same amendment).
+    pub send_ports: Vec<DesignedSendPort>,
     pub verified_extensions: Vec<VerifiedExtensionNode>,
     /// What routing asks of every published Message on this node: every
     /// Subscription of every Xmip Application the node binds.
@@ -37,6 +48,9 @@ pub struct ExecutionTree {
     /// The Send Port Groups of the Applications the node binds, which a
     /// Subscription routed to a group reaches.
     pub send_port_groups: Vec<SendPortGroup>,
+    /// What the node runs by, `[tuning]` read with its defaults
+    /// (ADR-0031, amendment 2026-10-03).
+    pub tuning: Tuning,
 }
 
 /// An extension the runtime checked at startup, and whether it loaded it.
@@ -69,7 +83,7 @@ impl StartupValidationReport {
 /// join its Application among them.
 pub fn build_execution_tree(
     document: XmipConfigurationDocument,
-    applications: &[XmipApplicationDocument],
+    applications: &[XmipApplication],
     declared: &Declarations,
 ) -> Result<(ExecutionTree, StartupValidationReport), StartupValidationReport> {
     let mut report = validate_startup_configuration(&document, declared);
@@ -84,6 +98,11 @@ pub fn build_execution_tree(
             return Err(report);
         }
     };
+
+    let tuning = Tuning::read(&document.tuning).map_err(|problems| StartupValidationReport {
+        errors: problems,
+        warnings: Vec::new(),
+    })?;
 
     let modules_to_start = document
         .modules
@@ -121,15 +140,18 @@ pub fn build_execution_tree(
                     .into_iter()
                     .chain(bound.receive_locations),
             ),
+            receive_ports: bound.receive_ports,
             send_locations_to_start: starting(
                 document
                     .send_locations
                     .into_iter()
                     .chain(bound.send_locations),
             ),
+            send_ports: bound.send_ports,
             verified_extensions,
             subscriptions: bound.subscriptions,
             send_port_groups: bound.send_port_groups,
+            tuning,
         },
         report,
     ))
@@ -257,6 +279,11 @@ pub fn validate_startup_configuration(
     }
 
     errors.extend(configure::binding_problems(document));
+    // Every outward and hardware assumption, held to the runtime's own
+    // declaration of them (ADR-0031, amendment 2026-10-03).
+    if let Err(problems) = Tuning::read(&document.tuning) {
+        errors.extend(problems);
+    }
     // The Storage nodes it reaches, and the database server a Storage node
     // is in front of, read by Xmip Storage (`deployment-model.md` section 7).
     errors.extend(document.storage.problems());
@@ -335,11 +362,18 @@ fn verified_extension(extension: &ExtensionManifest) -> VerifiedExtensionNode {
 mod tests {
     use super::*;
 
+    /// A node's configuration, the test cluster's first node named in it.
+    fn node() -> String {
+        let cluster = configure::fixture::test_cluster();
+        NODE.replace("<cluster>", &cluster.name)
+            .replace("<node>", &cluster.node(0).name)
+    }
+
     const NODE: &str = r#"
 [service]
 name = "xmip"
-cluster_name = "home"
-node_name = "node-a"
+cluster_name = "<cluster>"
+node_name = "<node>"
 
 [[modules]]
 name = "file"
@@ -388,7 +422,7 @@ address = "C:/out"
 
     #[test]
     fn the_tree_is_what_the_document_starts_and_extensions_are_verified_not_loaded() {
-        let document = configure::parse_toml(NODE).expect("parses");
+        let document = configure::parse_toml(&node()).expect("parses");
         let (tree, report) =
             build_execution_tree(document.clone(), &[], &Declarations::new()).expect("valid tree");
 
@@ -404,7 +438,7 @@ address = "C:/out"
 
     #[test]
     fn a_location_with_an_empty_transport_is_refused() {
-        let source = NODE.replace(
+        let source = node().replace(
             "transport = \"file\"\naddress = \"C:/in\"",
             "transport = \"\"\naddress = \"C:/in\"",
         );
@@ -433,7 +467,7 @@ address = "C:/out"
         };
         let declared = Declarations::from([(DROP.technology, DROP)]);
 
-        let source = NODE.replace(
+        let source = node().replace(
             "transport = \"file\"\naddress = \"C:/in\"",
             "transport = \"xmip-core-transport-drop\"\naddress = \"C:/in\"\n\
              [receive_locations.settings]\ncolour = \"lime\"",
@@ -456,70 +490,140 @@ address = "C:/out"
         );
     }
 
-    /// The Application of `doc/application.md`, cut to one route.
-    pub(crate) const ORDERS: &str = r#"[application]
-name = "Orders"
+    /// A node of the test cluster at `place` binding the Orders Application
+    /// it holds as a section: the first node takes the Receive Location,
+    /// the second the Send Port.
+    pub(crate) fn orders(place: usize) -> XmipConfigurationDocument {
+        configure::parse_toml(&orders_text(place)).expect("parses")
+    }
 
-[[receive_locations]]
-name = "OrdersIn"
-
-[[send_ports]]
-name = "Billing"
-
-[[subscriptions]]
-id = "billing"
-destination = { send-port = "Billing" }
-filter = "MessageType = 'Order'"
-"#;
-
-    /// Node alpha binding it: alpha takes the Receive Location, beta the Send Port.
-    pub(crate) const ALPHA: &str = r#"[service]
-name = "xmip-alpha"
-cluster_name = "orders"
-node_name = "alpha"
+    /// The text [`orders`] reads.
+    pub(crate) fn orders_text(place: usize) -> String {
+        let cluster = configure::fixture::test_cluster();
+        let (first, second) = (&cluster.node(0).name, &cluster.node(1).name);
+        format!(
+            r#"[service]
+name = "xmip"
+cluster_name = "{name}"
+node_name = "{node}"
 
 [[applications]]
 name = "Orders"
-document = "orders.application.toml"
 
 [[applications.receive_locations]]
 name = "OrdersIn"
-node = "alpha"
+node = "{first}"
 start = true
 transport = "xmip-core-transport-file"
 address = "/var/xmip/in/orders"
 
 [[applications.send_ports]]
 name = "Billing"
-node = "beta"
+node = "{second}"
 start = true
 transport = "xmip-core-transport-http"
 address = "https://billing.example/orders"
-"#;
+
+[[xmip_applications]]
+name = "Orders"
+
+[[xmip_applications.receive_ports]]
+name = "Orders"
+
+[[xmip_applications.receive_locations]]
+name = "OrdersIn"
+receive_port = "Orders"
+interaction = "data-transfer"
+depth = "light"
+
+[[xmip_applications.send_ports]]
+name = "Billing"
+execution_style = "sequential"
+on_failure = "block"
+
+[[xmip_applications.subscriptions]]
+id = "billing"
+destination = {{ send-port = "Billing" }}
+filter = "MessageType = 'Order'"
+"#,
+            name = cluster.name,
+            node = cluster.node(place).name,
+        )
+    }
+
+    fn application(document: &XmipConfigurationDocument) -> XmipApplication {
+        configure::binding::section(document, "Orders")
+            .expect("held")
+            .application()
+            .expect("reads")
+    }
 
     #[test]
-    fn a_bound_application_gives_the_tree_its_locations_and_subscriptions() {
-        let document = configure::parse_toml(ALPHA).expect("parses");
-        let orders = configure::parse_application(ORDERS).expect("parses");
+    fn a_bound_application_gives_the_tree_its_locations_ports_and_subscriptions() {
+        let document = orders(0);
+        let design = application(&document);
         let (tree, _) =
-            build_execution_tree(document, &[orders], &Declarations::new()).expect("binds");
+            build_execution_tree(document, &[design], &Declarations::new()).expect("binds");
 
         assert_eq!(tree.receive_locations_to_start.len(), 1);
         assert_eq!(tree.receive_locations_to_start[0].name, "OrdersIn");
-        assert!(tree.send_locations_to_start.is_empty(), "beta takes it");
+        assert_eq!(tree.receive_ports[0].name, "Orders");
+        let location = &tree.receive_ports[0].receive_locations[0];
+        assert_eq!(
+            location.interaction,
+            Some(configure::Interaction::DataTransfer)
+        );
+        assert_eq!(location.depth, Some(configure::Depth::Light));
+        assert!(
+            tree.send_locations_to_start.is_empty(),
+            "the second takes it"
+        );
+        assert!(tree.send_ports.is_empty());
         assert_eq!(tree.subscriptions.len(), 1);
         assert_eq!(tree.subscriptions[0].id, "billing");
+
+        let document = orders(1);
+        let design = application(&document);
+        let (tree, _) =
+            build_execution_tree(document, &[design], &Declarations::new()).expect("binds");
+        assert_eq!(
+            tree.send_ports[0].on_failure,
+            Some(configure::OnFailure::Block)
+        );
+        assert!(tree.receive_ports.is_empty());
     }
 
     #[test]
     fn a_binding_of_an_application_not_given_is_refused() {
-        let document = configure::parse_toml(ALPHA).expect("parses");
         let report =
-            build_execution_tree(document, &[], &Declarations::new()).expect_err("refused");
+            build_execution_tree(orders(0), &[], &Declarations::new()).expect_err("refused");
 
         assert_eq!(
             report.errors,
             ["the node binds the Xmip Application 'Orders', which it was not given"]
+        );
+    }
+
+    /// Startup phase 3 refuses a Receive Location without its Receive Port
+    /// and a Sequential Send Port without its failure policy.
+    #[test]
+    fn a_location_without_its_port_and_a_sequential_port_without_on_failure_are_refused() {
+        let text = orders_text(0)
+            .replace("receive_port = \"Orders\"\n", "")
+            .replace("on_failure = \"block\"\n", "");
+        let document = configure::parse_toml(&text).expect("parses");
+
+        let report = validate_startup_configuration(&document, &Declarations::new());
+        assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("names no receive_port"),
+            "{:?}",
+            report.errors
+        );
+        assert!(
+            report.errors[1].contains("states no on_failure"),
+            "{:?}",
+            report.errors
         );
     }
 }

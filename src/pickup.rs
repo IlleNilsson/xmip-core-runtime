@@ -1,128 +1,143 @@
-//! A running node's Subscriptions as an operator sees and pauses them
-//! (ADR-0013, amendment 2026-09-30).
+//! A running node's Subscriptions as an operator sees and pauses them, and
+//! what a paused one holds (ADR-0013, amendment 2026-09-30;
+//! `runtime-model.md` section 9).
 //!
-//! **What a pause holds.** Every Message routing matches to a paused
-//! Subscription is held: kept in the node's runtime store as persist's
-//! [`HeldMessage`], numbered in the order it was held and counted, and not
-//! picked up — no Journey opens for that Subscription and nothing departs.
-//! Nothing is lost and nothing is deleted (ADR-0040). **A resume** lets go
-//! of what was held, oldest first: the node picks each up as if routing had
-//! just matched it, and only then is its record of the wait released. While
-//! a resumed Subscription still has held Messages to pick up, what it
-//! matches joins the end of them, so it picks up in the order it matched.
+//! **What a pause holds is in the Ledger.** Every Journey a Publication
+//! opens for a paused Subscription is held: the Publication's one write
+//! keeps it at the end of the Subscription's queue ([`Holding`],
+//! `persist::storage::Hold`), so a receive whose hold was not written is not
+//! acknowledged, and nothing is held in memory. Its Message and its Stream
+//! are in the Ledger from the receive. Nothing is lost and nothing is
+//! deleted (ADR-0040).
 //!
-//! **A restart.** The Subscription's [`SubscriptionHold`] — paused or not,
-//! by whom, since when, the range of what it holds — is written on every act
-//! and every hold, through the one [`RuntimeStore`] the node was given, and
-//! read back when the node takes its Subscriptions up: one paused before a
-//! restart is paused after it, holding what it held, and one resumed whose
-//! held Messages were not all picked up when the node stopped picks them up
-//! as it starts. A node given no store holds in memory, for its own life.
+//! **A resume** lets the node pick up what is held, oldest first, in the
+//! order Xmip Storage numbered it ([`Pickup::released`]): each departs where
+//! its Subscription leads (`crate::held_work`), and only a Journey that was
+//! delivered is released from its queue, written as delivered in the same
+//! write ([`Pickup::delivered`]). One whose send failed is written Failed
+//! and stays held, its Message with it ([`Pickup::kept`]); it is not tried
+//! again by itself (`runtime-model.md` section 12: *A Failed Journey cannot
+//! continue automatically*) — the next resume is the operator's retry. A
+//! queue that cannot be read is read again from where it was, never past
+//! what was not read ([`Pickup::again`]). While a Subscription's queue
+//! holds anything, what it matches joins the end of it, so it is picked up
+//! in the order it matched.
+//!
+//! **The pause is operator state** in the administration database — what is
+//! paused, by whom, since when (`deployment-model.md` section 7) — written
+//! by every act before the act is said to be done, and read back as the
+//! node takes its Subscriptions up: one paused before a restart is paused
+//! after it, holding what it held.
 //!
 //! **A Subscription is not removed here.** It is configuration: added and
 //! removed in the TOML of the Xmip Application that draws it. Pause and
 //! resume are the acts ([`observe::Noun::Subscription`]); a remove is
 //! refused in words, and so is an act on a Subscription not configured.
 //!
+//! **The Dead Message Queue** of the node is read and replayed here too
+//! (`replay`): a Replay routes a Message nothing matched against these
+//! Subscriptions and holds what it opens in their queues.
+//!
 //! The one [`Pickup`] of each node in this process is registered, so the
 //! runtime's library lists and acts on it (`xmip_operate.h` section 14).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use observe::{Act, Noun, Subscription as Published, now_unix_nanos};
-use persist::{HeldMessage, RuntimeStore, SubscriptionHold};
-use route::{Routing, Subscriber};
+use persist::storage::{AdministrationKind, AdministrationRecord, XmipStorage, named};
 use xaudit::program_audit::ProgramAudit;
 use xcore::{ExecutionPhase, Severity};
 
 use crate::configured_subscription::ConfiguredSubscription;
 
+mod holding;
+mod released;
+mod replay;
 mod state;
 
-use state::{Entry, State};
+pub use holding::Holding;
+pub use released::Released;
+pub use replay::PUBLISHED;
+use state::{Entry, Standing, State};
 
-/// The runtime store a node keeps what a pause leaves in: persist's, over
-/// whichever engine the program linked.
-pub type Store = Arc<dyn RuntimeStore + Send + Sync>;
+/// How long a queue that could not be read waits before it is read again.
+const AGAIN: Duration = Duration::from_millis(50);
 
-/// A node's Subscriptions, their standing, and what they hold.
+/// A node's Subscriptions, their standing, and where it is in what they
+/// hold.
 pub struct Pickup {
     node: String,
-    store: Option<Store>,
+    storage: Arc<dyn XmipStorage>,
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
-    released: Condvar,
-}
-
-/// A held Message a resume let go of, for the node to pick up.
-#[derive(Clone, Debug)]
-pub struct Released {
-    /// The Subscription that held it.
-    pub subscription: String,
-    /// Where it leads.
-    pub destination: Subscriber,
-    pub held: HeldMessage,
+    wake: Condvar,
 }
 
 /// Every node's pickup in this process.
 static REGISTERED: Mutex<Vec<Weak<Pickup>>> = Mutex::new(Vec::new());
 
+/// The URI naming the Subscription `name` on the node at `node`, whose
+/// name-based identifier its queue and its operator record are found by.
+fn uri(node: &str, name: &str) -> String {
+    format!("{node}/subscription/{name}")
+}
+
 impl Pickup {
     /// The Subscriptions of the node at `node` (`xmip:///<cluster>/node/<name>`),
-    /// each with its standing read back from `store`, registered for the
-    /// runtime's library. `audit` records every act.
+    /// each with its standing and what it holds read back from `storage`,
+    /// registered for the runtime's library. `audit` records every act.
     ///
     /// # Errors
-    /// The store could not be read: a standing that cannot be read back is
-    /// a pause that could be lost, so the node does not start.
+    /// Xmip Storage could not be read: a standing that cannot be read back
+    /// is a pause that could be lost, so the node does not start.
     pub fn open(
         node: &str,
         configured: Vec<ConfiguredSubscription>,
-        store: Option<Store>,
+        storage: Arc<dyn XmipStorage>,
         audit: Option<ProgramAudit>,
     ) -> Result<Arc<Self>, String> {
         let now = now_unix_nanos();
-        let mut state = State {
-            entries: Vec::new(),
-            released: VecDeque::new(),
-            memory: BTreeMap::new(),
-        };
+        let mut entries = Vec::new();
         for configured in configured {
             let name = configured.name().to_string();
-            let kept = match &store {
-                Some(store) => store
-                    .load_subscription_hold(node, &name)
-                    .map_err(|error| format!("the Subscription '{name}': {error}"))?,
-                None => None,
+            let unread =
+                |error: &dyn std::fmt::Display| format!("the Subscription '{name}': {error}");
+            let queue = named(&uri(node, &name));
+            let standing = match storage
+                .read_administration(AdministrationKind::Operator, queue)
+                .map_err(|error| unread(&error))?
+            {
+                Some(record) => Standing::from_record(&record.body).map_err(|e| unread(&e))?,
+                None => Standing {
+                    since_unix_nanos: now,
+                    ..Standing::default()
+                },
             };
-            let hold = kept.unwrap_or_else(|| SubscriptionHold {
-                node: node.to_string(),
-                subscription: name,
-                since_unix_nanos: now,
-                ..SubscriptionHold::default()
-            });
-            let index = state.entries.len();
-            if !hold.paused {
-                state
-                    .released
-                    .extend((hold.first_held..hold.next_held).map(|n| (index, n)));
-            }
-            state.entries.push(Entry {
+            let held = storage
+                .read_held(queue, 0, 0)
+                .map_err(|error| unread(&error))?
+                .count;
+            entries.push(Entry {
                 configured,
-                hold,
+                queue,
+                pending: held > 0,
+                standing,
+                held,
                 picked_up: 0,
+                cursor: 0,
                 taken: BTreeSet::new(),
-                done: BTreeSet::new(),
+                retrying: false,
+                not_before: None,
             });
         }
         let pickup = Arc::new(Self {
             node: node.to_string(),
-            store,
+            storage,
             audit,
-            state: Mutex::new(state),
-            released: Condvar::new(),
+            state: Mutex::new(State { entries }),
+            wake: Condvar::new(),
         });
         let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
         registered.retain(|held| held.strong_count() > 0);
@@ -147,51 +162,14 @@ impl Pickup {
         &self.node
     }
 
-    /// `routing` without what a paused Subscription holds: each Message it
-    /// matched to one is held — `hold` says what the node needs to pick it
-    /// up again — and each it matched to an active one counts as picked up.
-    pub fn route(&self, routing: &Routing, hold: &dyn Fn() -> HeldMessage) -> Routing {
-        let mut state = self.lock();
-        let mut kept = Vec::new();
-        for evaluation in &routing.evaluations {
-            let index = evaluation
-                .matched()
-                .then(|| state.index(&evaluation.subscription_id))
-                .flatten();
-            let Some(index) = index else {
-                kept.push(evaluation.clone());
-                continue;
-            };
-            let entry = &mut state.entries[index];
-            if !entry.hold.paused && entry.hold.held() == 0 {
-                entry.picked_up += 1;
-                kept.push(evaluation.clone());
-                continue;
-            }
-            let mut held = hold();
-            held.node.clone_from(&self.node);
-            held.subscription.clone_from(&entry.hold.subscription);
-            held.sequence = entry.hold.next_held;
-            held.held_unix_nanos = now_unix_nanos();
-            entry.hold.next_held += 1;
-            let paused = entry.hold.paused;
-            self.keep(&mut state, index, held);
-            if !paused {
-                let sequence = state.entries[index].hold.next_held - 1;
-                state.released.push_back((index, sequence));
-                self.released.notify_all();
-            }
-        }
-        Routing { evaluations: kept }
-    }
-
     /// Pause or resume the Subscription called `name`, by `who`, and say
-    /// what came of it. Audited.
+    /// what came of it once its standing is written. Audited.
     ///
     /// # Errors
     /// REFUSED, in words, for an act a Subscription does not take — remove
     /// among them: a Subscription is removed in the TOML configuration — and
-    /// for a Subscription this node is not configured with.
+    /// for a Subscription this node is not configured with; FAILED where
+    /// Xmip Storage did not take its standing, and nothing changed.
     pub fn act(&self, name: &str, act: Act, who: &str) -> Result<String, String> {
         let act = Noun::Subscription.act(act.word())?;
         let mut state = self.lock();
@@ -203,101 +181,58 @@ impl Pickup {
                 self.node
             ));
         };
-        let held = state.entries[index].hold.held();
-        let said = match act {
-            Act::Pause if state.entries[index].hold.paused => {
-                format!("Subscription '{name}' was already paused")
+        let entry = &state.entries[index];
+        let held = entry.held;
+        let pause = match act {
+            Act::Pause if entry.standing.paused => {
+                return Ok(format!("Subscription '{name}' was already paused"));
             }
-            Act::Pause => {
-                state.released.retain(|(at, _)| *at != index);
-                state.set(index, true, who);
-                format!(
-                    "Subscription '{name}' paused by {who}; what it matches is held, not \
-                     picked up, until it is resumed"
-                )
+            Act::Resume if !entry.standing.paused => {
+                return Ok(format!("Subscription '{name}' was not paused"));
             }
-            Act::Resume if !state.entries[index].hold.paused => {
-                format!("Subscription '{name}' was not paused")
-            }
-            _ => {
-                state.set(index, false, who);
-                let entry = &state.entries[index];
-                let waiting: Vec<u64> = (entry.hold.first_held..entry.hold.next_held)
-                    .filter(|n| !entry.taken.contains(n) && !entry.done.contains(n))
-                    .collect();
-                state
-                    .released
-                    .extend(waiting.into_iter().map(|n| (index, n)));
-                self.released.notify_all();
-                format!(
-                    "Subscription '{name}' resumed by {who}; the {held} it held are picked \
-                     up, oldest first"
-                )
-            }
+            Act::Pause => true,
+            _ => false,
         };
-        self.write(&state.entries[index].hold);
+        let standing = Standing {
+            paused: pause,
+            by: if pause {
+                who.to_string()
+            } else {
+                String::new()
+            },
+            since_unix_nanos: now_unix_nanos(),
+        };
+        let record = AdministrationRecord {
+            kind: AdministrationKind::Operator,
+            id: entry.queue,
+            body: standing.record(),
+        };
+        if let Err(error) = self.storage.write_administration(&record) {
+            self.failed("subscription.standing", &error.to_string());
+            return Err(format!(
+                "FAILED: Subscription '{name}' is not {}: Xmip Storage did not take its \
+                 standing: {error}",
+                if pause { "paused" } else { "resumed" }
+            ));
+        }
+        let entry = &mut state.entries[index];
+        entry.standing = standing;
+        let said = if pause {
+            format!(
+                "Subscription '{name}' paused by {who}; what it matches is held, not picked \
+                 up, until it is resumed"
+            )
+        } else {
+            (entry.cursor, entry.pending, entry.retrying) = (0, true, true);
+            self.wake.notify_all();
+            format!(
+                "Subscription '{name}' resumed by {who}; the {held} it held are picked up, \
+                 oldest first"
+            )
+        };
         drop(state);
         self.audited(&Noun::Subscription.action(act), name, who, held, &said);
         Ok(said)
-    }
-
-    /// Up to `max` held Messages a resume let go of, oldest first, waiting
-    /// up to `timeout` for the first. Each is the node's to pick up and then
-    /// to say so ([`Pickup::picked_up`]).
-    pub fn released(&self, timeout: Duration, max: usize) -> Vec<Released> {
-        let mut state = self.lock();
-        if state.released.is_empty() && !timeout.is_zero() {
-            state = self
-                .released
-                .wait_timeout_while(state, timeout, |state| state.released.is_empty())
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
-        let mut taken = Vec::new();
-        while taken.len() < max.max(1) {
-            let Some((index, sequence)) = state.released.pop_front() else {
-                break;
-            };
-            let Some(held) = self.load(&state, index, sequence) else {
-                // Nothing kept under that number: nothing to pick up, and the
-                // range it holds moves past it.
-                state.entries[index].settle(sequence);
-                continue;
-            };
-            let entry = &mut state.entries[index];
-            entry.taken.insert(sequence);
-            taken.push(Released {
-                subscription: entry.hold.subscription.clone(),
-                destination: entry.configured.subscription.destination.clone(),
-                held,
-            });
-        }
-        taken
-    }
-
-    /// The node picked `released` up: count it, and release its record of
-    /// the wait.
-    pub fn picked_up(&self, released: &Released) {
-        let mut state = self.lock();
-        let Some(index) = state.index(&released.subscription) else {
-            return;
-        };
-        let sequence = released.held.sequence;
-        let entry = &mut state.entries[index];
-        if !entry.taken.remove(&sequence) {
-            return;
-        }
-        entry.picked_up += 1;
-        entry.settle(sequence);
-        let hold = entry.hold.clone();
-        state.memory.remove(&(index, sequence));
-        if let Some(store) = &self.store
-            && let Err(error) =
-                store.release_held_message(&self.node, &released.subscription, sequence)
-        {
-            self.failed("subscription.pickup", &error.to_string());
-        }
-        self.write(&hold);
     }
 
     /// Every Subscription as this node publishes it, in the order routing
@@ -309,40 +244,6 @@ impl Pickup {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Keep `held` and the standing that now counts it; in memory where the
-    /// store is not given or would not take it, and said.
-    fn keep(&self, state: &mut State, index: usize, held: HeldMessage) {
-        let kept = self.store.as_ref().map(|store| store.hold_message(&held));
-        if let Some(Err(error)) = &kept {
-            self.failed("subscription.hold", &error.to_string());
-        }
-        if !matches!(kept, Some(Ok(()))) {
-            state.memory.insert((index, held.sequence), held);
-        }
-        self.write(&state.entries[index].hold);
-    }
-
-    fn load(&self, state: &State, index: usize, sequence: u64) -> Option<HeldMessage> {
-        if let Some(held) = state.memory.get(&(index, sequence)) {
-            return Some(held.clone());
-        }
-        let name = &state.entries[index].hold.subscription;
-        let store = self.store.as_ref()?;
-        store
-            .load_held_message(&self.node, name, sequence)
-            .map_err(|error| self.failed("subscription.pickup", &error.to_string()))
-            .ok()
-            .flatten()
-    }
-
-    fn write(&self, hold: &SubscriptionHold) {
-        if let Some(store) = &self.store
-            && let Err(error) = store.persist_subscription_hold(hold)
-        {
-            self.failed("subscription.hold", &error.to_string());
-        }
     }
 
     fn audited(&self, action: &str, name: &str, who: &str, held: u64, said: &str) {
@@ -367,61 +268,117 @@ impl Pickup {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::time::Duration;
+
+    use journey::{ChainCause, Journey, JourneyMessageRef};
     use path::expression::Expression;
-    use persist::EncryptedStore;
-    use persist::fixture::Memory;
-    use route::{Promoted, publish};
-    use secret::{Held, KekName};
+    use persist::storage::{AuditEntry, JourneyRecord, MessageRecord, Publication};
+    use route::{Promoted, Subscriber, publish};
+    use xcore::{AuditId, IdGenerator, JourneyId, MessageId, StreamId, UuidV7Generator};
 
     use super::*;
+    use crate::fixture::{Failing, Operation};
 
-    const NODE: &str = "xmip:///CT/node/pickup-test";
+    /// This module's node: the test cluster's first, named apart so no other
+    /// test's pickup is listed with it.
+    fn node() -> String {
+        format!(
+            "{}-pickup-test",
+            configure::fixture::test_cluster().node_scope(0)
+        )
+    }
 
-    fn configured(name: &str) -> ConfiguredSubscription {
-        ConfiguredSubscription::unfiled(route::Subscription::new(
+    pub(crate) fn subscription(name: &str) -> route::Subscription {
+        route::Subscription::new(
             name,
             Subscriber::SendPort("Out".to_string()),
             Expression::parse("true").expect("compiles"),
-        ))
+        )
     }
 
-    /// A store over `engine`, sealed under `keys`: reopened over the same
-    /// two, it is the same node's store after a restart.
-    fn store(engine: &'static Memory, keys: &Held<secret::fixture::Memory>) -> Store {
-        let kek = KekName::new("runtime").expect("name");
-        Arc::new(EncryptedStore::open(engine, keys, &kek).expect("open"))
+    fn opened(storage: &Arc<dyn XmipStorage>) -> Arc<Pickup> {
+        let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
+        Pickup::open(&node(), configured, Arc::clone(storage), None).expect("opened")
     }
 
-    fn opened(store: Option<Store>) -> Arc<Pickup> {
-        Pickup::open(NODE, vec![configured("orders")], store, None).expect("opened")
-    }
-
-    /// Route one Message carrying `content` through the Subscription.
-    fn route(pickup: &Pickup, content: &str) -> usize {
-        let orders = [configured("orders").subscription];
-        let routing = publish(&Promoted::new(), &orders);
-        let held = || HeldMessage {
-            content: content.as_bytes().to_vec(),
-            ..HeldMessage::default()
+    /// One Message matched to every one of `subscriptions`, published
+    /// through `pickup` into `storage` as the receive path publishes it,
+    /// `body` kept beside what is held: how many were held, or why the
+    /// Publication was not taken.
+    pub(crate) fn published(
+        pickup: &Pickup,
+        storage: &dyn XmipStorage,
+        subscriptions: &[route::Subscription],
+        body: &str,
+    ) -> Result<usize, String> {
+        let ids = UuidV7Generator;
+        let routing = publish(&Promoted::new(), subscriptions);
+        let message = MessageId::new(ids.next_u128());
+        let journeys: Vec<Journey> = routing
+            .evaluations
+            .iter()
+            .filter(|evaluation| evaluation.matched())
+            .map(|evaluation| {
+                Journey::matched(
+                    JourneyId::new(ids.next_u128()),
+                    ChainCause::subscription(&evaluation.subscription_id),
+                )
+                .holding(JourneyMessageRef {
+                    message_id: message,
+                    stream_id: StreamId::new(ids.next_u128()),
+                })
+            })
+            .collect();
+        let holding = pickup.holding(&routing, &journeys, || body.as_bytes().to_vec());
+        let publication = Publication {
+            message: MessageRecord {
+                message,
+                body: Vec::new(),
+            },
+            journeys: journeys
+                .iter()
+                .map(|journey| JourneyRecord {
+                    journey: journey.journey_id(),
+                    body: journey.record(),
+                })
+                .collect(),
+            held: holding.holds().to_vec(),
+            dead: None,
+            audit: AuditEntry {
+                id: AuditId::new(ids.next_u128()),
+                body: Vec::new(),
+            },
         };
-        pickup.route(&routing, &held).destinations().len()
+        storage.publish(&publication).map_err(|e| e.to_string())?;
+        pickup.published(&holding);
+        Ok(holding.holds().len())
     }
 
-    fn contents(released: &[Released]) -> Vec<String> {
+    fn route(pickup: &Pickup, storage: &Arc<dyn XmipStorage>, body: &str) -> usize {
+        published(pickup, storage.as_ref(), &[subscription("orders")], body).expect("taken")
+    }
+
+    fn bodies(released: &[Released]) -> Vec<String> {
         released
             .iter()
-            .map(|one| String::from_utf8_lossy(&one.held.content).into_owned())
+            .map(|one| String::from_utf8_lossy(&one.held.hold.body).into_owned())
             .collect()
+    }
+
+    fn deliver(pickup: &Pickup, released: &Released) {
+        let journey = Journey::new(released.held.hold.journey);
+        pickup.delivered(released, &journey).expect("delivered");
     }
 
     #[test]
     fn a_paused_subscription_holds_what_it_matches_and_a_resume_picks_it_up_in_order() {
-        let pickup = opened(None);
-        assert_eq!(route(&pickup, "zero"), 1, "active: picked up");
+        let storage = crate::ledger::in_memory();
+        let pickup = opened(storage);
+        assert_eq!(route(&pickup, storage, "zero"), 0, "active: picked up");
         pickup.act("orders", Act::Pause, "ilian").expect("paused");
-        for content in ["one", "two", "three"] {
-            assert_eq!(route(&pickup, content), 0, "paused: held, not picked up");
+        for body in ["one", "two", "three"] {
+            assert_eq!(route(&pickup, storage, body), 1, "paused: held");
         }
         let standing = &pickup.standing()[0];
         assert_eq!((standing.held, standing.picked_up), (3, 1));
@@ -433,44 +390,69 @@ mod tests {
 
         let said = pickup.act("orders", Act::Resume, "ilian").expect("resumed");
         assert!(said.contains("the 3 it held"), "{said}");
-        assert_eq!(route(&pickup, "four"), 0, "joins the end of what it held");
+        assert_eq!(
+            route(&pickup, storage, "four"),
+            1,
+            "joins the end of what it held"
+        );
         let released = pickup.released(Duration::ZERO, 8);
-        assert_eq!(contents(&released), ["one", "two", "three", "four"]);
+        assert_eq!(bodies(&released), ["one", "two", "three", "four"]);
+        let places: Vec<u64> = released.iter().map(|one| one.held.sequence).collect();
+        assert_eq!(places, [0, 1, 2, 3], "the Ledger's order");
         for one in &released {
-            pickup.picked_up(one);
+            deliver(&pickup, one);
         }
         let standing = &pickup.standing()[0];
         assert_eq!((standing.held, standing.picked_up), (0, 5), "nothing lost");
-        assert_eq!(route(&pickup, "five"), 1, "drained: picked up again");
+        let queue = named(&uri(&node(), "orders"));
+        assert_eq!(storage.read_held(queue, 0, 8).expect("read").count, 0);
+        assert_eq!(
+            route(&pickup, storage, "five"),
+            0,
+            "drained: picked up again"
+        );
     }
 
     #[test]
     fn a_pause_and_what_it_holds_survive_a_restart_of_the_node() {
-        let engine: &'static Memory = Box::leak(Box::default());
-        let keys = Held::new(secret::fixture::Memory::default());
-        let before = opened(Some(store(engine, &keys)));
+        let storage = crate::ledger::in_memory();
+        let before = opened(storage);
         before.act("orders", Act::Pause, "ilian").expect("paused");
-        route(&before, "one");
-        route(&before, "two");
+        route(&before, storage, "one");
+        route(&before, storage, "two");
         drop(before);
 
-        let after = opened(Some(store(engine, &keys)));
+        let after = opened(storage);
         let standing = &after.standing()[0];
         assert_eq!(standing.state, observe::PauseState::Paused, "still paused");
         assert_eq!((standing.held, standing.by.as_str()), (2, "ilian"));
         after.act("orders", Act::Resume, "ilian").expect("resumed");
         let released = after.released(Duration::ZERO, 8);
-        assert_eq!(contents(&released), ["one", "two"]);
-        after.picked_up(&released[0]);
+        assert_eq!(bodies(&released), ["one", "two"]);
+        deliver(&after, &released[0]);
         drop(after);
 
-        let again = opened(Some(store(engine, &keys)));
+        let again = opened(storage);
         let released = again.released(Duration::ZERO, 8);
         assert_eq!(
-            contents(&released),
+            bodies(&released),
             ["two"],
             "resumed, not all picked up before the stop: picked up at the start"
         );
+    }
+
+    #[test]
+    fn a_standing_xmip_storage_did_not_take_is_no_pause() {
+        let failing = Failing::over(Arc::clone(crate::ledger::in_memory()));
+        let storage: Arc<dyn XmipStorage> = failing.clone();
+        let pickup = opened(&storage);
+        failing.fail(Operation::WriteAdministration, 1);
+        let refused = pickup
+            .act("orders", Act::Pause, "ilian")
+            .expect_err("not taken");
+        assert!(refused.starts_with("FAILED"), "{refused}");
+        assert_eq!(pickup.standing()[0].state, observe::PauseState::Active);
+        assert_eq!(route(&pickup, &storage, "one"), 0, "not held: not paused");
     }
 
     #[test]
@@ -478,8 +460,9 @@ mod tests {
         let at = std::env::temp_dir().join(format!("xmip-pickup-audit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&at);
         let audit = ProgramAudit::new("xmip-runtime pickup tests", Some(&at));
-        let pickup =
-            Pickup::open(NODE, vec![configured("orders")], None, Some(audit)).expect("opened");
+        let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
+        let storage = Arc::clone(crate::ledger::in_memory());
+        let pickup = Pickup::open(&node(), configured, storage, Some(audit)).expect("opened");
 
         let removed = pickup
             .act("orders", Act::Remove, "ilian")

@@ -99,14 +99,20 @@ mod tests {
     use super::*;
     use crate::ffi::operate::borrow;
 
+    /// The node the orders are left for: the test cluster's second.
+    fn node() -> String {
+        configure::fixture::test_cluster().node_scope(1)
+    }
+
     fn order(orders: &str, noun: &str, target: &str, act: &str) -> (i32, String) {
         let mut buffer = vec![0u8; 4096];
         let mut length = 0usize;
+        let node = node();
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let code = unsafe {
             xmip_order_v1(
                 borrow(orders),
-                borrow("xmip:///CT/node/beta"),
+                borrow(&node),
                 borrow(noun),
                 borrow(target),
                 borrow(act),
@@ -147,7 +153,7 @@ mod tests {
         assert_eq!(order(&place, "sulk", "x", "pause").0, status::INVALID);
         assert_eq!(order("", "subscription", "x", "pause").0, status::INVALID);
 
-        let taken: Vec<(Noun, String, Act)> = Order::take(&orders, "xmip:///CT/node/beta")
+        let taken: Vec<(Noun, String, Act)> = Order::take(&orders, &node())
             .into_iter()
             .map(|order| order.map(|order| (order.noun, order.target, order.act)))
             .collect::<Result<_, _>>()

@@ -147,15 +147,24 @@ pub unsafe extern "C" fn xmip_publication_subscriptions_v1(
 
 #[cfg(test)]
 mod tests {
-    use path::expression::Expression;
-    use route::{Promoted, Subscriber, publish};
+    use std::sync::Arc;
+
+    use journey::Journey;
 
     use super::*;
     use crate::configured_subscription::ConfiguredSubscription;
     use crate::ffi::operate::borrow;
     use crate::ffi::publication::{xmip_publication_free_v1, xmip_publication_read_v1};
+    use crate::pickup::tests::{published, subscription};
 
-    const NODE: &str = "xmip:///CT/node/ffi-subscriptions";
+    /// This test's node: the test cluster's first, named apart so no other
+    /// test's pickup is listed with it.
+    fn node() -> String {
+        format!(
+            "{}-ffi-subscriptions",
+            configure::fixture::test_cluster().node_scope(0)
+        )
+    }
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {
@@ -168,10 +177,11 @@ mod tests {
     fn act(name: &str, word: &str) -> (i32, String) {
         let mut buffer = vec![0u8; 1024];
         let mut length = 0usize;
+        let node = node();
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let code = unsafe {
             xmip_subscription_act_v1(
-                borrow(NODE),
+                borrow(&node),
                 borrow(name),
                 borrow(word),
                 borrow("ilian"),
@@ -189,10 +199,11 @@ mod tests {
     fn listed_here() -> Value {
         let mut buffer = vec![0u8; 64 * 1024];
         let mut length = 0usize;
+        let node = node();
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let code = unsafe {
             xmip_subscriptions_v1(
-                borrow(NODE),
+                borrow(&node),
                 buffer.as_mut_ptr(),
                 buffer.len(),
                 &raw mut length,
@@ -204,15 +215,12 @@ mod tests {
 
     #[test]
     fn a_nodes_subscriptions_are_listed_paused_and_resumed_and_never_removed() {
-        let billing = route::Subscription::new(
-            "billing",
-            Subscriber::SendPort("Billing".to_string()),
-            Expression::parse("true").expect("compiles"),
-        );
+        let billing = subscription("billing");
+        let storage = crate::ledger::in_memory();
         let pickup = Pickup::open(
-            NODE,
+            &node(),
             vec![ConfiguredSubscription::unfiled(billing.clone())],
-            None,
+            Arc::clone(storage),
             None,
         )
         .expect("opened");
@@ -220,12 +228,11 @@ mod tests {
         let entry = listed_here()["subscriptions"][0].clone();
         assert_eq!(entry["name"], "billing");
         assert_eq!(entry["state"], "active");
-        assert_eq!(entry["destination"], "the Send Port 'Billing'");
+        assert_eq!(entry["destination"], "the Send Port 'Out'");
 
         assert_eq!(act("billing", "pause").0, status::OK);
-        let routing = publish(&Promoted::new(), std::slice::from_ref(&billing));
-        let picked = pickup.route(&routing, &persist::HeldMessage::default);
-        assert!(picked.destinations().is_empty(), "held, not picked up");
+        let held = published(&pickup, storage.as_ref(), &[billing], "held");
+        assert_eq!(held, Ok(1), "held, not picked up");
         let entry = listed_here()["subscriptions"][0].clone();
         assert_eq!(
             (entry["state"].clone(), entry["held"].clone()),
@@ -242,7 +249,8 @@ mod tests {
         assert_eq!(act("billing", "resume").0, status::OK);
         let released = pickup.released(std::time::Duration::ZERO, 8);
         assert_eq!(released.len(), 1);
-        pickup.picked_up(&released[0]);
+        let journey = Journey::new(released[0].held.hold.journey);
+        pickup.delivered(&released[0], &journey).expect("delivered");
         let entry = listed_here()["subscriptions"][0].clone();
         assert_eq!(
             (entry["held"].clone(), entry["picked_up"].clone()),
@@ -252,16 +260,21 @@ mod tests {
 
     #[test]
     fn a_read_publications_subscriptions_are_listed_with_where_orders_go() {
-        let text = "node = \"xmip:///CT\"\norders = 'shared/orders'\n\
-                    [[subscriptions]]\nnode = \"xmip:///CT/node/beta\"\nname = \"structured\"\n\
-                    state = \"paused\"\nheld = 4\n";
+        let cluster = configure::fixture::test_cluster();
+        let text = format!(
+            "node = \"{}\"\norders = 'shared/orders'\n\
+             [[subscriptions]]\nnode = \"{}\"\nname = \"structured\"\n\
+             state = \"paused\"\nheld = 4\n",
+            cluster.scope(),
+            cluster.node_scope(1)
+        );
         let mut handle = core::ptr::null_mut();
         let mut buffer = vec![0u8; 4096];
         let mut length = 0usize;
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let read = unsafe {
             xmip_publication_read_v1(
-                borrow(text),
+                borrow(&text),
                 &raw mut handle,
                 buffer.as_mut_ptr(),
                 buffer.len(),

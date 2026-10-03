@@ -335,9 +335,14 @@ pub fn windows_service_arguments(definition: &ServiceDefinition) -> Vec<String> 
 mod tests {
     use super::*;
 
+    /// The node registered: the test cluster's first.
+    fn node() -> String {
+        configure::fixture::test_cluster().node(0).name.clone()
+    }
+
     fn node_service() -> ServiceDefinition {
         ServiceDefinition::for_node(
-            "edge-01",
+            &node(),
             "/opt/xmip/bin/xmip-service",
             "/opt/xmip/config/xmip-node.toml",
             "/opt/xmip",
@@ -348,9 +353,10 @@ mod tests {
     fn a_node_service_is_named_and_described_from_the_node() {
         let definition = node_service();
 
-        assert_eq!(definition.name, "xmip-edge-01");
-        assert!(definition.display_name.contains("edge-01"));
-        assert!(definition.description.contains("node edge-01"));
+        let node = node();
+        assert_eq!(definition.name, format!("xmip-{node}"));
+        assert!(definition.display_name.contains(&node));
+        assert!(definition.description.contains(&format!("node {node}")));
         assert_eq!(
             definition.arguments,
             ["--configuration", "/opt/xmip/config/xmip-node.toml"]
@@ -363,21 +369,21 @@ mod tests {
         // recognise in the service list.
         let hosts = vec![String::from("ftp receive"), String::from("sftp send")];
         let definition = ServiceDefinition::for_host(
-            "edge-01",
+            &node(),
             "transport",
             &hosts,
             "/opt/xmip/bin/xmip",
             "/opt/xmip",
         );
 
-        assert_eq!(definition.name, "xmip-edge-01-transport");
+        assert_eq!(definition.name, format!("xmip-{}-transport", node()));
         assert!(definition.description.contains("ftp receive, sftp send"));
     }
 
     #[test]
     fn a_host_service_with_nothing_in_it_says_so() {
         let definition = ServiceDefinition::for_host(
-            "edge-01",
+            &node(),
             "transport",
             &[],
             "/opt/xmip/bin/xmip",
@@ -473,7 +479,7 @@ mod tests {
     #[test]
     fn a_path_with_a_space_stays_one_argument() {
         let definition = ServiceDefinition::for_node(
-            "edge-01",
+            &node(),
             r"C:\Program Files\Xmip\bin\xmip-service.exe",
             r"C:\ProgramData\Xmip\config\xmip-node.toml",
             r"C:\ProgramData\Xmip",

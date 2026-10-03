@@ -1,5 +1,5 @@
-//! `xmip_operate.h` section 10: an Xmip Application read and edited for a
-//! designer (ADR-0064). The exports only — what each does is
+//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read and edited
+//! for the designer (ADR-0064, amendment 2026-10-03). The exports only — what each does is
 //! `crate::design`'s, and the rules are `xmip-core-configure`'s.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
@@ -46,13 +46,13 @@ unsafe fn answer(
     code
 }
 
-/// `xmip_application_routes_v1`: [`design::routes`].
+/// `xmip_cluster_views_v1`: [`design::views`].
 ///
 /// # Safety
 /// As the header states: both texts readable, `out` room for `cap` bytes,
 /// `out_len` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_application_routes_v1(
+pub unsafe extern "C" fn xmip_cluster_views_v1(
     input: Str,
     argument: Str,
     out: *mut u8,
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn xmip_application_routes_v1(
     // SAFETY: the caller upholds the header's contract, passed on whole.
     unsafe {
         answer(input, argument, out, cap, out_len, |text, _| {
-            design::routes(text)
+            design::views(text)
         })
     }
 }
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn xmip_application_routes_v1(
 /// `xmip_filter_structure_v1`: [`design::filter_structure`].
 ///
 /// # Safety
-/// As [`xmip_application_routes_v1`].
+/// As [`xmip_cluster_views_v1`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_filter_structure_v1(
     input: Str,
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn xmip_filter_structure_v1(
 /// `xmip_filter_text_v1`: [`design::filter_text`].
 ///
 /// # Safety
-/// As [`xmip_application_routes_v1`].
+/// As [`xmip_cluster_views_v1`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_filter_text_v1(
     input: Str,
@@ -107,12 +107,12 @@ pub unsafe extern "C" fn xmip_filter_text_v1(
     }
 }
 
-/// `xmip_application_edit_v1`: [`design::edit`].
+/// `xmip_cluster_edit_v1`: [`design::edit`].
 ///
 /// # Safety
-/// As [`xmip_application_routes_v1`].
+/// As [`xmip_cluster_views_v1`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_application_edit_v1(
+pub unsafe extern "C" fn xmip_cluster_edit_v1(
     input: Str,
     argument: Str,
     out: *mut u8,
@@ -131,10 +131,10 @@ mod tests {
     fn every_export_has_the_shape_the_binding_declares() {
         // A signature that drifted from xmip-core-abi's fails to compile here,
         // and the language server calls through that same declaration.
-        let _: abi::operate::design::DesignFn = xmip_application_routes_v1;
+        let _: abi::operate::design::DesignFn = xmip_cluster_views_v1;
         let _: abi::operate::design::DesignFn = xmip_filter_structure_v1;
         let _: abi::operate::design::DesignFn = xmip_filter_text_v1;
-        let _: abi::operate::design::DesignFn = xmip_application_edit_v1;
+        let _: abi::operate::design::DesignFn = xmip_cluster_edit_v1;
     }
 
     fn text(value: &str) -> Str {

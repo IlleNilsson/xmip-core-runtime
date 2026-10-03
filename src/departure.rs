@@ -156,7 +156,19 @@ fn depart_one(
             .map(|identity| identity.value.clone())
     });
 
-    let bytes = work.message.sections()[0].stream.bytes();
+    // Read whole from the Ledger here, where a transport's send takes it
+    // whole; a send that streams reads it a chunk at a time, with the send
+    // step (`runtime-model.md` section 10).
+    let bytes = match work.message.sections()[0].stream.load() {
+        Ok(bytes) => bytes,
+        Err(unread) => {
+            return Departed::Failed {
+                to,
+                retryable: true,
+                detail: unread.to_string(),
+            };
+        }
+    };
 
     match sending.transport.send(&location.address, bytes) {
         Ok(()) => Departed::Sent {

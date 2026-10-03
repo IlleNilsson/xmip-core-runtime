@@ -16,6 +16,7 @@
 //!   -> identify           the claim read off the connection
 //!   -> authenticate       against the Receive Location's closed set
 //!   -> authorize          may this proven identity post here
+//!   -> Ledger             the Stream written in chunks
 //!   -> Message            created only once the transport gates have passed
 //!   -> identify           again, over the Message this time
 //!   -> authenticate       the message layer, against the same closed set
@@ -24,7 +25,7 @@
 //!   -> Promoted           the names the filters use, each compiled once
 //!   -> Journey            a Journey exists only now, not before
 //!   -> publish            every Subscription asked, declines kept
-//!   -> Dispatch           routed, or unroutable and retained
+//!   -> Dispatch           routed, or unroutable: the Dead Message Queue
 //! ```
 //!
 //! Departure is the mirror half and lives in [`crate::departure`]. What both
@@ -42,9 +43,10 @@ use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
 use receive::ReceivedStream;
 use route::{Dispatch, Promoted, publish};
-use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, mechanism};
+use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, StreamId, mechanism};
 
 use crate::generation::ReceivedWork;
+use crate::ledger::write_stream;
 use crate::message_path::Runtime;
 use crate::outcome::{Arrived, Refused};
 use crate::receiving::ReceiveGate;
@@ -58,6 +60,7 @@ use crate::receiving::ReceiveGate;
 ///     -> Transport identification
 ///     -> Transport authentication
 ///     -> Transport authorization
+///     -> The Stream into the Ledger, in chunks
 ///     -> Message creation
 ///     -> Default promotion
 ///     -> Optional message identification
@@ -71,7 +74,7 @@ use crate::receiving::ReceiveGate;
 /// unauthorized sender** — and the type system carries that rather than the
 /// comment, because the transport gate is handed an [`Arrival`] and only the
 /// message gate is handed a [`Message`].
-pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStream) -> Arrived {
+pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedStream) -> Arrived {
     let now = runtime.clock.unix_timestamp_nanos();
 
     // -- Transport identification ------------------------------------------
@@ -79,7 +82,6 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStrea
     // Reading a claim off the connection belongs to a module rather than to
     // whatever transport happened to accept it.
     let arrival = StreamArrival::new(
-        &received.stream,
         received.arriving,
         &received.source_uri,
         &received.transport_properties,
@@ -145,15 +147,24 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStrea
         };
     }
 
+    // -- The Stream into the Ledger, in chunks -----------------------------
+    //
+    // Only now, as the far end streams it: a refusal above reads and keeps
+    // nothing (`runtime-model.md` section 5). What follows holds it as kept.
+    let stream_id = StreamId::new(runtime.ids.next_u128());
+    let body = &mut received.body;
+    let stream = match write_stream(runtime.storage.as_ref(), stream_id, body, runtime.chunk) {
+        Ok(kept) => kept.stream(runtime.storage, None),
+        Err(reason) => return Arrived::Failed { reason },
+    };
+
     // -- Message creation and default promotion ----------------------------
     let message_id = MessageId::new(runtime.ids.next_u128());
     let section_id = SectionId::new(runtime.ids.next_u128());
-    let stream_id = received.stream.id();
-
     let section = MessageSection {
         section_id,
         name: None,
-        stream: received.stream,
+        stream,
         contract: None,
     };
 
@@ -190,6 +201,12 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStrea
         Ok(promoted) => promoted,
         Err(reason) => return Arrived::Refused { reason },
     };
+    // A gate given nothing because the Ledger could not be read routes on nothing.
+    if let Some(why) = message.sections()[0].stream.unread() {
+        return Arrived::Failed {
+            reason: why.to_string(),
+        };
+    }
 
     // The Journey opens here and not before. Everything above could have
     // refused, and a refused arrival has no line of execution to record.
@@ -212,6 +229,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, received: ReceivedStrea
             work,
             facts,
             routing,
+            promoted,
         },
     }
 }
@@ -383,6 +401,7 @@ fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::{Always, Open};
 
     // The spine end to end, so the departure half is exercised from here rather
     // than in isolation: what a Message departs with is decided by what it
@@ -392,8 +411,8 @@ mod tests {
     use crate::message_path::{Parties, Runtime};
     use crate::receiving::ReceiveGate;
     use crate::sending::{Sending, Sends};
-    use authenticate::{Acceptance, AuthenticateError, Authenticator, Refusal};
-    use authorize::{Authorizer, Decision};
+    use authenticate::{Acceptance, Authenticator, Refusal};
+    use authorize::Authorizer;
     use context::Verified;
     use identify::{MessageIdentifier, TransportIdentifier};
     use message::MessageTreatment;
@@ -402,9 +421,8 @@ mod tests {
     use route::{Gathering, Subscriber, Subscription};
     use send::{SendChain, SendLevel};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use stream::Stream;
     use transport::{Arrived as Delivered, Directions, Transport, TransportError};
-    use xcore::{Clock, CredentialRef, Established, IdGenerator, Mechanism, PartyId, StreamId};
+    use xcore::{Clock, CredentialRef, Established, IdGenerator, Mechanism, PartyId};
 
     fn filter(text: &str) -> Expression {
         Expression::parse(text).expect("compiles")
@@ -427,24 +445,6 @@ mod tests {
 
     const SECOND: i128 = 1_000_000_000;
     const NOW: i128 = 1_700_000_000 * SECOND;
-
-    /// Allows anything on the connection. The estate's real policies are
-    /// modules; this is the smallest thing that is not "nothing configured".
-    struct Open;
-
-    impl Authorizer for Open {
-        fn name(&self) -> &str {
-            "open"
-        }
-
-        fn layer(&self) -> Layer {
-            Layer::Transport
-        }
-
-        fn decide(&self, _identity: &IdentityFacts, _attempt: &Attempt) -> Option<Decision> {
-            Some(Decision::Allowed)
-        }
-    }
 
     #[derive(Default)]
     struct Counter(AtomicU64);
@@ -496,18 +496,6 @@ mod tests {
         }
     }
 
-    struct Always(Mechanism, Verified);
-
-    impl Authenticator for Always {
-        fn mechanism(&self) -> Mechanism {
-            self.0.clone()
-        }
-
-        fn verify(&self, _presented: &Presented) -> Result<Verified, AuthenticateError> {
-            Ok(self.1)
-        }
-    }
-
     /// A transport that sends, or fails as told: the smallest thing that is
     /// a Send Location's transport rather than the runtime deciding.
     struct Recording {
@@ -537,6 +525,10 @@ mod tests {
 
         fn receive(&self) -> transport::Result<Vec<Delivered>> {
             Ok(Vec::new())
+        }
+
+        fn arrivals(&self) -> transport::Arrivals {
+            transport::Arrivals::Unordered("it receives nothing")
         }
 
         fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
@@ -592,14 +584,9 @@ mod tests {
     }
 
     fn arriving() -> ReceivedStream {
-        ReceivedStream::new(
-            Stream::new(StreamId::new(100), b"<order/>".to_vec(), None),
-            "https://xmip.example/in/party-x",
+        ReceivedStream::new(&b"<order/>"[..], "https://xmip.example/in/party-x").presenting(
+            Presented::passed(mechanism::mutual_tls(), "CN=party-x.example"),
         )
-        .presenting(Presented::passed(
-            mechanism::mutual_tls(),
-            "CN=party-x.example",
-        ))
     }
 
     fn subscribed_to_party_x() -> Vec<Subscription> {
@@ -644,6 +631,9 @@ mod tests {
             message_identifiers: &[],
             policies,
             clock,
+            storage: crate::ledger::in_memory(),
+            chunk: crate::ledger::CHUNK,
+            origin: Box::leak(Box::new(xaudit::origin::Origin::here("arrival"))),
         }
     }
 
@@ -700,18 +690,45 @@ mod tests {
     /// what routing asks.
     #[test]
     fn a_bound_applications_subscription_routes_a_message() {
-        let application = format!(
-            "[application]\nname = \"Orders\"\n\n[[receive_locations]]\nname = \"party-x\"\n\n\
-             [[send_ports]]\nname = \"Billing\"\n\n[[subscriptions]]\nid = \"billing\"\n\
-             destination = {{ send-port = \"Billing\" }}\n\
-             filter = \"xmip.party = '{}'\"\n",
-            PartyId::new(7)
+        let cluster = configure::fixture::test_cluster();
+        let node = format!(
+            r#"[service]
+name = "xmip"
+cluster_name = "{cluster}"
+node_name = "{node}"
+
+[[applications]]
+name = "Orders"
+
+[[xmip_applications]]
+name = "Orders"
+
+[[xmip_applications.receive_ports]]
+name = "Orders"
+
+[[xmip_applications.receive_locations]]
+name = "party-x"
+receive_port = "Orders"
+interaction = "data-transfer"
+depth = "context"
+
+[[xmip_applications.send_ports]]
+name = "Billing"
+
+[[xmip_applications.subscriptions]]
+id = "billing"
+destination = {{ send-port = "Billing" }}
+filter = "xmip.party = '{party}'"
+"#,
+            cluster = cluster.name,
+            node = cluster.node(0).name,
+            party = PartyId::new(7)
         );
-        let node = "[service]\nname = \"xmip-alpha\"\ncluster_name = \"orders\"\n\
-                    node_name = \"alpha\"\n\n[[applications]]\nname = \"Orders\"\n\
-                    document = \"orders.application.toml\"\n";
-        let orders = configure::parse_application(&application).expect("the Application reads");
-        let document = configure::parse_toml(node).expect("the node reads");
+        let document = configure::parse_toml(&node).expect("the node reads");
+        let orders = configure::binding::section(&document, "Orders")
+            .expect("held")
+            .application()
+            .expect("the Application reads");
         let (tree, _) = crate::execution_tree::build_execution_tree(
             document,
             &[orders],
@@ -772,11 +789,8 @@ mod tests {
                 &clock,
             ),
             &location(),
-            ReceivedStream::new(
-                Stream::new(StreamId::new(101), b"{}".to_vec(), None),
-                "https://xmip.example/in/party-x",
-            )
-            .presenting(Presented::passed(mechanism::api_key(), "k-123")),
+            ReceivedStream::new(&b"{}"[..], "https://xmip.example/in/party-x")
+                .presenting(Presented::passed(mechanism::api_key(), "k-123")),
         );
 
         let Arrived::Refused {
@@ -872,10 +886,7 @@ mod tests {
                 &clock,
             ),
             &folder,
-            ReceivedStream::new(
-                Stream::new(StreamId::new(102), b"ISA*00*".to_vec(), None),
-                "file:///in/party-y/order-1.edi",
-            ),
+            ReceivedStream::new(&b"ISA*00*"[..], "file:///in/party-y/order-1.edi"),
         );
 
         let Arrived::Routed { facts, .. } = arrived else {
@@ -1123,11 +1134,8 @@ mod tests {
         let arrived = arrive(
             &engine,
             &location(),
-            ReceivedStream::new(
-                Stream::new(StreamId::new(103), b"<order/>".to_vec(), None),
-                "https://xmip.example/in/party-x",
-            )
-            .with_property("tls.client.subject", "CN=party-x.example"),
+            ReceivedStream::new(&b"<order/>"[..], "https://xmip.example/in/party-x")
+                .with_property("tls.client.subject", "CN=party-x.example"),
         );
 
         let Arrived::Routed { facts, .. } = arrived else {
@@ -1187,11 +1195,7 @@ mod tests {
             &engine,
             &van,
             ReceivedStream::new(
-                Stream::new(
-                    StreamId::new(104),
-                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
-                    None,
-                ),
+                &b"ISA*00*          *00*          *ZZ*PARTYX"[..],
                 "https://xmip.example/in/van",
             )
             .presenting(Presented::passed(mechanism::mutual_tls(), "CN=van.example")),
@@ -1248,11 +1252,7 @@ mod tests {
             &engine,
             &location(),
             ReceivedStream::new(
-                Stream::new(
-                    StreamId::new(105),
-                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
-                    None,
-                ),
+                &b"ISA*00*          *00*          *ZZ*PARTYX"[..],
                 "https://xmip.example/in/party-x",
             )
             .presenting(Presented::passed(
@@ -1315,7 +1315,7 @@ mod tests {
             ),
             &nightly,
             ReceivedStream::new(
-                Stream::new(StreamId::new(106), b"<orders/>".to_vec(), None),
+                &b"<orders/>"[..],
                 "sftp://party-y.example/out/orders-2026-08-27.xml",
             )
             .scheduled(),
@@ -1386,11 +1386,7 @@ mod tests {
             &engine,
             &van,
             ReceivedStream::new(
-                Stream::new(
-                    StreamId::new(107),
-                    b"ISA*00*          *00*          *ZZ*PARTYX".to_vec(),
-                    None,
-                ),
+                &b"ISA*00*          *00*          *ZZ*PARTYX"[..],
                 "https://xmip.example/in/van",
             )
             .presenting(Presented::passed(mechanism::mutual_tls(), "CN=van.example")),

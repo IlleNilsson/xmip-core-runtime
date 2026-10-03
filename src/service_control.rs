@@ -3,7 +3,7 @@
 //! manager, systemd, launchd.
 //!
 //! One implementation for every platform and every surface. What a surface
-//! asks is *start node alpha* or *stop node alpha*; which manager is asked,
+//! asks is *start this node* or *stop this node*; which manager is asked,
 //! and in which words, is decided here at compile time
 //! ([`ServiceManager::for_target`]) and nowhere else. The service is found
 //! by the name registration gave it ([`node_service_name`]), so a node that
@@ -143,44 +143,48 @@ mod tests {
                 ServiceManager::WindowsScm,
                 Act::Start,
                 "sc.exe",
-                "start xmip-alpha",
+                "start <service>",
             ),
             (
                 ServiceManager::WindowsScm,
                 Act::Stop,
                 "sc.exe",
-                "stop xmip-alpha",
+                "stop <service>",
             ),
             (
                 ServiceManager::Systemd,
                 Act::Start,
                 "systemctl",
-                "start --no-block xmip-alpha.service",
+                "start --no-block <service>.service",
             ),
             (
                 ServiceManager::Systemd,
                 Act::Stop,
                 "systemctl",
-                "stop --no-block xmip-alpha.service",
+                "stop --no-block <service>.service",
             ),
             (
                 ServiceManager::Launchd,
                 Act::Start,
                 "launchctl",
-                "kickstart system/xmip-alpha",
+                "kickstart system/<service>",
             ),
             (
                 ServiceManager::Launchd,
                 Act::Stop,
                 "launchctl",
-                "kill SIGTERM system/xmip-alpha",
+                "kill SIGTERM system/<service>",
             ),
         ];
+        let cluster = configure::fixture::test_cluster();
+        let node = &cluster.node(0).name;
+        let service = format!("xmip-{node}");
         for (manager, act, program, arguments) in cases {
-            let (asked, with) = asking(manager, act, "alpha").expect("a manager");
-            assert_eq!((asked, with.join(" ").as_str()), (program, arguments));
+            let (asked, with) = asking(manager, act, node).expect("a manager");
+            let arguments = arguments.replace("<service>", &service);
+            assert_eq!((asked, with.join(" ")), (program, arguments));
         }
-        assert!(asking(ServiceManager::None, Act::Start, "alpha").is_none());
+        assert!(asking(ServiceManager::None, Act::Start, node).is_none());
     }
 
     #[test]

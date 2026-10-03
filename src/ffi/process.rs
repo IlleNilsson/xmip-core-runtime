@@ -149,13 +149,14 @@ mod tests {
         let pairs = [borrow("stress"), borrow("calm")];
         let mut buffer = vec![0u8; 4096];
         let mut length = 0usize;
+        let scope = configure::fixture::test_cluster().scope();
 
         // SAFETY: every string is alive for the call; the buffer has room.
         let (code, file) = answer(
             unsafe {
                 xmip_process_declare_v1(
                     borrow("xmip-ffi-test"),
-                    borrow("xmip:///C1"),
+                    borrow(&scope),
                     borrow("test"),
                     pairs.as_ptr(),
                     pairs.len(),

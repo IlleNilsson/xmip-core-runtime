@@ -154,10 +154,11 @@ mod tests {
 
     #[test]
     fn a_curve_crosses_as_observe_reads_it_and_a_stranger_is_refused() {
-        let (code, handle) = read(
-            "node = 'xmip:///n'\n[[points]]\ncounted = 'bytes'\nvalue = 9\n\
+        let (code, handle) = read(&format!(
+            "node = '{}'\n[[points]]\ncounted = 'bytes'\nvalue = 9\n\
              observed_unix_nanos = 3\n[[points]]\ncounted = 'throughput'\n",
-        );
+            configure::fixture::test_cluster().node_scope(0)
+        ));
         assert_eq!(code, status::OK);
 
         let mut points = [Measurement {

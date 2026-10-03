@@ -3,11 +3,11 @@
 //! read from and its entry there, as the file says it (ADR-0013, amendment
 //! 2026-09-30).
 //!
-//! A Subscription is configuration. It is added and removed by editing the
-//! Application's TOML and nowhere else, so this is read from what startup
-//! phase 1 read and never written back.
+//! A Subscription is configuration. It is added and removed by editing its
+//! Application's section of the cluster's `xmip.toml` and nowhere else, so
+//! this is read from what startup phase 1 read and never written back.
 
-use configure::XmipApplicationDocument;
+use configure::XmipApplication;
 use configure::application::destination_words;
 use route::Subscription;
 
@@ -31,7 +31,7 @@ impl ConfiguredSubscription {
     /// Application was read from. `applications` and `files` are what
     /// startup phase 1 read, one file per Application.
     #[must_use]
-    pub fn of(applications: &[XmipApplicationDocument], files: &[ApplicationFile]) -> Vec<Self> {
+    pub fn of(applications: &[XmipApplication], files: &[ApplicationFile]) -> Vec<Self> {
         applications
             .iter()
             .zip(files)
@@ -43,8 +43,12 @@ impl ConfiguredSubscription {
                         subscription: subscription.clone(),
                         application: file.name.clone(),
                         file: file.file.clone(),
-                        entry: configure::subscription_entry(&file.text, &subscription.id)
-                            .unwrap_or_default(),
+                        entry: configure::subscription_entry(
+                            &file.text,
+                            &file.name,
+                            &subscription.id,
+                        )
+                        .unwrap_or_default(),
                     })
             })
             .collect()

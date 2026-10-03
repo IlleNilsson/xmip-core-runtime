@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use authenticate::Authenticator;
 use configure::ConfiguredLocation;
 use route::{CONTEXT, Gathering, Source, split};
+use transport::NodeLocation;
 use xcore::settings::Applies;
 
 use crate::capability_registry::{CapabilityRegistry, Load};
@@ -16,6 +17,7 @@ use crate::execution_tree::ExecutionTree;
 use crate::host::HostService;
 use crate::linked::Linked;
 use crate::receiving::{ReceiveGate, Receiving};
+use crate::running::publication::location;
 use crate::sending::{Sending, Sends};
 
 /// What startup phase 3 found the configuration needs of what was linked.
@@ -188,16 +190,23 @@ pub(crate) fn load(
 }
 
 /// Startup phase 9's first half: each started Location's transport built
-/// once, from its address and settings, and held to the direction it serves.
+/// once, from its address and settings, given the node's location (the
+/// owner's *Option A*, 2026-10-03: the runtime gives every transport its
+/// node's identity once, as it builds it), and held to the direction it
+/// serves.
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
     gates: Vec<ReceiveGate>,
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
+    let node = NodeLocation::new(location(
+        &tree.service.cluster_name,
+        &tree.service.node_name,
+    ));
     let mut problems = Vec::new();
     let mut built = |location: &ConfiguredLocation, side: Applies| {
         let technology = linked.transport(&location.transport)?;
-        match technology.open(location, side) {
+        match technology.open(location, side, &node) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),
@@ -238,6 +247,7 @@ pub(crate) fn open(
                 configured: configured.clone(),
                 gate,
                 transport,
+                limits: tree.tuning.receive(),
             })
         })
         .collect();
