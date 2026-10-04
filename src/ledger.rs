@@ -7,10 +7,12 @@
 //! -> the Stream into the Ledger, in chunks     [`write_stream`]
 //! -> Message creation ... Validation
 //! -> Publication           the Message record, its Journeys, the ones a
-//!                          paused Subscription holds — or, where nothing
-//!                          matched, its Dead Message Queue entry —
-//!                          audited, as one write [`publish`]
-//! -> acknowledgement
+//!                          paused Subscription holds, the rest in their
+//!                          Send Ports' queues with this node's claims —
+//!                          or, where nothing matched, its Dead Message
+//!                          Queue entry — audited, as one write [`publish`]
+//! -> acknowledgement       and the send step takes it from there
+//!                          (`crate::send_step`)
 //! ```
 //!
 //! **One sync per receive cycle, and nothing acknowledged before it** (the
@@ -30,23 +32,17 @@
 //! Ledger, its content [`Chunks`] read a chunk at a time, so Message
 //! creation and every gate after it hold no more of it than they read.
 
-use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::sync::Arc;
 
-use journey::{ChainCause, Journey, JourneyMessageRef};
-use message::Message;
-use persist::storage::{
-    AuditEntry, JourneyRecord, MessageRecord, Publication, StreamChunk, XmipStorage,
-};
-use route::{Routing, Subscriber};
+use persist::storage::{StreamChunk, XmipStorage};
 use stream::{Content, Stream};
-use xaudit::audit_record::AuditRecord;
-use xaudit::origin::Origin;
-use xcore::{AuditId, Clock, ExecutionPhase, IdGenerator, JourneyId, Severity, StreamId};
+use xcore::StreamId;
 
-use crate::dead_message::{self, Unmatched};
-use crate::pickup::{Holding, Pickup};
+mod publication;
+
+pub(crate) use publication::opened;
+pub use publication::{Published, Publisher, publish};
 
 /// The TCP segments one chunk holds: 44 of them, 64,240 bytes, just under
 /// TCP's classic 64 KiB window, so a Stream in flight holds about 128 KiB —
@@ -200,178 +196,6 @@ fn fill(content: &mut dyn Read, chunk: usize) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|failed| format!("the Stream could not be read: {failed}"))?;
     Ok(bytes)
-}
-
-/// What a Publication wrote: a Journey for every Subscription routing
-/// matched, in the order they were asked, and which of them a paused
-/// Subscription holds.
-pub struct Published {
-    pub journeys: Vec<Journey>,
-    pub holding: Holding,
-}
-
-/// What a Publication is written with: Xmip Storage, how its identifiers
-/// are minted, the clock, and who its audit record says it came from.
-pub struct Publisher<'a> {
-    pub storage: &'a dyn XmipStorage,
-    pub ids: &'a dyn IdGenerator,
-    pub clock: &'a dyn Clock,
-    pub origin: &'a Origin,
-}
-
-/// A Journey for every Subscription `routing` matched, in the order they
-/// were asked — holding `held`, caused by that Subscription, at depth zero,
-/// its identifier minted by `ids`: what a Publication opens, and a Replay
-/// from the Dead Message Queue.
-pub(crate) fn opened(
-    routing: &Routing,
-    held: JourneyMessageRef,
-    ids: &dyn IdGenerator,
-) -> Vec<Journey> {
-    routing
-        .evaluations
-        .iter()
-        .filter(|evaluation| evaluation.matched())
-        .map(|evaluation| {
-            let cause = match &evaluation.destination {
-                Subscriber::Process(process) => {
-                    ChainCause::process(&evaluation.subscription_id, process)
-                }
-                Subscriber::SendPort(_) | Subscriber::SendGroup(_) => {
-                    ChainCause::subscription(&evaluation.subscription_id)
-                }
-            };
-            Journey::matched(JourneyId::new(ids.next_u128()), cause).holding(held)
-        })
-        .collect()
-}
-
-/// Publication's write, through `publisher`: `message`'s record, a Journey
-/// for every Subscription `routing` matched ([`opened`]), those of them
-/// `pickup` says a Subscription holds, each with what `body` says the
-/// holder keeps beside it, and the audit record of the Publication, as one
-/// durable write, all or nothing (`XmipStorage::publish`). Once it is
-/// durable `pickup` counts it. No Journey where nothing matched: the
-/// Message is kept with its entry in the node's Dead Message Queue — its
-/// receive context, `unmatched`, every Subscription's decline and `body` —
-/// in the same write (`runtime-model.md` section 9).
-///
-/// # Errors
-///
-/// In words, where Xmip Storage did not take it: the receive cycle has
-/// failed, nothing is held or kept, and the sender is not acknowledged.
-pub fn publish(
-    publisher: &Publisher<'_>,
-    pickup: &Pickup,
-    location: &str,
-    message: &Message,
-    routing: &Routing,
-    unmatched: &Unmatched<'_>,
-    body: impl FnOnce() -> Vec<u8>,
-) -> Result<Published, String> {
-    let held = JourneyMessageRef {
-        message_id: message.message_id(),
-        stream_id: message.sections()[0].stream.id(),
-    };
-    let journeys = opened(routing, held, publisher.ids);
-    let (holding, dead) = if journeys.is_empty() {
-        let now = publisher.clock.unix_timestamp_nanos();
-        let at = (pickup.node(), location, now);
-        let entry = dead_message::entry(at, held, routing, unmatched, body());
-        (Holding::default(), Some(entry))
-    } else {
-        (pickup.holding(routing, &journeys, body), None)
-    };
-    let publication = Publication {
-        message: MessageRecord {
-            message: message.message_id(),
-            body: message.record(),
-        },
-        journeys: journeys
-            .iter()
-            .map(|journey| JourneyRecord {
-                journey: journey.journey_id(),
-                body: journey.record(),
-            })
-            .collect(),
-        held: holding.holds().to_vec(),
-        audit: audited(publisher, location, message, &journeys),
-        dead,
-    };
-    publisher.storage.publish(&publication).map_err(|why| {
-        format!(
-            "Xmip Storage did not take the Publication of the Message {}: {why}",
-            message.message_id()
-        )
-    })?;
-    pickup.published(&holding);
-    Ok(Published { journeys, holding })
-}
-
-/// The audit record of a Publication (`runtime-model.md` section 9: *every
-/// Publication is audited*), in the audit capability's own form, written
-/// to the runtime database where an audit record is first written
-/// (ADR-0062, amendment 2026-10-01).
-fn audited(
-    publisher: &Publisher<'_>,
-    location: &str,
-    message: &Message,
-    journeys: &[Journey],
-) -> AuditEntry {
-    let section = &message.sections()[0];
-    let listed = |words: Vec<String>| words.join(",");
-    let properties: BTreeMap<String, String> = [
-        ("location", location.to_string()),
-        ("message", message.message_id().to_string()),
-        ("stream", section.stream.id().to_string()),
-        ("length", section.stream.len().to_string()),
-        (
-            "disposition",
-            if journeys.is_empty() {
-                "dead-message-queue"
-            } else {
-                "routed"
-            }
-            .to_string(),
-        ),
-        (
-            "journeys",
-            listed(
-                journeys
-                    .iter()
-                    .map(|j| j.journey_id().to_string())
-                    .collect(),
-            ),
-        ),
-        (
-            "subscriptions",
-            listed(
-                journeys
-                    .iter()
-                    .filter_map(Journey::cause)
-                    .map(|cause| cause.subscription_id.clone())
-                    .collect(),
-            ),
-        ),
-    ]
-    .into_iter()
-    .map(|(name, value)| (name.to_string(), value))
-    .collect();
-    let record = AuditRecord {
-        audit_id: AuditId::new(publisher.ids.next_u128()),
-        origin: publisher.origin.clone(),
-        scope: None,
-        action: "publish".to_string(),
-        phase: ExecutionPhase::Finished,
-        severity: Severity::Information,
-        timestamp_unix_nanos: publisher.clock.unix_timestamp_nanos(),
-        message: None,
-        properties,
-    };
-    AuditEntry {
-        id: record.audit_id,
-        body: record.toml().into_bytes(),
-    }
 }
 
 /// Xmip Storage in this process's memory, sealed under a key held in

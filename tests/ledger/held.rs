@@ -4,10 +4,12 @@
 //!
 //! - a hold Xmip Storage does not take fails the receive cycle — not
 //!   acknowledged — and nothing is held anywhere, in memory least of all;
-//! - a held Journey whose send fails is written Failed and stays held, its
-//!   Message and its Stream with it, and only a resume tries it again;
-//! - a queue or a Journey that cannot be read is read again from its place:
-//!   nothing after it is taken first and nothing is passed over.
+//! - a held Journey picked up once its Subscription is resumed moves, in
+//!   one write, to the queue of the Send Port it leads to, its Message and
+//!   its Stream with it, there for a node that sends that Port;
+//! - a queue or a Journey that cannot be read, or a move not taken, is read
+//!   again from its place: nothing after it is taken first and nothing is
+//!   passed over.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -18,12 +20,13 @@ use observe::Act;
 use persist::fixture::Memory;
 use persist::storage::{Embedded, XmipStorage, named};
 use receive::ReceivedStream;
+use route::Subscriber;
 use secret::{Held, KekName};
-use xmip_core_runtime::departure::Departed;
+use xcore::JourneyId;
 use xmip_core_runtime::fixture::{Failing, Operation};
 use xmip_core_runtime::held_work::pick_up;
 use xmip_core_runtime::ledger::CHUNK;
-use xmip_core_runtime::message_path::{ReceiveCycle, carry};
+use xmip_core_runtime::message_path::{ReceiveCycle, Runtime, carry};
 use xmip_core_runtime::pickup::{Pickup, Released};
 
 use super::receive_cycle::{node, on_runtime};
@@ -55,6 +58,14 @@ fn queue(storage: &dyn XmipStorage) -> (u64, Vec<u64>) {
     let read = storage.read_held(queue, 0, 64).expect("read");
     let places = read.held.iter().map(|held| held.sequence).collect();
     (read.count, places)
+}
+
+/// The Journeys waiting in the queue of the Send Port `onward` leads to,
+/// oldest first.
+fn waiting_to_send(runtime: &Runtime<'_>) -> Vec<JourneyId> {
+    let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
+    let read = runtime.storage.read_held(queue, 0, 64).expect("read");
+    read.held.iter().map(|held| held.hold.journey).collect()
 }
 
 fn places(released: &[Released]) -> Vec<u64> {
@@ -97,7 +108,7 @@ fn a_hold_xmip_storage_does_not_take_fails_the_receive_cycle_and_holds_nothing()
 }
 
 #[test]
-fn a_held_journey_whose_send_fails_is_written_failed_and_stays_held_with_its_message() {
+fn a_held_journey_picked_up_moves_to_its_send_ports_queue_in_one_write() {
     let (_, storage) = failing();
     on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         paused(pickup);
@@ -106,46 +117,40 @@ fn a_held_journey_whose_send_fails_is_written_failed_and_stays_held_with_its_mes
             (carried.cycle(), carried.held),
             (ReceiveCycle::Completed, 1)
         );
+        assert!(waiting_to_send(runtime).is_empty(), "held, not sent on");
         resumed(pickup);
         let released = pickup.released(Duration::ZERO, 8);
         assert_eq!(places(&released), [0]);
 
-        // No Location is bound to the Send Port it leads to: not sent.
-        let departed = pick_up(runtime, pickup, &released[0]).expect("picked up");
-        assert!(matches!(departed[..], [Departed::NoSuchDestination { .. }]));
-        assert_eq!(queue(storage.as_ref()), (1, vec![0]), "still held");
-        assert_eq!(pickup.standing()[0].held, 1);
+        pick_up(runtime, pickup, &released[0]).expect("picked up");
         let id = released[0].held.hold.journey;
+        assert_eq!(queue(storage.as_ref()), (0, Vec::new()), "out of its hold");
+        assert_eq!(
+            waiting_to_send(runtime),
+            [id],
+            "and in its Send Port's queue"
+        );
+        assert_eq!(pickup.standing()[0].held, 0);
         let record = storage.read_journey(id).expect("read").expect("there");
         let journey = Journey::from_record(&record.body).expect("a Journey");
-        assert_eq!(journey.state, JourneyState::Failed, "Failed stays with it");
-        assert!(journey.entries()[0].outcome.contains("no Send Location"));
+        assert_eq!(journey.state, JourneyState::Active, "still to be sent");
         let message = journey.messages()[0];
-        assert!(
-            storage
-                .read_message(message.message_id)
-                .expect("read")
-                .is_some()
-        );
         let chunk = storage.read_chunk(message.stream_id, 0).expect("read");
         assert_eq!(chunk.expect("its Stream").bytes, b"order 1");
 
+        // This node sends no Location of that Port: the move kept no claim,
+        // so a node that does takes it up at once.
+        let other = configure::fixture::test_cluster().node_scope(1);
+        let taken = storage.claim(id, &other, 1, Duration::from_secs(30));
         assert!(
-            pickup.released(Duration::ZERO, 8).is_empty(),
-            "a Failed Journey is not tried again by itself"
+            taken.expect("claimed").is_some(),
+            "free for a node that sends it"
         );
-        paused(pickup);
-        resumed(pickup);
-        let retried = pickup.released(Duration::ZERO, 8);
-        assert_eq!(places(&retried), [0], "a resume is the operator's retry");
-        assert!(retried[0].retry);
-        pick_up(runtime, pickup, &retried[0]).expect("tried again");
-        assert_eq!(queue(storage.as_ref()), (1, vec![0]), "failed again, held");
     });
 }
 
 #[test]
-fn what_cannot_be_read_is_read_again_from_its_place_and_nothing_is_passed_over() {
+fn what_cannot_be_read_or_moved_is_read_again_from_its_place_and_nothing_is_passed_over() {
     let (failing, storage) = failing();
     on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         paused(pickup);
@@ -170,9 +175,10 @@ fn what_cannot_be_read_is_read_again_from_its_place_and_nothing_is_passed_over()
         let again = pickup.released(AGAIN, 8);
         assert_eq!(places(&again), [0, 1], "nothing advanced");
 
-        // A Failed Journey's write not taken: read again too.
-        failing.fail(Operation::WriteJourney, 1);
+        // A move Xmip Storage did not take: read again too, still held.
+        failing.fail(Operation::HandOn, 1);
         assert!(pick_up(runtime, pickup, &again[0]).is_err());
+        assert_eq!(queue(storage.as_ref()), (2, vec![0, 1]), "still held");
         for one in &again {
             pickup.again(one);
         }
@@ -181,10 +187,8 @@ fn what_cannot_be_read_is_read_again_from_its_place_and_nothing_is_passed_over()
         for one in &last {
             pick_up(runtime, pickup, one).expect("picked up");
         }
-        assert_eq!(
-            queue(storage.as_ref()),
-            (2, vec![0, 1]),
-            "both held, Failed"
-        );
+        assert_eq!(queue(storage.as_ref()), (0, Vec::new()), "both moved on");
+        let ids: Vec<JourneyId> = last.iter().map(|one| one.held.hold.journey).collect();
+        assert_eq!(waiting_to_send(runtime), ids, "in the order they were held");
     });
 }

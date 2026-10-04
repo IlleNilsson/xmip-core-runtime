@@ -4,8 +4,9 @@
 //! [`running::Running::start`] runs ADR-0018's nine startup phases over a node's
 //! configuration and the technologies the process was built with
 //! ([`linked::Linked`]), loads each module the configuration needs once, and
-//! runs every Message that arrives through [`arrival`], routing and
-//! [`departure`] until it is stopped. [`start`] is the first three phases
+//! runs every Message that arrives through [`arrival`], routing and the
+//! Ledger, and [`send_step`] sends it from there through [`departure`], until
+//! it is stopped. [`start`] is the first three phases
 //! alone, for a surface that validates and plans a node without running it.
 
 pub mod arrival;
@@ -33,6 +34,7 @@ pub mod pool;
 pub mod receiving;
 pub mod registration;
 pub mod running;
+pub mod send_step;
 pub mod sending;
 pub mod service;
 pub mod service_control;

@@ -61,12 +61,112 @@ impl Authorizer for Open {
     }
 }
 
+/// What a test's far end answers a send of these bytes.
+pub type Answer = Box<dyn Fn(&[u8]) -> transport::Result<()> + Send + Sync>;
+
+/// A Send Location's far end in a test: every Stream it took, in the order
+/// it took them, and the answer it gives each send.
+pub struct FarEnd {
+    taken: Arc<Mutex<Vec<Vec<u8>>>>,
+    answer: Answer,
+}
+
+impl FarEnd {
+    /// A far end answering as `answer` says, and what it takes.
+    #[must_use]
+    pub fn answering(answer: Answer) -> (Self, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let taken = Arc::new(Mutex::new(Vec::new()));
+        let far = Self {
+            taken: Arc::clone(&taken),
+            answer,
+        };
+        (far, taken)
+    }
+
+    /// The Send Location `name` sending to it.
+    #[must_use]
+    pub fn at(self, name: &str) -> crate::sending::Sending {
+        crate::sending::Sending {
+            configured: configure::ConfiguredLocation {
+                name: name.to_string(),
+                start: true,
+                transport: "far-end".to_string(),
+                address: "far-end".to_string(),
+                credentials: None,
+                contract: None,
+                settings: configure::LocationSettings::default(),
+                contract_settings: configure::LocationSettings::default(),
+                accept: configure::Accept::default(),
+            },
+            chain: send::SendChain::default(),
+            transport: Box::new(self),
+        }
+    }
+}
+
+impl transport::Transport for FarEnd {
+    fn name(&self) -> &'static str {
+        "far-end"
+    }
+
+    fn directions(&self) -> transport::Directions {
+        transport::Directions::SEND
+    }
+
+    fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
+        Ok(Vec::new())
+    }
+
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered("it receives nothing")
+    }
+
+    fn send(&self, _target: &str, bytes: &[u8]) -> transport::Result<()> {
+        (self.answer)(bytes)?;
+        self.taken
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(bytes.to_vec());
+        Ok(())
+    }
+}
+
+/// A send step over `storage` of the test cluster's first node, run by the
+/// default `[tuning]`, for a test's Runtime to borrow for the test's
+/// length: one that dispatches only where the test runs it.
+#[must_use]
+pub fn send_step(storage: &Arc<dyn XmipStorage>) -> &'static crate::send_step::SendStep {
+    send_step_of(
+        storage,
+        &configure::fixture::test_cluster().node_scope(0),
+        &crate::tuning::Tuning::default(),
+    )
+}
+
+/// A send step over `storage` of the test cluster's node at `node`
+/// (`xmip:///<cluster>/node/<name>`), run as `tuning` says.
+#[must_use]
+pub fn send_step_of(
+    storage: &Arc<dyn XmipStorage>,
+    node: &str,
+    tuning: &crate::tuning::Tuning,
+) -> &'static crate::send_step::SendStep {
+    let cluster = configure::fixture::test_cluster().scope();
+    Box::leak(Box::new(crate::send_step::SendStep::new(
+        (&cluster, node),
+        Arc::clone(storage),
+        tuning,
+        None,
+    )))
+}
+
 /// An operation of Xmip Storage a [`Failing`] can be told to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Operation {
     Publish,
     ReadHeld,
-    ReleaseHeld,
+    HandOn,
+    Claim,
     ReadJourney,
     WriteJourney,
     ReadMessage,
@@ -168,16 +268,6 @@ impl XmipStorage for Failing {
         self.beneath.read_held(queue, from, most)
     }
 
-    fn release_held(
-        &self,
-        queue: u128,
-        sequence: u64,
-        journey: &JourneyRecord,
-    ) -> Result<(), PersistError> {
-        self.asked(Operation::ReleaseHeld)?;
-        self.beneath.release_held(queue, sequence, journey)
-    }
-
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
         self.asked(Operation::ReadDead)?;
         self.beneath.read_dead(queue, from, most)
@@ -204,6 +294,7 @@ impl XmipStorage for Failing {
         token: u128,
         lease: Duration,
     ) -> Result<Option<Claim>, PersistError> {
+        self.asked(Operation::Claim)?;
         self.beneath.claim(journey, holder, token, lease)
     }
 
@@ -216,6 +307,7 @@ impl XmipStorage for Failing {
     }
 
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+        self.asked(Operation::HandOn)?;
         self.beneath.hand_on(hand_on)
     }
 

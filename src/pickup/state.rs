@@ -84,9 +84,6 @@ pub(super) struct Entry {
     pub(super) taken: BTreeSet<u64>,
     /// Whether its queue may hold what the node has not read.
     pub(super) pending: bool,
-    /// Whether a resume's sweep is under way, trying a Failed Journey
-    /// again: the operator's retry (`runtime-model.md` section 13).
-    pub(super) retrying: bool,
     /// Not read again before this, after a read that failed.
     pub(super) not_before: Option<Instant>,
 }

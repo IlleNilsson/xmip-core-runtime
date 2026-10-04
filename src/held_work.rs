@@ -1,42 +1,35 @@
 //! A Journey a paused Subscription held, picked up once it is resumed
 //! (ADR-0013, amendment 2026-09-30; `runtime-model.md` section 9).
 //!
+//! **Picked up is moved on.** A held Journey goes where every Journey that
+//! is not held goes at its Publication: to the queue of the Send Port it
+//! leads to, from which the send step sends it (`crate::send_step`). The
+//! move is one hand-on under a claim — its place in the Subscription's
+//! queue let go of, its place at the end of the Send Port's taken — so a
+//! held Journey is in one queue or the other, never both and never
+//! neither. Where this node sends that Port, the claim is kept and the
+//! Journey handed to the Send pool at once; otherwise it waits in the
+//! Port's queue for a node that does.
+//!
 //! **Everything is read back from the Ledger.** The Journey, its Message
 //! and the Message's Stream were written by the receive; what the hold kept
 //! beside the Journey is the identity arrival concluded, in its one binary
-//! form (`context::facts_record`). So a Journey held before a restart, or
-//! on another node, departs as it would have then. Departure authorizes
-//! again, now, as it always does: what arrival concluded is a record of
-//! then and never a licence to act now. A mechanism is never built from a
-//! record (`xcore::Mechanism`): the one a held identity names is the one
-//! this node's authenticators declare under that name, and a held Journey
-//! whose mechanism the node no longer carries does not depart, in words.
-//!
-//! **Only a delivered Journey is released.** Every departure sent: the
-//! Journey is written Completed and let go of from its queue in one write.
-//! Anything else: it is written Failed and stays held, its Message with it
-//! (`runtime-model.md` section 12). A read or a write Xmip Storage did not
-//! answer leaves it, and everything after it in its queue, to be read
-//! again from its place, so nothing is passed over that was not read. A
-//! Journey sent whose release was not written is sent again when it is
-//! read again: at least once, never lost (`runtime-model.md` section 15).
+//! form (`context::facts_record`), and it moves with it. So a Journey held
+//! before a restart, or on another node, departs as it would have then.
+//! Departure authorizes again, now, as it always does. A read or a write
+//! Xmip Storage did not answer leaves it, and everything after it in its
+//! queue, to be read again from its place, so nothing is passed over that
+//! was not read.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use context::IdentityFacts;
-use journey::{Journey, JourneyEntry, JourneyState};
-use message::Message;
-use stream::Content;
-use xcore::{ExecutionId, Mechanism, mechanism};
+use persist::storage::{HandOn, Hold};
 
-use crate::departure::{Departed, depart_to};
-use crate::generation::ReceivedWork;
-use crate::ledger::Chunks;
+use crate::departure::Progress;
 use crate::message_path::Runtime;
-use crate::outcome::Tally;
 use crate::pickup::{Pickup, Released};
+use crate::send_step::{self, Departure, read};
 
 /// How long the node waits for something to pick up before it looks
 /// whether it is stopping: a resume or a hold wakes it at once.
@@ -48,12 +41,7 @@ const MOST: usize = 64;
 /// What the node picks up, as it is let go of, until it stops. A
 /// Subscription whose held Journey is to be read again has the rest of
 /// what it let go of this time read again too, so its order holds.
-pub(crate) fn pick_up_released(
-    runtime: &Runtime<'_>,
-    pickup: &Pickup,
-    stopping: &AtomicBool,
-    tally: &Tally,
-) {
+pub(crate) fn pick_up_released(runtime: &Runtime<'_>, pickup: &Pickup, stopping: &AtomicBool) {
     while !stopping.load(Ordering::Acquire) {
         let mut stalled: Vec<String> = Vec::new();
         for released in pickup.released(WAIT, MOST) {
@@ -61,134 +49,89 @@ pub(crate) fn pick_up_released(
                 pickup.again(&released);
                 continue;
             }
-            match pick_up(runtime, pickup, &released) {
-                Ok(departed) => tally.departed(&departed),
-                Err(_) => {
-                    pickup.again(&released);
-                    stalled.push(released.subscription);
-                }
+            if pick_up(runtime, pickup, &released).is_err() {
+                pickup.again(&released);
+                stalled.push(released.subscription);
             }
         }
     }
 }
 
-/// Pick up `released`: its Journey, its Message and the identity it
-/// arrived with read back from the Ledger, a departure to where its
-/// Subscription leads, and the Journey written as it ended — released
-/// where it was delivered, kept Failed where not. A Failed Journey is
-/// passed over unless a resume tries it again. The departures, none where
-/// it was passed over.
+/// Pick up `released`: its Journey moved from its Subscription's queue to
+/// the queue of where it leads, in one hand-on, and handed to the send step
+/// where this node sends it. One the Ledger holds no Journey to send for is
+/// audited and passed over, still held, for an operator.
 ///
 /// # Errors
 ///
-/// In words, where Xmip Storage did not answer a read or take a write: the
-/// node reads it again ([`Pickup::again`]).
-pub fn pick_up(
-    runtime: &Runtime<'_>,
-    pickup: &Pickup,
-    released: &Released,
-) -> Result<Vec<Departed>, String> {
-    let storage = runtime.storage;
+/// In words, where Xmip Storage did not answer a read or take the move, or
+/// the Journey's claim is another's: the node reads it again
+/// ([`Pickup::again`]).
+pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> Result<(), String> {
+    let (step, storage) = (runtime.send, runtime.storage);
     let id = released.held.hold.journey;
-    let Some(record) = storage.read_journey(id).map_err(|e| e.to_string())? else {
-        pickup.unreadable(released, "its Journey is not in the Ledger");
-        return Ok(Vec::new());
-    };
-    let journey = match Journey::from_record(&record.body) {
-        Ok(journey) => journey,
-        Err(why) => {
-            pickup.unreadable(released, &why.to_string());
-            return Ok(Vec::new());
-        }
-    };
-    if journey.state == JourneyState::Failed && !released.retry {
-        pickup.passed(released);
-        return Ok(Vec::new());
-    }
-    let Some(held) = journey.messages().last().copied() else {
-        pickup.unreadable(released, "its Journey holds no Message");
-        return Ok(Vec::new());
-    };
-    let Some(kept) = storage
-        .read_message(held.message_id)
+    let token = runtime.ids.next_u128();
+    let claim = storage
+        .claim(id, pickup.node(), token, step.lease())
         .map_err(|e| e.to_string())?
-    else {
-        pickup.unreadable(released, "its Message is not in the Ledger");
-        return Ok(Vec::new());
-    };
-    let message = match Message::from_record(&kept.body, |stream| {
-        Ok(Arc::new(Chunks::of(Arc::clone(storage), stream)) as Arc<dyn Content>)
-    }) {
-        Ok(message) => message,
+        .ok_or_else(|| format!("the Journey {id} is claimed by another"))?;
+    let body = &released.held.hold.body;
+    let (work, facts) = match read(runtime, id, body) {
+        Ok(send_step::Found::Waiting(found)) => *found,
+        Ok(send_step::Found::Failed(_) | send_step::Found::Finished) => {
+            let _ = storage.release(&claim);
+            pickup.unreadable(released, "its Journey has ended");
+            return Ok(());
+        }
+        Ok(send_step::Found::Unreadable(why)) => {
+            let _ = storage.release(&claim);
+            pickup.unreadable(released, &why);
+            return Ok(());
+        }
         Err(why) => {
-            pickup.unreadable(released, &why.to_string());
-            return Ok(Vec::new());
+            let _ = storage.release(&claim);
+            return Err(why);
         }
     };
-    let to = &released.destination;
-    let departed =
-        match IdentityFacts::from_record(&released.held.hold.body, |name| carried(runtime, name)) {
-            Ok(facts) => {
-                let work = ReceivedWork {
-                    journey: journey.clone(),
-                    message,
-                };
-                depart_to(runtime, &work, &facts, to)
-            }
-            Err(why) => vec![Departed::Failed {
-                to: to.clone(),
-                retryable: false,
-                detail: why.to_string(),
-            }],
-        };
-    let delivered = !departed.is_empty() && departed.iter().all(Departed::sent);
-    let ended = journey.append(
-        JourneyEntry {
-            execution_id: ExecutionId::new(runtime.ids.next_u128()),
-            message_id: held.message_id,
-            action: "send".to_string(),
-            outcome: said(&departed),
-            timestamp_unix_nanos: runtime.clock.unix_timestamp_nanos(),
-        },
-        if delivered {
-            JourneyState::Completed
-        } else {
-            JourneyState::Failed
-        },
-    );
-    if delivered {
-        pickup.delivered(released, &ended)?;
+    let to = released.destination.clone();
+    let queue = step.queue(&to);
+    let sent_here = runtime.sends.serves(&to) && !send_step::sequential(runtime.sends, &to);
+    let moved = HandOn {
+        claim: claim.clone(),
+        result: send_step::record(&work.journey),
+        messages: Vec::new(),
+        next: Vec::new(),
+        leaves: vec![released.held.hold.queue],
+        queued: vec![Hold {
+            queue,
+            journey: id,
+            body: body.clone(),
+        }],
+        kept_for_nanos: sent_here
+            .then(|| u64::try_from(step.lease().as_nanos()).unwrap_or(u64::MAX)),
+    };
+    match storage.hand_on(&moved) {
+        Ok(true) => {}
+        Ok(false) => return Err(format!("the claim on the Journey {id} lapsed")),
+        Err(error) => {
+            // Given back, so reading it again claims it again at once.
+            let _ = storage.release(&claim);
+            return Err(error.to_string());
+        }
+    }
+    pickup.moved(released);
+    if sent_here {
+        step.hand(Departure {
+            work,
+            facts,
+            to,
+            queue,
+            claim,
+            progress: Progress::default(),
+            sequence: None,
+        });
     } else {
-        pickup.kept(released, &ended)?;
+        step.ask(queue);
     }
-    Ok(departed)
-}
-
-/// What the departures came to, in words, as the Journey records it.
-fn said(departed: &[Departed]) -> String {
-    if departed.is_empty() {
-        return "nowhere to go".to_string();
-    }
-    departed
-        .iter()
-        .map(|one| match one {
-            Departed::Sent { to, .. } => format!("sent to {to}"),
-            Departed::NoSuchDestination { to } => format!("no Send Location for {to}"),
-            Departed::ProcessNotRun { to } => format!("{to} is run by no runtime yet"),
-            Departed::NotPermitted { to, decision } => format!("not permitted to {to}: {decision}"),
-            Departed::Failed { to, detail, .. } => format!("not sent to {to}: {detail}"),
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-/// The mechanism of that name this node carries: one its authenticators
-/// declare, or the circumstance every node infers (ADR-0019 clause 7).
-fn carried(runtime: &Runtime<'_>, name: &str) -> Option<Mechanism> {
-    runtime
-        .authenticators
-        .iter()
-        .map(|authenticator| authenticator.mechanism())
-        .chain([mechanism::circumstance()])
-        .find(|mechanism| mechanism.name() == name)
+    Ok(())
 }

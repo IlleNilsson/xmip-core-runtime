@@ -5,7 +5,7 @@
 
 use journey::Journey;
 use persist::storage::Hold;
-use route::Routing;
+use route::{Routing, Subscriber};
 
 use super::Pickup;
 
@@ -25,18 +25,24 @@ impl Holding {
         &self.holds
     }
 
-    /// `routing` without what is held: where the Message departs now.
+    /// Of `journeys`, opened one for each Subscription `routing` matched in
+    /// its order, the ones no Subscription holds, each with where it leads:
+    /// what goes on to be sent now.
     #[must_use]
-    pub fn picked(&self, routing: &Routing) -> Routing {
+    pub fn departing<'a>(
+        &self,
+        routing: &'a Routing,
+        journeys: &'a [Journey],
+    ) -> Vec<(&'a Journey, &'a Subscriber)> {
         let held = |name: &str| self.held.iter().any(|(_, held)| held == name);
-        Routing {
-            evaluations: routing
-                .evaluations
-                .iter()
-                .filter(|evaluation| !(evaluation.matched() && held(&evaluation.subscription_id)))
-                .cloned()
-                .collect(),
-        }
+        routing
+            .evaluations
+            .iter()
+            .filter(|evaluation| evaluation.matched())
+            .zip(journeys)
+            .filter(|(evaluation, _)| !held(&evaluation.subscription_id))
+            .map(|(evaluation, journey)| (journey, &evaluation.destination))
+            .collect()
     }
 }
 

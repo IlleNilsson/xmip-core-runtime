@@ -1,14 +1,15 @@
 //! What the node picks up of what its Subscriptions hold, oldest first, and
-//! what it says of each once it is done with it: delivered and released,
-//! kept Failed, passed over, or read again (`runtime-model.md` section 9:
-//! *the held ones are picked up oldest first*).
+//! what it says of each once it is done with it: moved on to where it is
+//! sent, delivered by its holder, passed over, or read again
+//! (`runtime-model.md` section 9: *the held ones are picked up oldest
+//! first*).
 
 use std::time::{Duration, Instant};
 
 use journey::Journey;
-use persist::PersistError;
-use persist::storage::{Held, JourneyRecord};
+use persist::storage::{HandOn, Held, JourneyRecord};
 use route::Subscriber;
+use xcore::IdGenerator;
 
 use super::{AGAIN, Pickup};
 use crate::pickup::state::Entry;
@@ -22,17 +23,14 @@ pub struct Released {
     pub destination: Subscriber,
     /// Its place, its Journey and what the holder kept beside it.
     pub held: Held,
-    /// Whether a resume's sweep tries it again, should it have failed.
-    pub retry: bool,
 }
 
 impl Pickup {
     /// Up to `max` held Journeys the node is to pick up now, oldest first
     /// in each queue, waiting up to `timeout` for a queue to read. Each is
-    /// the node's until it says it is [`Pickup::delivered`],
-    /// [`Pickup::kept`], [`Pickup::passed`] or to be read [`Pickup::again`].
-    /// A queue that could not be read is audited and read again, from where
-    /// it was, after a while.
+    /// the node's until it says it is [`Pickup::moved`], [`Pickup::passed`]
+    /// or to be read [`Pickup::again`]. A queue that could not be read is
+    /// audited and read again, from where it was, after a while.
     pub fn released(&self, timeout: Duration, max: usize) -> Vec<Released> {
         let mut state = self.lock();
         if !state.ready() && !timeout.is_zero() {
@@ -78,45 +76,80 @@ impl Pickup {
                         subscription: entry.configured.name().to_string(),
                         destination: entry.configured.subscription.destination.clone(),
                         held,
-                        retry: entry.retrying,
                     });
                 }
             }
             if ended {
-                (entry.pending, entry.retrying) = (false, false);
+                entry.pending = false;
             }
         }
         taken
     }
 
-    /// `released` was delivered: written as `journey` left it and released
-    /// from its queue, in one write.
-    ///
-    /// # Errors
-    /// Xmip Storage did not take it, in words: it is still held, and the
-    /// node reads it again ([`Pickup::again`]).
-    pub fn delivered(&self, released: &Released, journey: &Journey) -> Result<(), String> {
-        let queue = released.held.hold.queue;
-        self.storage
-            .release_held(queue, released.held.sequence, &record(journey))
-            .map_err(|error| self.unwritten(released, &error))?;
+    /// `released` moved on, in one hand-on, out of its Subscription's queue
+    /// and to the end of the queue of where it leads (`crate::held_work`).
+    pub fn moved(&self, released: &Released) {
         self.settle(released, |entry| {
             entry.held = entry.held.saturating_sub(1);
             entry.picked_up += 1;
         });
-        Ok(())
     }
 
-    /// `released` did not depart: written as `journey` left it, Failed, and
-    /// still held, its Message with it.
+    /// `released` let go of for good, written as `journey` left it, out of
+    /// its queue in one hand-on under a claim: a held Journey its holder
+    /// carried on by a way of its own.
     ///
     /// # Errors
-    /// As [`Pickup::delivered`].
+    /// In words, where Xmip Storage did not take it or another holds its
+    /// claim: it is still held, and the holder reads it again
+    /// ([`Pickup::again`]).
+    pub fn delivered(&self, released: &Released, journey: &Journey) -> Result<(), String> {
+        let id = released.held.hold.journey;
+        let token = xcore::UuidV7Generator.next_u128();
+        let lease = crate::send_step::SEND_LEASE;
+        let claim = self
+            .storage
+            .claim(id, &self.node, token, lease)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("the Journey {id} is claimed by another"))?;
+        let let_go = HandOn {
+            claim,
+            result: JourneyRecord {
+                journey: id,
+                body: journey.record(),
+            },
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: vec![released.held.hold.queue],
+            queued: Vec::new(),
+            kept_for_nanos: None,
+        };
+        match self.storage.hand_on(&let_go) {
+            Ok(true) => {
+                self.moved(released);
+                Ok(())
+            }
+            Ok(false) => Err(format!("the claim on the Journey {id} lapsed")),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// `released` could not be carried on by its holder: written as
+    /// `journey` left it, Failed, and still held, its Message with it,
+    /// until a resume reads its queue again.
+    ///
+    /// # Errors
+    /// In words, where Xmip Storage did not take it: the holder reads it
+    /// again ([`Pickup::again`]).
     pub fn kept(&self, released: &Released, journey: &Journey) -> Result<(), String> {
+        let record = JourneyRecord {
+            journey: released.held.hold.journey,
+            body: journey.record(),
+        };
         self.storage
-            .write_journey(&record(journey))
-            .map_err(|error| self.unwritten(released, &error))?;
-        self.settle(released, |_| {});
+            .write_journey(&record)
+            .map_err(|error| error.to_string())?;
+        self.passed(released);
         Ok(())
     }
 
@@ -151,7 +184,6 @@ impl Pickup {
         entry.taken.remove(&sequence);
         if sequence < entry.cursor {
             entry.cursor = sequence;
-            entry.retrying |= released.retry;
         }
         entry.pending = true;
         entry.not_before = Some(Instant::now() + AGAIN);
@@ -164,21 +196,5 @@ impl Pickup {
             entry.taken.remove(&released.held.sequence);
             done(entry);
         }
-    }
-
-    fn unwritten(&self, released: &Released, error: &PersistError) -> String {
-        self.failed("subscription.pickup", &error.to_string());
-        format!(
-            "Xmip Storage did not take the Journey {} held by '{}': {error}",
-            released.held.hold.journey, released.subscription
-        )
-    }
-}
-
-/// A Journey as Xmip Storage keeps it.
-fn record(journey: &Journey) -> JourneyRecord {
-    JourneyRecord {
-        journey: journey.journey_id(),
-        body: journey.record(),
     }
 }

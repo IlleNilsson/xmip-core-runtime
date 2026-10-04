@@ -11,17 +11,14 @@
 //! deleted (ADR-0040).
 //!
 //! **A resume** lets the node pick up what is held, oldest first, in the
-//! order Xmip Storage numbered it ([`Pickup::released`]): each departs where
-//! its Subscription leads (`crate::held_work`), and only a Journey that was
-//! delivered is released from its queue, written as delivered in the same
-//! write ([`Pickup::delivered`]). One whose send failed is written Failed
-//! and stays held, its Message with it ([`Pickup::kept`]); it is not tried
-//! again by itself (`runtime-model.md` section 12: *A Failed Journey cannot
-//! continue automatically*) — the next resume is the operator's retry. A
-//! queue that cannot be read is read again from where it was, never past
-//! what was not read ([`Pickup::again`]). While a Subscription's queue
-//! holds anything, what it matches joins the end of it, so it is picked up
-//! in the order it matched.
+//! order Xmip Storage numbered it ([`Pickup::released`]): each is moved on,
+//! in one hand-on, to the queue of the Send Port its Subscription leads to,
+//! and sent from there by the send step as every Journey is
+//! (`crate::held_work`, [`Pickup::moved`]). A queue that cannot be read is
+//! read again from where it was, never past what was not read
+//! ([`Pickup::again`]). While a Subscription's queue holds anything, what
+//! it matches joins the end of it, so it is picked up in the order it
+//! matched.
 //!
 //! **The pause is operator state** in the administration database — what is
 //! paused, by whom, since when (`deployment-model.md` section 7) — written
@@ -128,7 +125,6 @@ impl Pickup {
                 picked_up: 0,
                 cursor: 0,
                 taken: BTreeSet::new(),
-                retrying: false,
                 not_before: None,
             });
         }
@@ -223,7 +219,7 @@ impl Pickup {
                  up, until it is resumed"
             )
         } else {
-            (entry.cursor, entry.pending, entry.retrying) = (0, true, true);
+            (entry.cursor, entry.pending) = (0, true);
             self.wake.notify_all();
             format!(
                 "Subscription '{name}' resumed by {who}; the {held} it held are picked up, \
@@ -349,6 +345,8 @@ pub(crate) mod tests {
                 id: AuditId::new(ids.next_u128()),
                 body: Vec::new(),
             },
+            claims: Vec::new(),
+            lease_nanos: 0,
         };
         storage.publish(&publication).map_err(|e| e.to_string())?;
         pickup.published(&holding);

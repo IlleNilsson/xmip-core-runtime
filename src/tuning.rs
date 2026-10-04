@@ -17,6 +17,10 @@
 //! segments = 44                               # ledger::SEGMENTS
 //! receive_threads_per_hardware_thread = 2     # pool::RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_idle = "1m"                         # pool::RECEIVE_IDLE
+//! send_threads_per_hardware_thread = 2        # send_step::SEND_THREADS_PER_HARDWARE_THREAD
+//! send_idle = "1m"                            # send_step::SEND_IDLE
+//! send_lease = "30s"                          # send_step::SEND_LEASE
+//! send_scan = "1s"                            # send_step::SEND_SCAN
 //! storage_timeout = "5s"                      # persist's client::TIMEOUT
 //! storage_pass_over = "5s"                    # persist's client::PASS_OVER
 //! ```
@@ -30,6 +34,7 @@ use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
 use crate::ledger::SEGMENTS;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
+use crate::send_step::{SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD};
 
 /// The longest any `[tuning]` duration may be: an hour.
 pub const LONGEST: Duration = Duration::from_secs(3600);
@@ -78,6 +83,39 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         Setting {
+            name: "send_threads_per_hardware_thread",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 64,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(
+                SEND_THREADS_PER_HARDWARE_THREAD,
+            ))),
+            meaning: "The most threads the Send pool runs per hardware thread.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "send_idle",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(SEND_IDLE)),
+            meaning: "How long a send thread with nothing to do waits before it ends.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "send_lease",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(SEND_LEASE)),
+            meaning: "How long a claim on a Journey holds before it lapses, unless renewed.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "send_scan",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(SEND_SCAN)),
+            meaning: "How often the queues this node sends are read for unclaimed Journeys.",
+            applies: Applies::Both,
+        },
+        Setting {
             name: "storage_timeout",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(client::TIMEOUT)),
@@ -107,6 +145,10 @@ pub struct Tuning {
     pub segments: usize,
     pub receive_threads_per_hardware_thread: usize,
     pub receive_idle: Duration,
+    pub send_threads_per_hardware_thread: usize,
+    pub send_idle: Duration,
+    pub send_lease: Duration,
+    pub send_scan: Duration,
     pub storage_timeout: Duration,
     pub storage_pass_over: Duration,
 }
@@ -153,6 +195,10 @@ impl Tuning {
             segments: count("segments"),
             receive_threads_per_hardware_thread: count("receive_threads_per_hardware_thread"),
             receive_idle: duration("receive_idle"),
+            send_threads_per_hardware_thread: count("send_threads_per_hardware_thread"),
+            send_idle: duration("send_idle"),
+            send_lease: duration("send_lease"),
+            send_scan: duration("send_scan"),
             storage_timeout: duration("storage_timeout"),
             storage_pass_over: duration("storage_pass_over"),
         };
@@ -173,7 +219,13 @@ impl Tuning {
     /// A Receive Location's pool on this machine.
     #[must_use]
     pub fn receive(&self) -> Limits {
-        Limits::receive(self.receive_threads_per_hardware_thread, self.receive_idle)
+        Limits::per_hardware_thread(self.receive_threads_per_hardware_thread, self.receive_idle)
+    }
+
+    /// The node's Send pool on this machine.
+    #[must_use]
+    pub fn send(&self) -> Limits {
+        Limits::per_hardware_thread(self.send_threads_per_hardware_thread, self.send_idle)
     }
 }
 
@@ -197,15 +249,28 @@ mod tests {
             tuning.receive().most,
             RECEIVE_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
         );
+        assert_eq!(
+            tuning.send().most,
+            SEND_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
+        );
+        assert_eq!(
+            (tuning.send_idle, tuning.send_lease, tuning.send_scan),
+            (SEND_IDLE, SEND_LEASE, SEND_SCAN)
+        );
     }
 
     #[test]
     fn what_a_node_says_is_what_it_runs_by() {
         let tuning = read(
             "tcp_segment = 1440\nsegments = 8\nreceive_threads_per_hardware_thread = 4\n\
-             receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n",
+             receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
+             send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
+             send_scan = \"200ms\"\n",
         )
         .expect("reads");
+        assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
+        assert_eq!(tuning.send_lease, Duration::from_secs(5));
+        assert_eq!(tuning.send_scan, Duration::from_millis(200));
         assert_eq!(tuning.chunk(), 8 * 1440);
         assert_eq!(tuning.receive_idle, Duration::from_secs(30));
         assert_eq!(tuning.storage_timeout, Duration::from_millis(250));
