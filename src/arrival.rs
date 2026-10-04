@@ -407,7 +407,8 @@ mod tests {
     // than in isolation: what a Message departs with is decided by what it
     // arrived with, and a test that stubbed the join would not catch the case
     // that matters.
-    use crate::departure::{Departed, depart};
+    use crate::departure::{Departed, Progress, depart_to};
+    use crate::generation::ReceivedWork;
     use crate::message_path::{Parties, Runtime};
     use crate::receiving::ReceiveGate;
     use crate::sending::{Sending, Sends};
@@ -564,7 +565,7 @@ mod tests {
                 },
                 transport: Box::new(transport),
             }],
-            groups: Vec::new(),
+            ..Sends::default()
         }
     }
 
@@ -627,6 +628,7 @@ mod tests {
             gathering: Box::leak(Box::new(Gathering::of(&[], subscriptions))),
             treatment: MessageTreatment::default(),
             sends,
+            send: crate::fixture::send_step(crate::ledger::in_memory()),
             transport_identifiers: &[],
             message_identifiers: &[],
             policies,
@@ -635,6 +637,21 @@ mod tests {
             chunk: crate::ledger::CHUNK,
             origin: Box::leak(Box::new(xaudit::origin::Origin::here("arrival"))),
         }
+    }
+
+    /// One pass of `work` to every destination `routing` matched: what the
+    /// send step's first pass does for each Journey.
+    fn depart(
+        runtime: &Runtime<'_>,
+        work: &ReceivedWork,
+        facts: &context::IdentityFacts,
+        routing: &route::Routing,
+    ) -> Vec<Departed> {
+        routing
+            .destinations()
+            .into_iter()
+            .flat_map(|to| depart_to(runtime, work, facts, to, &mut Progress::default()))
+            .collect()
     }
 
     #[test]

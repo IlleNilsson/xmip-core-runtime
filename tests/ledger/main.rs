@@ -22,7 +22,12 @@
 //! larger than a chunk carried in bounded memory; `held.rs` what a paused
 //! Subscription holds, over Xmip Storage that fails on demand;
 //! `dead_message_queue.rs` a Message nothing matched, kept with why and
-//! replayed; `panicked.rs` a carrying thread that panics, settled as failed.
+//! replayed; `panicked.rs` a carrying thread that panics, settled as failed;
+//! `send.rs` the send step reading its Journeys from the Ledger — Failed
+//! and Completed written, a retry's backoff holding no thread, a Sequential
+//! Send Port's order; `send_killed.rs` the send step killed before it sent
+//! and mid-send, and what another node, or the node restarted, sends;
+//! `sending.rs` the test node that sends they run, and its far end.
 
 mod bounded;
 mod dead_message_queue;
@@ -31,6 +36,9 @@ mod held;
 mod killed;
 mod panicked;
 mod receive_cycle;
+mod send;
+mod send_killed;
+mod sending;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -105,6 +113,8 @@ fn child() {
     match what.as_str() {
         "receive" => receive_until_killed(&test_node(&place)),
         "halt" => receive_until_killed(&halting(test_node(&place))),
+        "publish" => send_killed::publish_until_killed(&test_node(&place)),
+        "sending" => send_killed::send_until_killed(&test_node(&place)),
         other => panic!("no child does '{other}'"),
     }
 }

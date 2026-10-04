@@ -22,7 +22,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use crate::departure::Departed;
 use crate::generation::ReceivedWork;
 use crate::message_path::Carried;
 use authenticate::Refusal;
@@ -133,10 +132,10 @@ pub struct Outcomes {
     /// Permitted, and not kept: Xmip Storage did not take it, so it was
     /// not acknowledged.
     pub failed: u64,
-    /// Departures that left.
+    /// Journeys the send step sent: written Completed.
     pub sent: u64,
-    /// Departures that did not: refused, failed, nowhere to go, or bound
-    /// for an Xmip Process no runtime runs yet.
+    /// Journeys whose every Send Location failed its tries, not permitted
+    /// or with nowhere to go: written Failed with why.
     pub not_sent: u64,
 }
 
@@ -169,20 +168,16 @@ impl Tally {
             Arrived::Failed { .. } => &self.failed,
         });
         self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
-        self.departed(&carried.departed);
     }
 
-    /// Count departures: a Stream's, or a held Message's once its
-    /// Subscription is resumed and picks it up.
-    pub(crate) fn departed(&self, departed: &[Departed]) {
-        for one in departed {
-            let counter = if one.sent() {
-                &self.sent
-            } else {
-                &self.not_sent
-            };
-            counter.fetch_add(1, Ordering::Relaxed);
-        }
+    /// Count a Journey the send step wrote Completed.
+    pub(crate) fn sent(&self) {
+        self.sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a Journey the send step wrote Failed.
+    pub(crate) fn not_sent(&self) {
+        self.not_sent.fetch_add(1, Ordering::Relaxed);
     }
 
     /// `location` stopped serving, and why.

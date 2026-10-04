@@ -116,7 +116,8 @@ dynamic-loading = ["dep:libloading"]
 # The gates' stand-ins the runtime's tests run a node with (`fixture`),
 # placed once for its unit tests and its integration tests. Enabled only by
 # the dev-dependency on this crate below, so never in a production build.
-test-support = []
+# It names its nodes from the test cluster's `xmip.toml` (`configure::fixture`).
+test-support = ["configure/test-support"]
 
 [profile.dev.package."*"]
 opt-level = 3

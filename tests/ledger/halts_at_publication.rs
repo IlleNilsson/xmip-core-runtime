@@ -54,15 +54,6 @@ impl XmipStorage for HaltsAtPublication {
         self.0.read_held(queue, from, most)
     }
 
-    fn release_held(
-        &self,
-        queue: u128,
-        sequence: u64,
-        journey: &JourneyRecord,
-    ) -> Result<(), PersistError> {
-        self.0.release_held(queue, sequence, journey)
-    }
-
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
         self.0.read_dead(queue, from, most)
     }

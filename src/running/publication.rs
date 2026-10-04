@@ -13,15 +13,19 @@
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
-//! <node>/send/<Port>         Done with the reason once it stopped
+//! <node>/send/<Port>         Done with the reason once it stopped; a Send
+//!                            Port says what it sent, what failed — the last
+//!                            Journey that did, and why — and what waits
 //! <node>/process/<name>      each Subscription: Fine, or Paused by whom
 //! ```
 //!
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
 //! that counts each kind (`observe::Counted::at`): Streams received at
 //! `receive`, Journeys opened at `process`, Messages sent at `send`, and at
-//! the node what failed — refused at a gate, or a departure that did not
-//! leave.
+//! the node what failed — refused at a gate, or a Journey written Failed.
+//! At each Send Port, `send/<Port>`, what the send step counted there
+//! (`crate::send_step::PortFigures`): Messages sent, Journeys failed, and
+//! those retrying — waiting for their due time.
 //!
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
 //! drawing every publisher calls: the cluster, the node, its stages with an
@@ -49,7 +53,12 @@ pub const ANY_PARTY: &str = "any-party";
 /// The location of the node `node` of `cluster`: the scope it declares and
 /// publishes beneath (ADR-0027 clause 4, ADR-0053).
 pub(crate) fn location(cluster: &str, node: &str) -> String {
-    format!("xmip:///{cluster}/node/{node}")
+    format!("{}/node/{node}", cluster_location(cluster))
+}
+
+/// The location of the cluster `cluster`: `xmip:///<cluster>`.
+pub fn cluster_location(cluster: &str) -> String {
+    format!("xmip:///{cluster}")
 }
 
 impl Running {
@@ -112,14 +121,26 @@ impl Running {
                 format!("loaded ({how}), serving {}", capability.capability),
             );
         }
+        let figures = self.send.figures();
         for (stage, location) in &self.locations {
             let scope = format!("{node}/{stage}/{}", location.name);
+            let sent = (*stage == Stage::Send.name())
+                .then(|| figures.get(&location.name))
+                .flatten();
             match failures.iter().find(|(name, _)| name == &location.name) {
                 Some((_, why)) => record(scope, Health::Done, why.clone()),
                 None => record(
                     scope,
                     Health::Fine,
-                    format!("started; {} at {}", location.transport, location.address),
+                    match sent {
+                        Some(sent) => format!(
+                            "started; {} at {}; {}",
+                            location.transport,
+                            location.address,
+                            sent.evidence()
+                        ),
+                        None => format!("started; {} at {}", location.transport, location.address),
+                    },
                 ),
             }
         }
@@ -183,21 +204,31 @@ impl Running {
         Capability::serving(&stages).with_online(self.online)
     }
 
-    /// What the tally counted, each kind at the stage that counts it.
+    /// What the tally counted, each kind at the stage that counts it, and
+    /// what the send step counted at each Send Port: sent, failed, and
+    /// waiting for a retry's due time.
     fn count(&self, snapshot: &mut Snapshot, node: &str, now: i64) {
         let outcomes = self.tally.outcomes();
-        for (scope, counted, value) in [
-            (Some(Stage::Receive), Counted::Streams, outcomes.received),
-            (Some(Stage::Process), Counted::Journeys, outcomes.routed),
-            (Some(Stage::Send), Counted::Messages, outcomes.sent),
+        let at = |stage: Stage| format!("{node}/{}", stage.name());
+        let mut counts = vec![
+            (at(Stage::Receive), Counted::Streams, outcomes.received),
+            (at(Stage::Process), Counted::Journeys, outcomes.routed),
+            (at(Stage::Send), Counted::Messages, outcomes.sent),
             (
-                None,
+                node.to_string(),
                 Counted::Failed,
                 outcomes.refused + outcomes.failed + outcomes.not_sent,
             ),
-        ] {
+        ];
+        for (port, figures) in self.send.figures() {
+            let scope = format!("{}/{port}", at(Stage::Send));
+            counts.push((scope.clone(), Counted::Messages, figures.sent));
+            counts.push((scope.clone(), Counted::Failed, figures.failed));
+            counts.push((scope, Counted::Retrying, figures.waiting));
+        }
+        for (scope, counted, value) in counts {
             snapshot.record_count(Count {
-                scope: scope.map_or_else(|| node.to_string(), |at| format!("{node}/{}", at.name())),
+                scope,
                 counted,
                 value,
                 window_start_unix_nanos: now,

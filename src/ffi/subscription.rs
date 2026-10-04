@@ -149,8 +149,6 @@ pub unsafe extern "C" fn xmip_publication_subscriptions_v1(
 mod tests {
     use std::sync::Arc;
 
-    use journey::Journey;
-
     use super::*;
     use crate::configured_subscription::ConfiguredSubscription;
     use crate::ffi::operate::borrow;
@@ -249,8 +247,7 @@ mod tests {
         assert_eq!(act("billing", "resume").0, status::OK);
         let released = pickup.released(std::time::Duration::ZERO, 8);
         assert_eq!(released.len(), 1);
-        let journey = Journey::new(released[0].held.hold.journey);
-        pickup.delivered(&released[0], &journey).expect("delivered");
+        pickup.moved(&released[0]);
         let entry = listed_here()["subscriptions"][0].clone();
         assert_eq!(
             (entry["held"].clone(), entry["picked_up"].clone()),

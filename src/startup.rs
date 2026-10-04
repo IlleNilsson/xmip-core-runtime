@@ -269,6 +269,7 @@ pub(crate) fn open(
             Sends {
                 locations,
                 groups: tree.send_port_groups.clone(),
+                ports: tree.send_ports.clone(),
             },
         ))
     } else {

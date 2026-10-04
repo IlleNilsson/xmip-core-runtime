@@ -17,7 +17,8 @@
 //! 8 verify-extensions      the execution tree's, verified and not loaded
 //! 9 accept-work            each Location's transport built once; Xmip Storage
 //!                          reached; the Runtime built once; every Receive
-//!                          Location serving
+//!                          Location serving; the send step dispatching, its
+//!                          queues read first for what the Ledger left
 //! ```
 //!
 //! Phase 3 also holds how the node reaches Xmip Storage to what its program
@@ -31,33 +32,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
-use authenticate::Authenticator;
-use authorize::Authorizer;
 use configure::{ConfiguredLocation, Declarations};
-use identify::{MessageIdentifier, TransportIdentifier};
-use message::MessageTreatment;
-use route::Gathering;
 use xaudit::origin::Origin;
 use xaudit::program_audit::ProgramAudit;
-use xcore::{SystemClock, UuidV7Generator};
 
 use crate::capability_registry::CapabilityRegistry;
 use crate::configured_subscription::ConfiguredSubscription;
 use crate::execution_tree::build_execution_tree;
-use crate::held_work::pick_up_released;
 use crate::host::{self, HostService};
 use crate::linked::Linked;
-use crate::message_path::{Parties, Runtime};
 use crate::outcome::{Outcomes, Tally};
 use crate::pickup::Pickup;
-use crate::receiving::Receiving;
-use crate::sending::Sends;
+use crate::send_step::SendStep;
 use crate::service::StartupPhase;
 use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::storage::Reached;
 
 pub mod publication;
+mod serving;
+
+use serving::{Served, serve};
 
 /// Why a node did not start: the phase that refused it, and every problem it
 /// found there, one sentence each (ADR-0055: refused at the door, in words).
@@ -93,6 +88,7 @@ pub struct Running {
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
     pickup: Arc<Pickup>,
+    send: Arc<SendStep>,
     data: PathBuf,
     storage: Reached,
     #[cfg(feature = "dynamic-loading")]
@@ -180,6 +176,15 @@ impl Running {
                     .map(|s| ("send", s.configured.clone())),
             )
             .collect();
+        let send = Arc::new(SendStep::new(
+            (
+                &publication::cluster_location(&tree.service.cluster_name),
+                &scope,
+            ),
+            Arc::clone(storage.storage()),
+            &tree.tuning,
+            linked.audit.clone(),
+        ));
         let stopping = Arc::new(AtomicBool::new(false));
         let tally = Arc::new(Tally::default());
         let origin = origin(linked.audit.as_ref(), &scope);
@@ -193,6 +198,7 @@ impl Running {
                 subscriptions: tree.subscriptions,
                 pickup: Arc::clone(&pickup),
                 sends,
+                send: Arc::clone(&send),
                 receiving,
             },
             Arc::clone(&stopping),
@@ -210,6 +216,7 @@ impl Running {
             serving: Some(serving),
             tally,
             pickup,
+            send,
             data,
             storage,
             #[cfg(feature = "dynamic-loading")]
@@ -246,6 +253,13 @@ impl Running {
     #[must_use]
     pub fn pickup(&self) -> &Pickup {
         &self.pickup
+    }
+
+    /// The node's send step: what it sends from the Ledger, and its figures
+    /// per Send Port.
+    #[must_use]
+    pub fn send(&self) -> &SendStep {
+        &self.send
     }
 
     /// Its data directory (`configure::ServiceConfiguration::data`):
@@ -298,87 +312,6 @@ impl Drop for Running {
     fn drop(&mut self) {
         self.halt();
     }
-}
-
-/// What the serving thread owns for the node's life.
-struct Served {
-    storage: Arc<dyn persist::storage::XmipStorage>,
-    chunk: usize,
-    origin: Origin,
-    linked: Linked,
-    gathering: Gathering,
-    subscriptions: Vec<route::Subscription>,
-    pickup: Arc<Pickup>,
-    sends: Sends,
-    receiving: Vec<Receiving>,
-}
-
-/// Startup phase 9's second half: the Runtime built once, and every Receive
-/// Location serving on a thread of its own until `stopping` is raised. What
-/// the thread owns is let go when the last Location has stopped — listeners
-/// closed, sessions ended.
-fn serve(served: Served, stopping: Arc<AtomicBool>, tally: Arc<Tally>) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        let Served {
-            storage,
-            chunk,
-            origin,
-            linked,
-            gathering,
-            subscriptions,
-            pickup,
-            sends,
-            receiving,
-        } = served;
-        let authenticators: Vec<&dyn Authenticator> =
-            linked.authenticators.iter().map(AsRef::as_ref).collect();
-        let policies: Vec<&dyn Authorizer> = linked.policies.iter().map(AsRef::as_ref).collect();
-        let transport_identifiers: Vec<&dyn TransportIdentifier> = linked
-            .transport_identifiers
-            .iter()
-            .map(AsRef::as_ref)
-            .collect();
-        let message_identifiers: Vec<&dyn MessageIdentifier> = linked
-            .message_identifiers
-            .iter()
-            .map(AsRef::as_ref)
-            .collect();
-        let parties = Parties::default();
-
-        let runtime = Runtime {
-            ids: &UuidV7Generator,
-            authenticators: &authenticators,
-            parties: &parties,
-            directory: &parties,
-            subscriptions: &subscriptions,
-            gathering: &gathering,
-            treatment: MessageTreatment::default(),
-            sends: &sends,
-            transport_identifiers: &transport_identifiers,
-            message_identifiers: &message_identifiers,
-            policies: &policies,
-            clock: &SystemClock,
-            storage: &storage,
-            chunk,
-            origin: &origin,
-        };
-
-        std::thread::scope(|scope| {
-            for location in &receiving {
-                let (runtime, pickup, stopping, tally) = (&runtime, &*pickup, &*stopping, &*tally);
-                scope.spawn(move || {
-                    let served = location.serve(scope, runtime, pickup, stopping, |carried| {
-                        tally.record(carried);
-                    });
-                    if let Err(why) = served {
-                        tally.fail(&location.configured.name, why);
-                    }
-                });
-            }
-            let (runtime, pickup, stopping, tally) = (&runtime, &*pickup, &*stopping, &*tally);
-            scope.spawn(move || pick_up_released(runtime, pickup, stopping, tally));
-        });
-    })
 }
 
 /// Who a running node's audit records say they came from: the program's
@@ -521,6 +454,15 @@ transport = "xmip-core-transport-tcp"
 address = "{far}"
 {APPLICATION}"#,
             cluster = cluster.name
+        )
+    }
+
+    /// [`node`], its Send Port `Out` stating `policy` — its `retry`,
+    /// `execution_style` and the rest, one key a line.
+    fn node_sending(receive: &str, far: &str, policy: &str) -> String {
+        node(receive, far).replace(
+            "[[xmip_applications.send_ports]]\nname = \"Out\"\n",
+            &format!("[[xmip_applications.send_ports]]\nname = \"Out\"\n{policy}\n"),
         )
     }
 
@@ -991,7 +933,10 @@ address = "{far}"
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = free_address();
-        let path = written("paused", &node(&receive, &far_address));
+        // In order: a Sequential Send Port keeps it (`runtime-model.md`
+        // section 3), where a Concurrent one sends side by side.
+        let sequential = "execution_style = \"sequential\"\non_failure = \"block\"";
+        let path = written("paused", &node_sending(&receive, &far_address, sequential));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&receive, b"before the pause");
         far.accept_one(&listener)

@@ -15,13 +15,14 @@ use receive::ReceivedStream;
 use route::{Gathering, Subscriber, Subscription};
 use xcore::{SystemClock, UuidV7Generator, mechanism};
 use xmip_core_runtime::configured_subscription::ConfiguredSubscription;
-use xmip_core_runtime::fixture::{Always, Open};
+use xmip_core_runtime::fixture::{Always, Open, send_step_of};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{Carried, Parties, ReceiveCycle, Runtime, carry};
 use xmip_core_runtime::outcome::Arrived;
 use xmip_core_runtime::pickup::Pickup;
 use xmip_core_runtime::receiving::ReceiveGate;
 use xmip_core_runtime::sending::Sends;
+use xmip_core_runtime::tuning::Tuning;
 
 use super::say;
 
@@ -69,15 +70,41 @@ pub fn on_runtime_with<T>(
     subscriptions: &[Subscription],
     run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
 ) -> T {
+    let sender = Sender {
+        sends: Sends::default(),
+        tuning: Tuning::default(),
+        node: node(),
+    };
+    on_node(storage, (chunk, subscriptions), sender, run)
+}
+
+/// What a test node sends with: its Send Locations and Send Ports, its
+/// `[tuning]`, and the node it is.
+pub struct Sender {
+    pub sends: Sends,
+    pub tuning: Tuning,
+    pub node: String,
+}
+
+/// [`on_runtime_with`]'s receive path, on a node sending as `sender`
+/// says: what it publishes for its Send Ports it claims and hands to its
+/// send step, which sends where the test dispatches it.
+pub fn on_node<T>(
+    storage: &Arc<dyn XmipStorage>,
+    (chunk, subscriptions): (usize, &[Subscription]),
+    sender: Sender,
+    run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
+) -> T {
     let circumstance = Always::circumstance();
     let authenticators: [&dyn Authenticator; 1] = [&circumstance];
     let policies: [&dyn Authorizer; 1] = [&Open];
     let gathering = Gathering::of(&[], subscriptions);
     let parties = Parties::default();
-    let sends = Sends {
-        locations: Vec::new(),
-        groups: Vec::new(),
-    };
+    let Sender {
+        sends,
+        tuning,
+        node,
+    } = sender;
     let origin = xaudit::origin::Origin::here("ledger-test");
     let runtime = Runtime {
         ids: &UuidV7Generator,
@@ -88,6 +115,7 @@ pub fn on_runtime_with<T>(
         gathering: &gathering,
         treatment: MessageTreatment::default(),
         sends: &sends,
+        send: send_step_of(storage, &node, &tuning),
         transport_identifiers: &[],
         message_identifiers: &[],
         policies: &policies,
@@ -101,7 +129,7 @@ pub fn on_runtime_with<T>(
         .cloned()
         .map(ConfiguredSubscription::unfiled)
         .collect();
-    let pickup = Pickup::open(&node(), configured, Arc::clone(storage), None).expect("opened");
+    let pickup = Pickup::open(&node, configured, Arc::clone(storage), None).expect("opened");
     let gate = ReceiveGate::new(
         "In",
         Acceptance::closed().accepting(&mechanism::circumstance()),

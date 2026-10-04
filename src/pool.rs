@@ -40,13 +40,14 @@ pub const RECEIVE_THREADS_PER_HARDWARE_THREAD: usize = 2;
 pub const RECEIVE_IDLE: Duration = Duration::from_secs(60);
 
 impl Limits {
-    /// A Receive Location's pool, calculated from the machine as the node
-    /// starts (the owner, 2026-10-03: *make a calculation according to CPU
-    /// cores/threads*): `threads_per_hardware_thread` for each of its
-    /// [`hardware_threads`], each idle for `idle` before it ends — what the
-    /// node's `[tuning]` says (`crate::tuning`).
+    /// An I/O-bound step's pool — a Receive Location's, the Send pool —
+    /// calculated from the machine as the node starts (the owner,
+    /// 2026-10-03: *make a calculation according to CPU cores/threads*):
+    /// `threads_per_hardware_thread` for each of its [`hardware_threads`],
+    /// each idle for `idle` before it ends — what the node's `[tuning]`
+    /// says (`crate::tuning`).
     #[must_use]
-    pub fn receive(threads_per_hardware_thread: usize, idle: Duration) -> Self {
+    pub fn per_hardware_thread(threads_per_hardware_thread: usize, idle: Duration) -> Self {
         Self {
             most: threads_per_hardware_thread.saturating_mul(hardware_threads()),
             idle,

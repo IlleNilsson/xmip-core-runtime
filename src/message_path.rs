@@ -2,12 +2,12 @@
 //!
 //! Arrival and departure are mirror images and share one runtime. Putting the
 //! shared thing here keeps `arrival.rs` and `departure.rs` about what happens
-//! rather than about what is wired up. [`carry`] is the join: one Stream in,
-//! arrival — its Stream into the Ledger once the transport gates have
-//! passed — routing, Publication into the Ledger, and a departure to every
-//! destination it matched. What it returns says whether the receive cycle
-//! finished ([`Carried::cycle`]), so the Receive Location acknowledges the
-//! sender, or not.
+//! rather than about what is wired up. [`carry`] is the receive cycle: one
+//! Stream in, arrival — its Stream into the Ledger once the transport gates
+//! have passed — routing, and Publication into the Ledger. What it returns
+//! says whether the receive cycle finished ([`Carried::cycle`]), so the
+//! Receive Location acknowledges the sender, or not. Departure is the send
+//! step's, from the Ledger ([`crate::send_step`]).
 
 use std::sync::Arc;
 
@@ -25,11 +25,11 @@ use xcore::{Clock, IdGenerator, PartyId, Purpose};
 
 use crate::arrival::arrive;
 use crate::dead_message::Unmatched;
-use crate::departure::{Departed, depart};
 use crate::ledger::{self, Published};
 use crate::outcome::Arrived;
 use crate::pickup::Pickup;
 use crate::receiving::ReceiveGate;
+use crate::send_step::SendStep;
 use crate::sending::Sends;
 
 /// A Party, by the identifier the gates handed back.
@@ -88,8 +88,13 @@ pub struct Runtime<'a> {
     pub treatment: MessageTreatment,
 
     /// The node's Send Locations, each with the transport built for it once,
-    /// by the Send Port name routing resolves.
+    /// by the Send Port name routing resolves, and its Send Ports' policy.
     pub sends: &'a Sends,
+
+    /// The node's send step: what a Publication claims it hands to it, and
+    /// it sends every Journey this node sends from the Ledger
+    /// ([`crate::send_step`]).
+    pub send: &'a SendStep,
 
     /// The first gate, before a Message exists.
     pub transport_identifiers: &'a [&'a dyn TransportIdentifier],
@@ -136,13 +141,12 @@ pub enum ReceiveCycle {
     Failed,
 }
 
-/// What became of one Stream: its arrival, a departure for every
-/// destination routing matched — none when it was refused or unroutable —
-/// and how many paused Subscriptions held it instead.
+/// What became of one Stream: its arrival, the Journeys its Publication
+/// opened — none when it was refused, failed or unroutable — and how many
+/// paused Subscriptions held it. Where each goes is the send step's.
 #[derive(Debug)]
 pub struct Carried {
     pub arrived: Arrived,
-    pub departed: Vec<Departed>,
     /// Paused Subscriptions that matched it and hold its Journey in the
     /// Ledger (ADR-0013, amendment 2026-09-30).
     pub held: usize,
@@ -163,12 +167,13 @@ impl Carried {
     }
 }
 
-/// One Stream along the whole path: arrival at `gate` — the Stream into
-/// the Ledger once its transport gates pass — routing, Publication into the
-/// Ledger, with what a paused Subscription of `pickup`'s holds, and
-/// departure to every other destination the Message matched. The receive
-/// cycle has finished, or failed, before anything departs: departure runs
-/// inline until the send step reads its Journeys from the Ledger.
+/// One Stream through the receive cycle: arrival at `gate` — the Stream
+/// into the Ledger once its transport gates pass — routing, and the
+/// Publication into the Ledger, with what a paused Subscription of
+/// `pickup`'s holds and every other Journey in the queue of where it
+/// leads. **The cycle sends nothing** (`runtime-model.md` section 5): it
+/// ends at the Publication's durable write, and the Journeys this node
+/// claimed in it are handed to its send step, which sends them from there.
 pub fn carry(
     runtime: &Runtime<'_>,
     pickup: &Pickup,
@@ -176,33 +181,30 @@ pub fn carry(
     received: ReceivedStream,
 ) -> Carried {
     // One statement, one Storage node: the Stream's chunks, the Publication
-    // and its Journeys, and the chunks read back as it departs (the owner,
-    // 2026-10-03).
+    // and its Journeys (the owner, 2026-10-03).
     let statement = persist::storage::statement(runtime.storage);
     let runtime = &Runtime {
         storage: &statement,
         ..*runtime
     };
     let (arrived, published) = published(runtime, pickup, gate, arrive(runtime, gate, received));
-    let Some(Published { journeys, holding }) = published else {
+    let Some(Published {
+        journeys,
+        holding,
+        lined,
+    }) = published
+    else {
         return Carried {
             arrived,
-            departed: Vec::new(),
             held: 0,
             journeys: Vec::new(),
         };
     };
-    let departed = match &arrived {
-        Arrived::Routed {
-            work,
-            facts,
-            routing,
-        } => depart(runtime, work, facts, &holding.picked(routing)),
-        Arrived::Refused { .. } | Arrived::Unroutable { .. } | Arrived::Failed { .. } => Vec::new(),
-    };
+    if let Arrived::Routed { work, facts, .. } = &arrived {
+        runtime.send.handed(lined, &journeys, work, facts);
+    }
     Carried {
         arrived,
-        departed,
         held: holding.holds().len(),
         journeys,
     }
@@ -245,6 +247,8 @@ fn published(
         ids: runtime.ids,
         clock: runtime.clock,
         origin: runtime.origin,
+        send: runtime.send,
+        sends: runtime.sends,
     };
     let (message, location) = (&work.message, &gate.location);
     match ledger::publish(

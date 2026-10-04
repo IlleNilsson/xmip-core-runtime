@@ -150,6 +150,14 @@ impl Receiving {
         let mut carrying = 0;
         let mut ended = Ok(());
         while ended.is_ok() && !stopping.load(Ordering::Acquire) {
+            // What is told already is settled now, so what became of an
+            // arrival is counted as it ends, not once the pool is full.
+            while ended.is_ok() && carrying > 0 {
+                match told.try_recv() {
+                    Ok(one) => ended = self.settled(&mut each, one, &mut carrying),
+                    Err(_) => break,
+                }
+            }
             while ended.is_ok() && carrying > room {
                 ended = self.settle(&mut each, &told, &mut carrying);
             }
@@ -184,10 +192,21 @@ impl Receiving {
         told: &mpsc::Receiver<(Carried, transport::Result<()>)>,
         carrying: &mut usize,
     ) -> Result<(), String> {
-        let Ok((carried, telling)) = told.recv() else {
+        let Ok(one) = told.recv() else {
             *carrying = 0;
             return Err(self.stopped("a carrying thread ended without telling"));
         };
+        self.settled(each, one, carrying)
+    }
+
+    /// One arrival carried and told, `one`, handed to `each`; whether the
+    /// Location goes on, as [`Receiving::settle`] says.
+    fn settled(
+        &self,
+        each: &mut impl FnMut(&Carried),
+        (carried, telling): (Carried, transport::Result<()>),
+        carrying: &mut usize,
+    ) -> Result<(), String> {
         *carrying -= 1;
         each(&carried);
         match telling {
@@ -283,7 +302,6 @@ impl Drop for Telling {
             arrived: Arrived::Failed {
                 reason: reason.to_string(),
             },
-            departed: Vec::new(),
             held: 0,
             journeys: Vec::new(),
         };
