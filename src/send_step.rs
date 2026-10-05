@@ -65,13 +65,15 @@ use crate::sending::{Destination, Sends, queue};
 use crate::tuning::Tuning;
 
 mod dispatch;
+mod failed;
 mod figures;
 mod journey_act;
 mod pass;
 mod scan;
 
 pub use dispatch::dispatch;
-pub use figures::PortFigures;
+pub use failed::FailedPage;
+pub use figures::{FailedJourney, PUBLISHED_FAILED, PortFigures};
 pub(crate) use pass::record;
 pub use pass::{Ended, Found, read, send, sequence};
 
@@ -165,6 +167,11 @@ struct State {
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
     figures: BTreeMap<String, PortFigures>,
+    /// Every Journey that failed waiting in a queue this node sends, by
+    /// its Send Port and its place: what a scan of the Ledger read Failed,
+    /// so the evidence outlives a restart and covers what another node
+    /// failed.
+    failing: BTreeMap<String, BTreeMap<u64, FailedJourney>>,
     closed: bool,
 }
 
@@ -321,16 +328,14 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// The figures of every Send Port this node has sent through.
-    #[must_use]
-    pub fn figures(&self) -> BTreeMap<String, PortFigures> {
+    /// How many more Journeys the Send pool can take now: its most threads,
+    /// less what this node has in flight — handed to it, queued or sending.
+    /// A scan claims no more than this, so nothing it claims waits past its
+    /// lease behind a backlog.
+    pub(crate) fn room(&self) -> usize {
         let state = self.lock();
-        let mut figures = state.figures.clone();
-        for (_, waiting) in &state.due {
-            let port = waiting.to.name().to_string();
-            figures.entry(port).or_default().waiting += 1;
-        }
-        figures
+        let flying = state.owned.len().saturating_sub(state.due.len());
+        self.limits.most.max(1).saturating_sub(flying)
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -354,6 +359,12 @@ impl SendStep {
             .iter()
             .filter_map(Weak::upgrade)
             .collect()
+    }
+
+    /// The Send Ports it sends, by name.
+    #[must_use]
+    pub fn ports(&self) -> Vec<String> {
+        self.lock().ports.keys().cloned().collect()
     }
 
     /// The node it sends for: `xmip:///<cluster>/node/<name>`.

@@ -74,6 +74,62 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     if let Some(after) = kept {
         outcome = format!("{outcome}; tried again in {after:?}");
     }
+    match written(runtime, departure, state, outcome, kept) {
+        Ok(true) => {}
+        Ok(false) => return Ended::Lost(departed),
+        Err(why) => return Ended::Unwritten(why),
+    }
+    match (state, kept) {
+        (JourneyState::Completed, _) => Ended::Completed(departed),
+        (_, Some(after)) => Ended::Waiting { after, departed },
+        _ => Ended::Failed {
+            reason: format!(
+                "{}: {}",
+                departure.to.name(),
+                departure.progress.given_up.as_deref().unwrap_or_default()
+            ),
+            departed,
+        },
+    }
+}
+
+/// `departure`, whose send thread panicked before its hand-on, written
+/// Failed with `why` — kept in its queue for an operator, as every Journey
+/// that failed is — and its claim ended; released where Xmip Storage did
+/// not take the write, so it is not held to its lapse.
+pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &str) -> Ended {
+    match written(
+        runtime,
+        departure,
+        JourneyState::Failed,
+        why.to_string(),
+        None,
+    ) {
+        Ok(true) => Ended::Failed {
+            reason: format!("{}: {why}", departure.to.name()),
+            departed: Vec::new(),
+        },
+        Ok(false) => Ended::Lost(Vec::new()),
+        Err(unwritten) => {
+            let _ = runtime.storage.release(&departure.claim);
+            Ended::Unwritten(unwritten)
+        }
+    }
+}
+
+/// `departure`'s hand-on, one write: its Journey in `state` with what was
+/// tried, `outcome`, and its tries; its place let go of where it completed;
+/// its claim ended, or kept to `kept` and a lease past it. `true` where it
+/// was written, and the Journey kept on `departure`; `false` where the
+/// claim was no longer this node's; in words where Xmip Storage did not
+/// take it.
+fn written(
+    runtime: &Runtime<'_>,
+    departure: &mut Departure,
+    state: JourneyState,
+    outcome: String,
+    kept: Option<Duration>,
+) -> Result<bool, String> {
     let mut journey = departure.work.journey.clone().append(
         JourneyEntry {
             execution_id: ExecutionId::new(runtime.ids.next_u128()),
@@ -101,27 +157,15 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         kept_for_nanos: kept.map(|after| nanos(after + lease)),
     };
     match runtime.storage.hand_on(&hand_on) {
-        Ok(true) => {}
-        Ok(false) => return Ended::Lost(departed),
-        Err(error) => {
-            return Ended::Unwritten(format!(
-                "Xmip Storage did not take the send of the Journey {}: {error}",
-                journey.journey_id()
-            ));
+        Ok(true) => {
+            departure.work.journey = journey;
+            Ok(true)
         }
-    }
-    departure.work.journey = journey;
-    match (state, kept) {
-        (JourneyState::Completed, _) => Ended::Completed(departed),
-        (_, Some(after)) => Ended::Waiting { after, departed },
-        _ => Ended::Failed {
-            reason: format!(
-                "{}: {}",
-                departure.to.name(),
-                departure.progress.given_up.as_deref().unwrap_or_default()
-            ),
-            departed,
-        },
+        Ok(false) => Ok(false),
+        Err(error) => Err(format!(
+            "Xmip Storage did not take the send of the Journey {}: {error}",
+            journey.journey_id()
+        )),
     }
 }
 
