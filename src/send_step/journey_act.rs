@@ -51,16 +51,81 @@ impl SendStep {
         let act = Noun::Journey.act(act.word())?;
         let id = JourneyId::from_str(journey)
             .map_err(|_| format!("REFUSED: '{journey}' names no Journey"))?;
-        let not_done = |problem: &str| self.not_done(act, id, problem);
-        let kept = match self.storage.read_journey(id) {
-            Ok(Some(record)) => Journey::from_record(&record.body)
-                .map_err(|why| format!("REFUSED: the Journey {id} cannot be read: {why}"))?,
-            Ok(None) => return Err(format!("REFUSED: no Journey {id} is in the Ledger")),
-            Err(error) => return Err(not_done(&error.to_string())),
-        };
+        let (seen, kept) = self.kept(act, id)?;
         if act == Act::Dismiss && kept.state == JourneyState::Dismissed {
             return Ok(format!("Journey {id} was dismissed already"));
         }
+        let (port, blocks) = self.taken_by(id, &kept)?;
+        let token = UuidV7Generator.next_u128();
+        let claim = match self.storage.claim(id, &self.node, token, self.lease) {
+            Ok(Some(claim)) => claim,
+            Ok(None) => {
+                return Err(format!(
+                    "REFUSED: the Journey {id} is claimed by another; act again once it is free"
+                ));
+            }
+            Err(error) => return Err(self.not_done(act, id, &error.to_string())),
+        };
+        // What was read before the claim may be another writer's past: read
+        // again under it, the one writer now, and act only on what it saw.
+        if let Err(refused) = self.unchanged(act, id, &seen) {
+            let _ = self.storage.release(&claim);
+            return Err(refused);
+        }
+        let queue = self.queue(&Subscriber::SendPort(port.clone()));
+        let said = match act {
+            Act::Retry => format!("Journey {id} retried by {who}; sent again from {port}'s queue"),
+            _ => format!("Journey {id} dismissed by {who}; its history is kept"),
+        };
+        let retry = act == Act::Retry;
+        let hand_on = HandOn {
+            claim: claim.clone(),
+            result: record(&acted(kept, act, &said)),
+            messages: Vec::new(),
+            next: Vec::new(),
+            leaves: if retry { Vec::new() } else { vec![queue] },
+            queued: Vec::new(),
+            requeued: if retry && !blocks {
+                vec![queue]
+            } else {
+                Vec::new()
+            },
+            kept_for_nanos: None,
+        };
+        match self.storage.hand_on(&hand_on) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(self.not_done(act, id, "its claim lapsed before it was written"));
+            }
+            Err(error) => {
+                let _ = self.storage.release(&claim);
+                return Err(self.not_done(act, id, &error.to_string()));
+            }
+        }
+        self.acted_on(id, &port);
+        self.ask(queue);
+        self.audited(act, id, (who, &port), &said);
+        Ok(said)
+    }
+
+    /// The Journey `id` as the Ledger keeps it: its record's bytes, and it
+    /// read.
+    fn kept(&self, act: Act, id: JourneyId) -> Result<(Vec<u8>, Journey), String> {
+        match self.storage.read_journey(id) {
+            Ok(Some(record)) => {
+                let journey = Journey::from_record(&record.body)
+                    .map_err(|why| format!("REFUSED: the Journey {id} cannot be read: {why}"))?;
+                Ok((record.body, journey))
+            }
+            Ok(None) => Err(format!("REFUSED: no Journey {id} is in the Ledger")),
+            Err(error) => Err(self.not_done(act, id, &error.to_string())),
+        }
+    }
+
+    /// The Send Port `kept` waits in, and whether a Journey of it that
+    /// failed blocks its sequence: refused, in words, where `kept` has not
+    /// failed or this node does not send its Port.
+    fn taken_by(&self, id: JourneyId, kept: &Journey) -> Result<(String, bool), String> {
         if kept.state != JourneyState::Failed {
             return Err(format!(
                 "REFUSED: the Journey {id} is {:?}, not Failed; only a Journey that failed \
@@ -77,49 +142,30 @@ impl SendStep {
                 self.node
             ));
         };
-        let queue = self.queue(&Subscriber::SendPort(port.clone()));
-        let token = UuidV7Generator.next_u128();
-        let claim = match self.storage.claim(id, &self.node, token, self.lease) {
-            Ok(Some(claim)) => claim,
-            Ok(None) => {
-                return Err(format!(
-                    "REFUSED: the Journey {id} is claimed by another; act again once it is free"
-                ));
-            }
-            Err(error) => return Err(not_done(&error.to_string())),
-        };
-        let said = match act {
-            Act::Retry => format!("Journey {id} retried by {who}; sent again from {port}'s queue"),
-            _ => format!("Journey {id} dismissed by {who}; its history is kept"),
-        };
-        let acted = acted(kept, act, &said);
-        let retry = act == Act::Retry;
-        let hand_on = HandOn {
-            claim: claim.clone(),
-            result: record(&acted),
-            messages: Vec::new(),
-            next: Vec::new(),
-            leaves: if retry { Vec::new() } else { vec![queue] },
-            queued: Vec::new(),
-            requeued: if retry && !blocks {
-                vec![queue]
-            } else {
-                Vec::new()
-            },
-            kept_for_nanos: None,
-        };
-        match self.storage.hand_on(&hand_on) {
-            Ok(true) => {}
-            Ok(false) => return Err(not_done("its claim lapsed before it was written")),
-            Err(error) => {
-                let _ = self.storage.release(&claim);
-                return Err(not_done(&error.to_string()));
-            }
+        Ok((port, blocks))
+    }
+
+    /// Whether the Journey `id`, read again under this node's claim, is
+    /// still what was `seen` before it: refused in words where another
+    /// writer — another operator's act, a node that sent it — moved it
+    /// meanwhile, so an act never writes back a state the Journey has left.
+    fn unchanged(&self, act: Act, id: JourneyId, seen: &[u8]) -> Result<(), String> {
+        let (now, journey) = self.kept(act, id)?;
+        if now == seen {
+            return Ok(());
         }
-        self.lock().passed.retain(|(passed, _)| *passed != id);
-        self.ask(queue);
-        self.audited(act, id, (who, &port), &said);
-        Ok(said)
+        Err(format!(
+            "REFUSED: the Journey {id} changed while it was acted on and is {:?} now; \
+             nothing was written, look again",
+            journey.state
+        ))
+    }
+
+    /// An operator's act on `journey`, of `port`, written: it is read again
+    /// at its place, and no longer failing.
+    fn acted_on(&self, journey: JourneyId, port: &str) {
+        self.lock().passed.retain(|(passed, _)| *passed != journey);
+        self.not_failing(port, journey);
     }
 
     fn audited(&self, act: Act, id: JourneyId, (who, port): (&str, &str), said: &str) {

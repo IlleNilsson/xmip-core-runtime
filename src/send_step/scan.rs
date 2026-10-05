@@ -1,29 +1,42 @@
 //! A scan of a queue the node sends: what waits in it that no live claim
 //! holds, claimed oldest first — on a Sequential Send Port only the oldest
-//! of each sequence nothing is in flight or blocked before. A Journey that
-//! failed stays in its queue for an operator, passed over at its place; a
-//! Retry moves it to a new one, or, where it blocks its sequence, makes it
-//! one to send where it is.
+//! of each sequence nothing is in flight or blocked before — and no more
+//! than the Send pool can take. A Journey that failed stays in its queue
+//! for an operator, passed over at its place and kept as its Port's
+//! evidence; a Retry moves it to a new one, or, where it blocks its
+//! sequence, makes it one to send where it is.
 
 use std::collections::HashSet;
 
 use configure::OnFailure;
+use context::IdentityFacts;
+use persist::storage::Claim;
 use route::Subscriber;
+use xcore::JourneyId;
 
 use super::pass::{Found, read, sequence};
 use super::{Departure, Owned};
 use crate::departure::Progress;
+use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 use crate::sending::Destination;
 
 /// The most entries of a queue read at once.
 const PAGE: u32 = 64;
 
-/// What waits in `queue`, bound for `to`, that this node is to send now:
-/// read oldest first, each that no live claim holds claimed. On a
-/// Sequential Send Port only the oldest of each sequence that nothing is in
-/// flight or blocked before it, read before it is claimed.
-pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Departure> {
+/// What waits in `queue`, bound for `to`, that this node is to send now —
+/// at most `room`, what its Send pool can take — read oldest first, each
+/// that no live claim holds claimed. On a Sequential Send Port only the
+/// oldest of each sequence that nothing is in flight or blocked before it,
+/// read before it is claimed and again once it is. Every Journey read
+/// Failed is kept as its Port's evidence; a read of the whole queue forgets
+/// what failed there and is gone from it.
+pub(super) fn scan(
+    runtime: &Runtime<'_>,
+    to: &Subscriber,
+    queue: u128,
+    room: usize,
+) -> Vec<Departure> {
     let step = runtime.send;
     let ordered = match runtime.sends.to(to) {
         Destination::Ports(ports) => ports.iter().find_map(|port| {
@@ -39,6 +52,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
         .filter(|owned| owned.queue == queue)
         .filter_map(|owned| owned.sequence.clone())
         .collect();
+    let mut present = HashSet::new();
     let mut found = Vec::new();
     let mut from = 0;
     loop {
@@ -50,6 +64,12 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
             from = held.sequence + 1;
             let id = held.hold.journey;
             let place = (id, held.sequence);
+            present.insert(place);
+            if found.len() >= room {
+                // The pool is full: the rest waits unclaimed for a later
+                // scan, so nothing claimed lapses behind a backlog.
+                return found;
+            }
             let known = {
                 let state = step.lock();
                 state.owned.contains_key(&id) || state.passed.contains(&place)
@@ -61,11 +81,12 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
             let taken = match &ordered {
                 Some((key, on_failure)) => in_sequence(
                     runtime,
+                    (to, queue),
                     (place, body),
                     (key.as_deref(), *on_failure),
                     &mut busy,
                 ),
-                None => claimed_first(runtime, place, body),
+                None => claimed_first(runtime, to, place, body),
             };
             match taken {
                 Taken::One(one) => {
@@ -94,6 +115,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
             }
         }
         if read_all {
+            step.read_whole(to.name(), &present);
             return found;
         }
     }
@@ -101,23 +123,41 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
 
 /// What a scan made of one entry.
 enum Taken {
-    One(
-        Box<(
-            crate::generation::ReceivedWork,
-            context::IdentityFacts,
-            persist::storage::Claim,
-            Option<String>,
-        )>,
-    ),
+    One(Box<(ReceivedWork, IdentityFacts, Claim, Option<String>)>),
     Passed,
     /// Xmip Storage did not answer: the rest of the queue waits for the
     /// next scan.
     Unanswered,
 }
 
+/// What a scan read of the Journey at `place` bound for `to`, kept as its
+/// Port's evidence: Failed with why, or no longer failing.
+fn noted(runtime: &Runtime<'_>, to: &Subscriber, place: (JourneyId, u64), found: &Found) {
+    let step = runtime.send;
+    match found {
+        Found::Failed(work) => {
+            let reason = work
+                .journey
+                .entries()
+                .last()
+                .map(|entry| entry.outcome.clone())
+                .unwrap_or_default();
+            step.found_failing(to.name(), place.1, place.0, reason);
+        }
+        Found::Waiting(_) | Found::Finished | Found::Unreadable(_) => {
+            step.not_failing(to.name(), place.0);
+        }
+    }
+}
+
 /// An entry of a queue that is not ordered, at its `place`: claimed, then
 /// read.
-fn claimed_first(runtime: &Runtime<'_>, place: (xcore::JourneyId, u64), body: &[u8]) -> Taken {
+fn claimed_first(
+    runtime: &Runtime<'_>,
+    to: &Subscriber,
+    place: (JourneyId, u64),
+    body: &[u8],
+) -> Taken {
     let step = runtime.send;
     let id = place.0;
     let token = runtime.ids.next_u128();
@@ -126,7 +166,11 @@ fn claimed_first(runtime: &Runtime<'_>, place: (xcore::JourneyId, u64), body: &[
         Ok(None) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
-    match read(runtime, id, body) {
+    let found = read(runtime, id, body);
+    if let Ok(found) = &found {
+        noted(runtime, to, place, found);
+    }
+    match found {
         Ok(Found::Waiting(found)) => {
             let (work, facts) = *found;
             Taken::One(Box::new((work, facts, claim, None)))
@@ -151,17 +195,27 @@ fn claimed_first(runtime: &Runtime<'_>, place: (xcore::JourneyId, u64), body: &[
 
 /// An entry of a Sequential Send Port's queue: read, its sequence told,
 /// and claimed only where nothing of its sequence before it is in flight,
-/// held by another, or failed and blocking (`busy`).
+/// held by another, or failed and blocking (`busy`) — and, once claimed,
+/// read again with its place: another node may have sent it and let go of
+/// its place between the first read and the claim.
 fn in_sequence(
     runtime: &Runtime<'_>,
-    (place, body): ((xcore::JourneyId, u64), &[u8]),
+    (to, queue): (&Subscriber, u128),
+    (place, body): ((JourneyId, u64), &[u8]),
     (key, on_failure): (Option<&str>, OnFailure),
     busy: &mut HashSet<String>,
 ) -> Taken {
     let step = runtime.send;
     let id = place.0;
-    let (work, facts) = match read(runtime, id, body) {
-        Ok(Found::Waiting(found)) => *found,
+    let found = read(runtime, id, body);
+    if let Ok(found) = &found {
+        noted(runtime, to, place, found);
+    }
+    let work = match found {
+        Ok(Found::Waiting(found)) => {
+            let (work, _) = *found;
+            work
+        }
         // Blocking, it is read at every scan: a Retry keeps its place.
         Ok(Found::Failed(work)) if on_failure == OnFailure::Block => {
             busy.insert(sequence(&work.message, key));
@@ -183,9 +237,48 @@ fn in_sequence(
         return Taken::Passed;
     }
     let token = runtime.ids.next_u128();
-    match step.storage.claim(id, &step.node, token, step.lease) {
-        Ok(Some(claim)) => Taken::One(Box::new((work, facts, claim, Some(told)))),
-        Ok(None) => Taken::Passed,
-        Err(_) => Taken::Unanswered,
+    let claim = match step.storage.claim(id, &step.node, token, step.lease) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return Taken::Passed,
+        Err(_) => return Taken::Unanswered,
+    };
+    match still_waiting(runtime, queue, place, body) {
+        Some(Ok(found)) => {
+            let (work, facts) = found;
+            Taken::One(Box::new((work, facts, claim, Some(told))))
+        }
+        // Moved meanwhile: read afresh at the next scan, its sequence held
+        // until then.
+        Some(Err(())) => {
+            let _ = step.storage.release(&claim);
+            Taken::Passed
+        }
+        None => {
+            let _ = step.storage.release(&claim);
+            Taken::Unanswered
+        }
+    }
+}
+
+/// The Journey at `place` in `queue`, read under this node's claim: still
+/// at its place and still to be sent, or not (`Err`); `None` where Xmip
+/// Storage did not answer.
+fn still_waiting(
+    runtime: &Runtime<'_>,
+    queue: u128,
+    (id, at): (JourneyId, u64),
+    body: &[u8],
+) -> Option<Result<(ReceivedWork, IdentityFacts), ()>> {
+    let page = runtime.send.storage.read_held(queue, at, 1).ok()?;
+    let held = page
+        .held
+        .first()
+        .is_some_and(|held| held.sequence == at && held.hold.journey == id);
+    if !held {
+        return Some(Err(()));
+    }
+    match read(runtime, id, body).ok()? {
+        Found::Waiting(found) => Some(Ok(*found)),
+        Found::Failed(_) | Found::Finished | Found::Unreadable(_) => Some(Err(())),
     }
 }

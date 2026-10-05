@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use route::Subscriber;
 
-use super::pass::{Ended, blocks, send};
+use super::pass::{Ended, abandoned, blocks, send};
 use super::scan::scan;
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
@@ -20,7 +20,10 @@ const AGAIN: Duration = Duration::from_millis(250);
 
 /// The send step of `runtime` dispatching on its Send pool in `scope`,
 /// until it is closed and what was handed to it is sent; `settled` is told
-/// how each pass ended. Every queue this node sends is read as it starts.
+/// how each pass ended. Every queue this node sends is read as it starts,
+/// for no more than the pool can take. The claims of work in flight are
+/// renewed on a thread of their own, so no scan of a backlog, however
+/// long, holds a renewal back.
 pub fn dispatch<'scope, 'env>(
     scope: &'scope Scope<'scope, 'env>,
     runtime: &'env Runtime<'env>,
@@ -41,10 +44,10 @@ pub fn dispatch<'scope, 'env>(
         .iter()
         .map(|(to, _)| (to.name().to_string(), blocks(runtime, to)))
         .collect();
+    scope.spawn(move || step.renewing());
     let mut next_scan = Instant::now();
-    let mut next_renewal = Instant::now() + step.lease / 3;
     loop {
-        let (closed, handed, due, asked) = step.next(next_scan.min(next_renewal));
+        let (closed, handed, due, asked) = step.next(next_scan);
         for departure in handed {
             run(&pool, runtime, settled, departure);
         }
@@ -56,14 +59,11 @@ pub fn dispatch<'scope, 'env>(
             resume(&pool, runtime, settled, departure);
         }
         let now = Instant::now();
-        if next_renewal <= now {
-            step.renew();
-            next_renewal = now + step.lease / 3;
-        }
         let all = next_scan <= now;
         for (to, queue) in &served {
-            if all || asked.contains(queue) {
-                for departure in scan(runtime, to, *queue) {
+            let room = step.room();
+            if room > 0 && (all || asked.contains(queue)) {
+                for departure in scan(runtime, to, *queue, room) {
                     run(&pool, runtime, settled, departure);
                 }
             }
@@ -109,8 +109,34 @@ impl SendStep {
         (state.closed, handed, due, asked)
     }
 
-    /// Renew the claim of every Journey in flight, so a send that takes
-    /// longer than a lease is not taken up by another node meanwhile.
+    /// Renew the claim of every Journey in flight every third of a lease,
+    /// until the step is closed and nothing is in flight: its own thread,
+    /// so a send that takes longer than a lease, or one queued behind a
+    /// long scan, is not taken up by another node meanwhile.
+    fn renewing(&self) {
+        let mut next = Instant::now() + self.lease / 3;
+        let mut state = self.lock();
+        loop {
+            if state.closed && state.owned.is_empty() {
+                return;
+            }
+            let now = Instant::now();
+            if next <= now {
+                drop(state);
+                self.renew();
+                next = Instant::now() + self.lease / 3;
+                state = self.lock();
+                continue;
+            }
+            state = self
+                .wake
+                .wait_timeout(state, next - now)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Renew the claim of every Journey in flight.
     fn renew(&self) {
         let state = self.lock();
         let waiting: HashSet<_> = state
@@ -142,6 +168,7 @@ impl SendStep {
                 .owned
                 .remove(&departure.work.journey.journey_id());
         }
+        self.wake.notify_all();
     }
 
     /// How `departure`'s pass ended, settled: counted, kept until its due
@@ -191,18 +218,51 @@ impl SendStep {
     }
 }
 
-/// `departure` sent on `pool`, and its pass settled.
+/// `departure` sent on `pool`, and its pass settled — also where its send
+/// panics ([`Sending`]).
 fn run<'env>(
     pool: &Pool<'_, 'env>,
     runtime: &'env Runtime<'env>,
     settled: Settled<'env>,
-    d: Departure,
+    departure: Departure,
 ) {
     pool.run(Box::new(move || {
-        let mut departure = d;
-        let ended = send(runtime, &mut departure);
-        runtime.send.settle(settled, departure, ended);
+        let mut sending = Sending {
+            runtime,
+            settled,
+            departure: Some(departure),
+        };
+        let Some(departure) = sending.departure.as_mut() else {
+            return;
+        };
+        let ended = send(runtime, departure);
+        if let Some(departure) = sending.departure.take() {
+            runtime.send.settle(settled, departure, ended);
+        }
     }));
+}
+
+/// One Journey on a send thread, settled however its send ends. Sent to
+/// its end, it is settled by what the send wrote. A send that panicked is
+/// settled on the way out: written Failed with why — kept in its queue for
+/// an operator — its claim ended, audited, and let go of, so it is never
+/// left owned with its claim renewed and passed over by every scan, as it
+/// was until 2026-10-05.
+struct Sending<'env> {
+    runtime: &'env Runtime<'env>,
+    settled: Settled<'env>,
+    departure: Option<Departure>,
+}
+
+impl Drop for Sending<'_> {
+    fn drop(&mut self) {
+        let Some(mut departure) = self.departure.take() else {
+            return;
+        };
+        let why = "its send thread panicked before its hand-on was written";
+        let ended = abandoned(self.runtime, &mut departure, why);
+        self.runtime.send.settle(self.settled, departure, ended);
+    }
 }
 
 /// `departure`, due again: its claim renewed and sent; let go of where the

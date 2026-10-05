@@ -13,11 +13,19 @@
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
-//! <node>/send/<Port>         Done with the reason once it stopped; a Send
-//!                            Port says what it sent, what failed — the last
-//!                            Journey that did, and why — and what waits
+//! <node>/send/<Location>     Done with the reason once it stopped
+//! <node>/send/<Port>         each Send Port this node sends, apart from its
+//!                            Send Locations: what it sent, what failed — the
+//!                            last Journey that did, and why — what waits,
+//!                            and how many failed wait in its queue
 //! <node>/process/<name>      each Subscription: Fine, or Paused by whom
 //! ```
+//!
+//! **The Journeys that failed** at each Send Port with any waiting in its
+//! queue are published beside the records (`observe::FailedJourneys`):
+//! how many, and the oldest hundred with why, so a surface offers Retry and
+//! Dismiss on each at the Port's scope; the rest are read from Xmip Storage
+//! a page at a time (`xmip_failed_journeys_v1`).
 //!
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
 //! that counts each kind (`observe::Counted::at`): Streams received at
@@ -38,13 +46,16 @@
 use node::{Capability, Stage};
 use observe::topology::{draw, party};
 use observe::{
-    Count, Counted, Health, HealthRecord, PauseState, Publication, Snapshot, Topology,
-    now_unix_nanos,
+    Count, Counted, FailedJourney, FailedJourneys, Health, HealthRecord, PauseState, Publication,
+    Snapshot, Topology, now_unix_nanos,
 };
+
+use std::collections::BTreeMap;
 
 use super::Running;
 use crate::capability_registry::Load;
 use crate::pickup::PUBLISHED;
+use crate::send_step::PortFigures;
 
 /// The Party a node draws on each side while its configuration can name
 /// none.
@@ -122,27 +133,9 @@ impl Running {
             );
         }
         let figures = self.send.figures();
-        for (stage, location) in &self.locations {
-            let scope = format!("{node}/{stage}/{}", location.name);
-            let sent = (*stage == Stage::Send.name())
-                .then(|| figures.get(&location.name))
-                .flatten();
-            match failures.iter().find(|(name, _)| name == &location.name) {
-                Some((_, why)) => record(scope, Health::Done, why.clone()),
-                None => record(
-                    scope,
-                    Health::Fine,
-                    match sent {
-                        Some(sent) => format!(
-                            "started; {} at {}; {}",
-                            location.transport,
-                            location.address,
-                            sent.evidence()
-                        ),
-                        None => format!("started; {} at {}", location.transport, location.address),
-                    },
-                ),
-            }
+        for (scope, health, evidence) in stage_records(&node, &self.locations, &failures, &figures)
+        {
+            record(scope, health, evidence);
         }
         let subscriptions = self.pickup.standing();
         for subscription in &subscriptions {
@@ -172,6 +165,9 @@ impl Running {
             for entry in dead {
                 snapshot.record_dead_message(entry);
             }
+        }
+        for failed in failed_journeys(&node, &figures) {
+            snapshot.record_failed_journeys(failed);
         }
         self.count(&mut snapshot, &node, now);
         snapshot
@@ -244,6 +240,76 @@ impl Running {
     }
 }
 
+/// The record of each Location the node started, at
+/// `<node>/<stage>/<Location>` — Fine while it serves, Done with why once
+/// it stopped, as `failures` says — and of each Send Port it sends, at
+/// `<node>/send/<Port>`, with what `figures` counted there. A Send Port is
+/// named apart from its Send Locations, so its figures are published at its
+/// own scope however many Locations it has; one that shares its name with
+/// a Send Location adds to that Location's record. Until 2026-10-05 the
+/// figures were looked up by each Send Location's name, so a Port of
+/// several Locations had none published.
+fn stage_records(
+    node: &str,
+    locations: &[(&'static str, configure::ConfiguredLocation)],
+    failures: &[(String, String)],
+    figures: &BTreeMap<String, PortFigures>,
+) -> Vec<(String, Health, String)> {
+    let mut records: Vec<(String, Health, String)> = locations
+        .iter()
+        .map(|(stage, location)| {
+            let scope = format!("{node}/{stage}/{}", location.name);
+            match failures.iter().find(|(name, _)| name == &location.name) {
+                Some((_, why)) => (scope, Health::Done, why.clone()),
+                None => (
+                    scope,
+                    Health::Fine,
+                    format!("started; {} at {}", location.transport, location.address),
+                ),
+            }
+        })
+        .collect();
+    for (port, sent) in figures {
+        let scope = format!("{node}/{}/{port}", Stage::Send.name());
+        match records.iter_mut().find(|(at, _, _)| *at == scope) {
+            Some((_, Health::Fine, evidence)) => {
+                evidence.push_str(&format!("; {}", sent.evidence()));
+            }
+            Some(_) => {}
+            None => records.push((
+                scope,
+                Health::Fine,
+                format!("Send Port; {}", sent.evidence()),
+            )),
+        }
+    }
+    records
+}
+
+/// The Journeys that failed at each Send Port of `figures` that has any
+/// waiting in its queue: how many, and the oldest with why — what a surface
+/// lists at `<node>/send/<Port>` with Retry and Dismiss on each.
+fn failed_journeys(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<FailedJourneys> {
+    figures
+        .iter()
+        .filter(|(_, figures)| figures.failing > 0)
+        .map(|(port, figures)| FailedJourneys {
+            node: node.to_string(),
+            send_port: port.clone(),
+            count: figures.failing,
+            journeys: figures
+                .oldest_failing
+                .iter()
+                .map(|failed| FailedJourney {
+                    journey: failed.journey.to_string(),
+                    sequence: failed.place,
+                    reason: failed.reason.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself,
 /// its stages and their endpoints, and [`ANY_PARTY`] on each side a stage
 /// faces.
@@ -314,6 +380,48 @@ mod tests {
             evidence: "said".to_string(),
             observed_unix_nanos: 1,
         }
+    }
+
+    #[test]
+    fn a_send_port_of_several_locations_publishes_its_figures_at_its_own_scope() {
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node_scope(0);
+        let location = |name: &str| configure::ConfiguredLocation {
+            name: name.to_string(),
+            start: true,
+            transport: "file".to_string(),
+            address: "out".to_string(),
+            credentials: None,
+            contract: None,
+            settings: configure::LocationSettings::default(),
+            contract_settings: configure::LocationSettings::default(),
+            accept: configure::Accept::default(),
+        };
+        let locations = [("send", location("Primary")), ("send", location("Backup"))];
+        let figures = BTreeMap::from([(
+            "Out".to_string(),
+            PortFigures {
+                failed: 2,
+                failing: 2,
+                last_failure: Some(("j-2".to_string(), "refused".to_string())),
+                ..PortFigures::default()
+            },
+        )]);
+
+        let records = stage_records(&node, &locations, &[], &figures);
+
+        let port = format!("{node}/send/Out");
+        let (_, health, evidence) = records
+            .iter()
+            .find(|(scope, _, _)| *scope == port)
+            .expect("the Port's own record");
+        assert_eq!(*health, Health::Fine);
+        assert!(evidence.contains("failed in its queue 2"), "{evidence}");
+        assert!(
+            evidence.contains("the Journey j-2 failed: refused"),
+            "{evidence}"
+        );
+        assert_eq!(records.len(), 3, "each Location, and the Port");
     }
 
     #[test]

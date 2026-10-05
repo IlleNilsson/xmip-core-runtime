@@ -3,20 +3,26 @@
 //! arrives there and carries it, on the Location's pool of threads, through
 //! the whole message path until the node stops.
 
+use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::Scope;
 
 use authenticate::{Acceptance, Authenticator};
 use configure::ConfiguredLocation;
 use receive::{IdentityPolicy, ReceivedStream};
 use transport::{Acknowledgement, Refusal, Transport, Verdict};
+use xaudit::program_audit::ProgramAudit;
 
 use crate::message_path::{Carried, ReceiveCycle, Runtime, carry};
+
+mod turn;
+
 use crate::outcome::{Arrived, Refused};
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
+use turn::{Ticket, Turn};
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
 /// the closed set of mechanisms it accepts (ADR-0019 clause 1) and what it
@@ -93,6 +99,9 @@ pub struct Receiving {
     /// Its pool's bounds, from the node's `[tuning]`
     /// (`crate::tuning::Tuning::receive`).
     pub limits: Limits,
+    /// Where it audits what its far end could not be told
+    /// ([`Receiving::serve`]).
+    pub audit: Option<ProgramAudit>,
 }
 
 impl Receiving {
@@ -124,6 +133,11 @@ impl Receiving {
     /// disk sync. What is still being carried when the node stops is
     /// carried to its end and told.
     ///
+    /// **A telling that failed in a way asking again may mend** — the far
+    /// end not told now, what it sent kept for it to send again — does not
+    /// stop the Location, and is audited, once for each reason, with the
+    /// Location and why, so it is never dropped unseen.
+    ///
     /// # Errors
     /// The transport failed in a way asking again will not mend — in a
     /// receive, or in telling the far end a verdict: the Location stops,
@@ -147,18 +161,22 @@ impl Receiving {
             limits.most.max(1) - 1
         };
         let (tell, told) = mpsc::channel();
-        let mut carrying = 0;
+        let mut carrying = Carrying {
+            node: runtime.send.node(),
+            count: 0,
+            heard: BTreeSet::new(),
+        };
         let mut ended = Ok(());
         while ended.is_ok() && !stopping.load(Ordering::Acquire) {
             // What is told already is settled now, so what became of an
             // arrival is counted as it ends, not once the pool is full.
-            while ended.is_ok() && carrying > 0 {
+            while ended.is_ok() && carrying.count > 0 {
                 match told.try_recv() {
                     Ok(one) => ended = self.settled(&mut each, one, &mut carrying),
                     Err(_) => break,
                 }
             }
-            while ended.is_ok() && carrying > room {
+            while ended.is_ok() && carrying.count > room {
                 ended = self.settle(&mut each, &told, &mut carrying);
             }
             if ended.is_err() {
@@ -166,14 +184,14 @@ impl Receiving {
             }
             match self.transport.receive() {
                 Ok(arrivals) => {
-                    carrying += arrivals.len();
+                    carrying.count += arrivals.len();
                     self.carry_all(&pool, runtime, pickup, arrivals, room == 0, &tell);
                 }
                 Err(failure) if failure.retryable => {}
                 Err(failure) => ended = Err(self.stopped(&failure.message)),
             }
         }
-        while carrying > 0 {
+        while carrying.count > 0 {
             let settled = self.settle(&mut each, &told, &mut carrying);
             if ended.is_ok() {
                 ended = settled;
@@ -190,10 +208,10 @@ impl Receiving {
         &self,
         each: &mut impl FnMut(&Carried),
         told: &mpsc::Receiver<(Carried, transport::Result<()>)>,
-        carrying: &mut usize,
+        carrying: &mut Carrying<'_>,
     ) -> Result<(), String> {
         let Ok(one) = told.recv() else {
-            *carrying = 0;
+            carrying.count = 0;
             return Err(self.stopped("a carrying thread ended without telling"));
         };
         self.settled(each, one, carrying)
@@ -205,13 +223,35 @@ impl Receiving {
         &self,
         each: &mut impl FnMut(&Carried),
         (carried, telling): (Carried, transport::Result<()>),
-        carrying: &mut usize,
+        carrying: &mut Carrying<'_>,
     ) -> Result<(), String> {
-        *carrying -= 1;
+        carrying.count -= 1;
         each(&carried);
         match telling {
             Err(failure) if !failure.retryable => Err(self.stopped(&failure.message)),
-            Ok(()) | Err(_) => Ok(()),
+            Err(failure) => {
+                self.not_told(carrying, &failure.message);
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
+    /// A telling that may mend, audited the first time its reason is heard
+    /// on this Location's serve.
+    fn not_told(&self, carrying: &mut Carrying<'_>, why: &str) {
+        if !carrying.heard.insert(why.to_string()) {
+            return;
+        }
+        if let Some(audit) = &self.audit {
+            let _ = audit.failed(
+                "receive",
+                &format!(
+                    "{}: the Receive Location '{}' could not tell its far end, which sends it \
+                     again: {why}",
+                    carrying.node, self.configured.name
+                ),
+            );
         }
     }
 
@@ -254,6 +294,15 @@ impl Receiving {
             self.configured.name
         )
     }
+}
+
+/// What a Location's serve has carrying: its node, how many arrivals are
+/// not yet told, and every reason a telling that may mend was heard for —
+/// each audited once.
+struct Carrying<'a> {
+    node: &'a str,
+    count: usize,
+    heard: BTreeSet<String>,
 }
 
 /// One arrival's far end and the Location's settling, told once however
@@ -332,66 +381,5 @@ const fn refusal(arrived: &Arrived) -> Refusal {
             reason: Refused::Authorization(_),
         } => Refusal::Forbidden,
         _ => Refusal::Unacceptable,
-    }
-}
-
-/// Whose turn it is to tell its far end: the place, among one receive's
-/// arrivals, of the next to be told.
-#[derive(Default)]
-struct Turn {
-    next: Mutex<usize>,
-    moved: Condvar,
-}
-
-/// One arrival's place in its receive's turn. Its turn passes when it has
-/// told its far end, or when it is dropped without — a carry that panicked
-/// — so the arrivals after it are never left waiting.
-struct Ticket {
-    turn: Arc<Turn>,
-    place: usize,
-    passed: bool,
-}
-
-impl Ticket {
-    /// `tell` once every arrival before this one has told, and then the
-    /// next one's turn.
-    fn in_turn<T>(mut self, tell: impl FnOnce() -> T) -> T {
-        self.wait();
-        let told = tell();
-        self.pass();
-        told
-    }
-
-    fn wait(&self) {
-        let next = self
-            .turn
-            .next
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        drop(
-            self.turn
-                .moved
-                .wait_while(next, |next| *next != self.place)
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-    }
-
-    fn pass(&mut self) {
-        self.passed = true;
-        *self
-            .turn
-            .next
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = self.place + 1;
-        self.turn.moved.notify_all();
-    }
-}
-
-impl Drop for Ticket {
-    fn drop(&mut self) {
-        if !self.passed {
-            self.wait();
-            self.pass();
-        }
     }
 }

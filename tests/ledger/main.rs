@@ -30,7 +30,11 @@
 //! send carries; `journey_act.rs` an operator's Retry and Dismiss of a
 //! Journey that failed; `send_killed.rs` the send step killed before it sent
 //! and mid-send, and what another node, or the node restarted, sends;
-//! `sending.rs` the test node that sends they run, and its far end.
+//! `send_raced.rs` another writer landing between a read and a claim;
+//! `send_bounded.rs` a panicking send, a scan bounded by the pool, renewal
+//! while a scan is held up, and failure evidence after a restart;
+//! `sending.rs` the test node that sends they run, and its far end;
+//! `untold.rs` a far end that could not be told, audited once per reason.
 
 mod bounded;
 mod dead_message_queue;
@@ -41,9 +45,12 @@ mod killed;
 mod panicked;
 mod receive_cycle;
 mod send;
+mod send_bounded;
 mod send_group;
 mod send_killed;
+mod send_raced;
 mod sending;
+mod untold;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

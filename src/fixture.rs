@@ -193,13 +193,21 @@ pub enum Operation {
     Replay,
 }
 
+/// What a [`Failing`] runs once, the next time an operation is asked,
+/// before it answers: another writer's step, landed between two of the
+/// caller's.
+pub type Interleaved = Box<dyn FnOnce() + Send>;
+
 /// Xmip Storage that fails on demand, as a Storage node that does not
 /// answer: each operation told to fail does so the number of times it was
 /// told, as `PersistError::Unreachable`, and every other call passes
-/// through to the Storage beneath.
+/// through to the Storage beneath. An operation can also be told to let
+/// another writer in first, once ([`Failing::before`]), so a race is a
+/// test's order rather than its luck.
 pub struct Failing {
     beneath: Arc<dyn XmipStorage>,
     failing: Mutex<BTreeMap<Operation, u32>>,
+    before: Mutex<BTreeMap<Operation, Interleaved>>,
 }
 
 impl Failing {
@@ -209,7 +217,17 @@ impl Failing {
         Arc::new(Self {
             beneath,
             failing: Mutex::new(BTreeMap::new()),
+            before: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Run `first` once, the next time `operation` is asked, before it is
+    /// answered.
+    pub fn before(&self, operation: Operation, first: Interleaved) {
+        self.before
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(operation, first);
     }
 
     /// Fail `operation` the next `times` it is asked; `u32::MAX` until
@@ -228,6 +246,14 @@ impl Failing {
     }
 
     fn asked(&self, operation: Operation) -> Result<(), PersistError> {
+        let first = self
+            .before
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&operation);
+        if let Some(first) = first {
+            first();
+        }
         let mut failing = self.lock();
         let Some(left) = failing.get_mut(&operation) else {
             return Ok(());

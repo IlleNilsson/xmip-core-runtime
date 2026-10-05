@@ -8,15 +8,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use configure::{DesignedSendPort, SendPortGroup};
-use journey::Journey;
+use journey::{Journey, JourneyEntry, JourneyState};
 use persist::fixture::Memory;
-use persist::storage::{Embedded, XmipStorage};
+use persist::storage::{Embedded, HandOn, JourneyRecord, XmipStorage};
 use receive::ReceivedStream;
 use route::Subscriber;
 use secret::{Held, KekName};
 use transport::TransportError;
-use xcore::JourneyId;
-use xmip_core_runtime::fixture::{Answer, FarEnd};
+use xcore::{ExecutionId, JourneyId, MessageId};
+use xmip_core_runtime::fixture::{Answer, Failing, FarEnd};
 use xmip_core_runtime::message_path::Runtime;
 use xmip_core_runtime::send_step::{Departure, Ended, dispatch};
 use xmip_core_runtime::sending::Sends;
@@ -32,6 +32,48 @@ pub fn memory() -> Arc<dyn XmipStorage> {
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");
     Arc::new(Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened"))
+}
+
+/// A test Storage node in memory, and Xmip Storage over it that fails, or
+/// lets another writer in, on demand.
+pub fn interleaving() -> (Arc<Failing>, Arc<dyn XmipStorage>) {
+    let failing = Failing::over(memory());
+    let storage: Arc<dyn XmipStorage> = failing.clone();
+    (failing, storage)
+}
+
+/// Another node's send of the Journey `id`, written to `storage` through
+/// its own claim: Completed, and out of `queue`.
+pub fn sent_elsewhere(storage: &dyn XmipStorage, queue: u128, id: JourneyId) {
+    let other = configure::fixture::test_cluster().node_scope(1);
+    let claim = storage
+        .claim(id, &other, id.value() ^ 0x5eed, PATIENCE)
+        .expect("asked")
+        .expect("free");
+    let sent = journey(storage, id).append(
+        JourneyEntry {
+            execution_id: ExecutionId::new(1),
+            message_id: MessageId::new(0),
+            action: "send".to_string(),
+            outcome: format!("sent by {other}"),
+            timestamp_unix_nanos: 1,
+        },
+        JourneyState::Completed,
+    );
+    let hand_on = HandOn {
+        claim,
+        result: JourneyRecord {
+            journey: id,
+            body: sent.record(),
+        },
+        messages: Vec::new(),
+        next: Vec::new(),
+        leaves: vec![queue],
+        queued: Vec::new(),
+        requeued: Vec::new(),
+        kept_for_nanos: None,
+    };
+    assert!(storage.hand_on(&hand_on).expect("asked"), "written");
 }
 
 /// The Stream `order <number>`.
@@ -142,20 +184,31 @@ pub fn until(holds: impl Fn() -> bool, what: &str) {
     }
 }
 
-/// The send step of `runtime` dispatching while `run` runs, closed after:
-/// what `run` returns, and how long the close took.
+/// The send step of `runtime` dispatching while `run` runs, closed after —
+/// also where `run` fails, so a failing test fails rather than waits: what
+/// `run` returns, and how long the close took.
 pub fn dispatching<T>(runtime: &Runtime<'_>, run: impl FnOnce(&Told) -> T) -> (T, Duration) {
     let told = Told::default();
     let tell = |departure: &Departure, ended: &Ended| told.tell(departure, ended);
     let tell = &tell;
     std::thread::scope(|scope| {
         let dispatched = scope.spawn(move || dispatch(scope, runtime, tell));
+        let closed = Closing(runtime);
         let returned = run(&told);
         let closing = Instant::now();
-        runtime.send.close();
+        drop(closed);
         dispatched.join().expect("dispatched");
         (returned, closing.elapsed())
     })
+}
+
+/// A send step closed when this is dropped, however the test got there.
+struct Closing<'a, 'r>(&'a Runtime<'r>);
+
+impl Drop for Closing<'_, '_> {
+    fn drop(&mut self) {
+        self.0.send.close();
+    }
 }
 
 /// The Journey `id` as the Ledger keeps it.

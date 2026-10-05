@@ -96,6 +96,7 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                     told: far_end,
                 }),
                 limits: xmip_core_runtime::tuning::Tuning::default().receive(),
+                audit: None,
             };
             let stopping = AtomicBool::new(false);
             let mut cycles = Vec::new();
