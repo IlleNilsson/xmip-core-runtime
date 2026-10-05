@@ -122,6 +122,7 @@ impl Pickup {
             next: Vec::new(),
             leaves: vec![released.held.hold.queue],
             queued: Vec::new(),
+            requeued: Vec::new(),
             kept_for_nanos: None,
         };
         match self.storage.hand_on(&let_go) {

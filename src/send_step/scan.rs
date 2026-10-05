@@ -1,6 +1,9 @@
 //! A scan of a queue the node sends: what waits in it that no live claim
 //! holds, claimed oldest first — on a Sequential Send Port only the oldest
-//! of each sequence nothing is in flight or blocked before.
+//! of each sequence nothing is in flight or blocked before. A Journey that
+//! failed stays in its queue for an operator, passed over at its place; a
+//! Retry moves it to a new one, or, where it blocks its sequence, makes it
+//! one to send where it is.
 
 use std::collections::HashSet;
 
@@ -46,9 +49,10 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
         for held in page.held {
             from = held.sequence + 1;
             let id = held.hold.journey;
+            let place = (id, held.sequence);
             let known = {
                 let state = step.lock();
-                state.owned.contains_key(&id) || state.passed.contains(&id)
+                state.owned.contains_key(&id) || state.passed.contains(&place)
             };
             if known {
                 continue;
@@ -57,15 +61,16 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
             let taken = match &ordered {
                 Some((key, on_failure)) => in_sequence(
                     runtime,
-                    (id, body),
+                    (place, body),
                     (key.as_deref(), *on_failure),
                     &mut busy,
                 ),
-                None => claimed_first(runtime, id, body),
+                None => claimed_first(runtime, place, body),
             };
             match taken {
                 Taken::One(one) => {
                     let (work, facts, claim, sequence) = *one;
+                    let progress = Progress::of(work.journey.attempts);
                     step.lock().owned.insert(
                         id,
                         Owned {
@@ -80,7 +85,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<D
                         to: to.clone(),
                         queue,
                         claim,
-                        progress: Progress::default(),
+                        progress,
                         sequence,
                     });
                 }
@@ -110,9 +115,11 @@ enum Taken {
     Unanswered,
 }
 
-/// An entry of a queue that is not ordered: claimed, then read.
-fn claimed_first(runtime: &Runtime<'_>, id: xcore::JourneyId, body: &[u8]) -> Taken {
+/// An entry of a queue that is not ordered, at its `place`: claimed, then
+/// read.
+fn claimed_first(runtime: &Runtime<'_>, place: (xcore::JourneyId, u64), body: &[u8]) -> Taken {
     let step = runtime.send;
+    let id = place.0;
     let token = runtime.ids.next_u128();
     let claim = match step.storage.claim(id, &step.node, token, step.lease) {
         Ok(Some(claim)) => claim,
@@ -126,12 +133,12 @@ fn claimed_first(runtime: &Runtime<'_>, id: xcore::JourneyId, body: &[u8]) -> Ta
         }
         Ok(Found::Failed(_) | Found::Finished) => {
             let _ = step.storage.release(&claim);
-            step.lock().passed.insert(id);
+            step.lock().passed.insert(place);
             Taken::Passed
         }
         Ok(Found::Unreadable(why)) => {
             let _ = step.storage.release(&claim);
-            step.lock().passed.insert(id);
+            step.lock().passed.insert(place);
             step.failed(&format!("the Journey {id} is not sent: {why}"));
             Taken::Passed
         }
@@ -147,25 +154,25 @@ fn claimed_first(runtime: &Runtime<'_>, id: xcore::JourneyId, body: &[u8]) -> Ta
 /// held by another, or failed and blocking (`busy`).
 fn in_sequence(
     runtime: &Runtime<'_>,
-    (id, body): (xcore::JourneyId, &[u8]),
+    (place, body): ((xcore::JourneyId, u64), &[u8]),
     (key, on_failure): (Option<&str>, OnFailure),
     busy: &mut HashSet<String>,
 ) -> Taken {
     let step = runtime.send;
+    let id = place.0;
     let (work, facts) = match read(runtime, id, body) {
         Ok(Found::Waiting(found)) => *found,
-        Ok(Found::Failed(work)) => {
-            if on_failure == OnFailure::Block {
-                busy.insert(sequence(&work.message, key));
-            }
+        // Blocking, it is read at every scan: a Retry keeps its place.
+        Ok(Found::Failed(work)) if on_failure == OnFailure::Block => {
+            busy.insert(sequence(&work.message, key));
             return Taken::Passed;
         }
-        Ok(Found::Finished) => {
-            step.lock().passed.insert(id);
+        Ok(Found::Failed(_) | Found::Finished) => {
+            step.lock().passed.insert(place);
             return Taken::Passed;
         }
         Ok(Found::Unreadable(why)) => {
-            step.lock().passed.insert(id);
+            step.lock().passed.insert(place);
             step.failed(&format!("the Journey {id} is not sent: {why}"));
             return Taken::Passed;
         }

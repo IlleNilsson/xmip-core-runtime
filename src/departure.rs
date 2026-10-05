@@ -7,7 +7,7 @@
 //! operator watching an estate is reading one board.
 //!
 //! ```text
-//! a Journey's destination   a Send Port, or every Port of a Group
+//! a Journey's destination   its Send Port: a Group's Journeys one per Port
 //!   -> resolve   its Send Locations on this node, in configured order
 //!   -> authorize may this identity still send, now
 //!   -> identity  whose identity Xmip presents, per ADR-0006
@@ -18,17 +18,18 @@
 //! Time has passed — a Process may have waited days for a human — and what was
 //! true then is never a licence to act now.
 //!
-//! **One pass, never a wait.** [`depart_to`] tries each Port once on its
+//! **One pass, never a wait.** [`depart_to`] tries the Port once on its
 //! active Send Location and fails over at once where the Port says so; a
 //! Location that may be tried again after its backoff is left waiting in
-//! the [`Progress`] the send step keeps, never slept on here
+//! the [`Progress`] the send step keeps — the Journey's `attempts` in the
+//! Ledger, so its count survives a restart — never slept on here
 //! (`runtime-model.md` section 10: *A retry waiting for its backoff holds no
-//! thread*).
-
-use std::collections::BTreeMap;
+//! thread*). The Journey's identifier goes with every send, the key an
+//! endpoint that deduplicates delivers it once by (section 15).
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
+use journey::Attempts;
 use route::Subscriber;
 use send::SendLevel;
 use xcore::Purpose;
@@ -82,9 +83,12 @@ impl Departed {
     }
 }
 
-/// Where one Port stands in a Journey's send, across passes.
+/// Where a Journey's send stands at its Send Port, across passes: what
+/// the send step keeps between them, so a retry tries again where the last
+/// pass left off. Its active Location and tries are the Journey's
+/// `attempts`, written with every hand-on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PortProgress {
+pub struct Progress {
     /// Sent: not tried again.
     pub sent: bool,
     /// The active Send Location, by its place in the Port's order.
@@ -95,7 +99,26 @@ pub struct PortProgress {
     pub given_up: Option<String>,
 }
 
-impl PortProgress {
+impl Progress {
+    /// Where a Journey's `attempts` in the Ledger left its send.
+    #[must_use]
+    pub fn of(attempts: Attempts) -> Self {
+        Self {
+            location: attempts.location as usize,
+            tries: attempts.tries,
+            ..Self::default()
+        }
+    }
+
+    /// The Journey's `attempts`, as this leaves them.
+    #[must_use]
+    pub fn attempts(&self) -> Attempts {
+        Attempts {
+            location: u32::try_from(self.location).unwrap_or(u32::MAX),
+            tries: self.tries,
+        }
+    }
+
     /// Still to be tried, after its backoff.
     #[must_use]
     pub const fn waiting(&self) -> bool {
@@ -103,48 +126,15 @@ impl PortProgress {
     }
 }
 
-/// Where a Journey's send stands, Port by Port: what the send step keeps
-/// between passes, so a retry tries again where the last pass left off.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Progress {
-    pub ports: BTreeMap<String, PortProgress>,
-}
-
-impl Progress {
-    /// Every Port sent.
-    #[must_use]
-    pub fn delivered(&self) -> bool {
-        !self.ports.is_empty() && self.ports.values().all(|port| port.sent)
-    }
-
-    /// Some Port still to be tried after its backoff.
-    #[must_use]
-    pub fn waiting(&self) -> bool {
-        self.ports.values().any(PortProgress::waiting)
-    }
-
-    /// Why the Ports that gave up did, in words.
-    #[must_use]
-    pub fn reasons(&self) -> String {
-        self.ports
-            .iter()
-            .filter_map(|(port, progress)| {
-                progress
-                    .given_up
-                    .as_ref()
-                    .map(|why| format!("{port}: {why}"))
-            })
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
-}
-
-/// One pass of a Message to `to`: every Port not yet sent, or given up,
-/// tried once on its active Send Location, failing over at once to the
-/// next where its policy says `failover = "next"`, `progress` keeping where
-/// each stands. The departures of this pass, one per Location tried. A
-/// Location that may be tried again is left waiting, its backoff the send
-/// step's to keep.
+/// One pass of a Message to `to`, its Send Port, unless it was sent or
+/// given up already: tried once on its active Send Location, failing over
+/// at once to the next where the Port's policy says `failover = "next"`,
+/// `progress` keeping where it stands. The departures of this pass, one per
+/// Location tried, each carrying the Journey's identifier as its
+/// deduplication key. A Location that may be tried again is left waiting,
+/// its backoff the send step's to keep. A Send Port Group is sent as one
+/// Journey per Port, opened at its Publication, so one that reaches here is
+/// declared by no Application of this node.
 pub fn depart_to(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
@@ -152,24 +142,21 @@ pub fn depart_to(
     to: &Subscriber,
     progress: &mut Progress,
 ) -> Vec<Departed> {
-    match runtime.sends.to(to) {
-        Destination::Ports(ports) => ports
-            .into_iter()
-            .flat_map(|port| {
-                let standing = progress.ports.entry(port.name.to_string()).or_default();
-                if standing.waiting() {
-                    depart_port(runtime, (work, facts), &port, standing)
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect(),
-        Destination::Process => vec![Departed::ProcessNotRun { to: to.clone() }],
-        Destination::Nowhere => {
-            let to = to.clone();
-            progress.ports.entry(to.to_string()).or_default().given_up =
-                Some(format!("no Send Port Group {} is declared", to.name()));
-            vec![Departed::NoSuchDestination { to }]
+    if !progress.waiting() {
+        return Vec::new();
+    }
+    match (to, runtime.sends.to(to)) {
+        (Subscriber::SendPort(_), Destination::Ports(ports)) => ports
+            .first()
+            .map(|port| depart_port(runtime, (work, facts), port, progress))
+            .unwrap_or_default(),
+        (_, Destination::Process) => vec![Departed::ProcessNotRun { to: to.clone() }],
+        _ => {
+            progress.given_up = Some(format!(
+                "no Send Port Group {} is declared on this node",
+                to.name()
+            ));
+            vec![Departed::NoSuchDestination { to: to.clone() }]
         }
     }
 }
@@ -180,7 +167,7 @@ fn depart_port(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
     port: &Port<'_>,
-    standing: &mut PortProgress,
+    standing: &mut Progress,
 ) -> Vec<Departed> {
     let to = Subscriber::SendPort(port.name.to_string());
     let mut departed = Vec::new();
@@ -268,7 +255,8 @@ fn depart_one(
         }
     };
 
-    match sending.transport.send(&location.address, bytes) {
+    let key = work.journey.journey_id().to_string();
+    match sending.transport.send_keyed(&location.address, bytes, &key) {
         Ok(()) => Departed::Sent {
             to,
             presented_from: resolved.map(|(_, level)| level),

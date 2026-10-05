@@ -1,6 +1,7 @@
-//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read and edited
-//! for the designer (ADR-0064, amendment 2026-10-03). The exports only — what each does is
-//! `crate::design`'s, and the rules are `xmip-core-configure`'s.
+//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read, edited and
+//! sliced (ADR-0064, amendment 2026-10-03; ADR-0031, amendment 2026-10-05).
+//! The exports only — what each does is `crate::design`'s, and the rules are
+//! `xmip-core-configure`'s.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): each reads the text a surface handed over
@@ -123,6 +124,22 @@ pub unsafe extern "C" fn xmip_cluster_edit_v1(
     unsafe { answer(input, argument, out, cap, out_len, design::edit) }
 }
 
+/// `xmip_cluster_slices_v1`: [`design::slices`].
+///
+/// # Safety
+/// As [`xmip_cluster_views_v1`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_cluster_slices_v1(
+    input: Str,
+    argument: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract, passed on whole.
+    unsafe { answer(input, argument, out, cap, out_len, design::slices) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +152,7 @@ mod tests {
         let _: abi::operate::design::DesignFn = xmip_filter_structure_v1;
         let _: abi::operate::design::DesignFn = xmip_filter_text_v1;
         let _: abi::operate::design::DesignFn = xmip_cluster_edit_v1;
+        let _: abi::operate::design::DesignFn = xmip_cluster_slices_v1;
     }
 
     fn text(value: &str) -> Str {

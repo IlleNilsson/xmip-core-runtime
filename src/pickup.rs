@@ -44,6 +44,7 @@ use std::time::Duration;
 
 use observe::{Act, Noun, Subscription as Published, now_unix_nanos};
 use persist::storage::{AdministrationKind, AdministrationRecord, XmipStorage, named};
+use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::{ExecutionPhase, Severity};
 
@@ -231,6 +232,23 @@ impl Pickup {
         Ok(said)
     }
 
+    /// Where the Journeys the Subscription `name` opens lead, one Journey
+    /// each: every Send Port it reaches, or, where it reaches none this
+    /// node knows — an Xmip Process, a Send Port Group no Application here
+    /// declares, a Subscription not configured — `destination` itself.
+    #[must_use]
+    pub fn reaches(&self, name: &str, destination: &Subscriber) -> Vec<Subscriber> {
+        let state = self.lock();
+        let ports = state
+            .index(name)
+            .map(|index| state.entries[index].configured.ports.clone())
+            .unwrap_or_default();
+        if ports.is_empty() {
+            return vec![destination.clone()];
+        }
+        ports.into_iter().map(Subscriber::SendPort).collect()
+    }
+
     /// Every Subscription as this node publishes it, in the order routing
     /// asks them.
     #[must_use]
@@ -267,11 +285,11 @@ impl Pickup {
 pub(crate) mod tests {
     use std::time::Duration;
 
-    use journey::{ChainCause, Journey, JourneyMessageRef};
+    use journey::{Journey, JourneyMessageRef};
     use path::expression::Expression;
     use persist::storage::{AuditEntry, JourneyRecord, MessageRecord, Publication};
     use route::{Promoted, Subscriber, publish};
-    use xcore::{AuditId, IdGenerator, JourneyId, MessageId, StreamId, UuidV7Generator};
+    use xcore::{AuditId, IdGenerator, MessageId, StreamId, UuidV7Generator};
 
     use super::*;
     use crate::fixture::{Failing, Operation};
@@ -311,22 +329,13 @@ pub(crate) mod tests {
         let ids = UuidV7Generator;
         let routing = publish(&Promoted::new(), subscriptions);
         let message = MessageId::new(ids.next_u128());
-        let journeys: Vec<Journey> = routing
-            .evaluations
-            .iter()
-            .filter(|evaluation| evaluation.matched())
-            .map(|evaluation| {
-                Journey::matched(
-                    JourneyId::new(ids.next_u128()),
-                    ChainCause::subscription(&evaluation.subscription_id),
-                )
-                .holding(JourneyMessageRef {
-                    message_id: message,
-                    stream_id: StreamId::new(ids.next_u128()),
-                })
-            })
-            .collect();
-        let holding = pickup.holding(&routing, &journeys, || body.as_bytes().to_vec());
+        let held = JourneyMessageRef {
+            message_id: message,
+            stream_id: StreamId::new(ids.next_u128()),
+        };
+        let opened = crate::ledger::opened(&routing, pickup, held, &ids);
+        let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
+        let holding = pickup.holding(&opened, || body.as_bytes().to_vec());
         let publication = Publication {
             message: MessageRecord {
                 message,

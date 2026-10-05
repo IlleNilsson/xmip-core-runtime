@@ -2,8 +2,9 @@
 //! section 10, *How a send runs*):
 //!
 //! - a send that fails is written Failed on its Journey with why, its
-//!   Message with it, and the sender of the receive was acknowledged all
-//!   the same: the receive cycle completed before anything was sent;
+//!   Message with it, kept in its queue for an operator, and the sender of
+//!   the receive was acknowledged all the same: the receive cycle completed
+//!   before anything was sent;
 //! - a send that succeeds is written Completed;
 //! - a retry waiting for its backoff holds no thread: its due time is the
 //!   claim kept in the Ledger, a stop does not wait it out and gives the
@@ -54,7 +55,7 @@ fn a_send_that_fails_is_written_failed_with_why_and_its_sender_was_acknowledged(
                     storage.read_message(message).expect("read").is_some(),
                     "kept"
                 );
-                assert!(waiting(runtime).is_empty(), "out of its queue, not lost");
+                assert_eq!(waiting(runtime), [id], "kept in its queue for an operator");
                 assert!(took(&taken).is_empty());
                 let figures = &runtime.send.figures()["Out"];
                 assert_eq!((figures.sent, figures.failed), (0, 1));
@@ -251,4 +252,67 @@ fn a_sequential_send_port_blocks_behind_a_failure_or_sets_it_aside_as_it_says() 
         skipped,
         ["order 1", "order 2", "order 4", "order 5", "order 6"]
     );
+}
+
+/// `Out` tried as often as `attempts` says again after a first try, its
+/// backoff `backoff`.
+fn retried(attempts: u32, backoff: &str) -> configure::DesignedSendPort {
+    out(|port| {
+        port.retry = Some(Retry {
+            attempts,
+            backoff: backoff.to_string(),
+        });
+    })
+}
+
+#[test]
+fn a_retry_count_is_kept_in_the_ledger_and_survives_a_restart() {
+    let storage = memory();
+    let (far, _) = FarEnd::answering(refusing("the far end is down", true));
+    let mut id = None;
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, retried(2, "1h")),
+        |runtime, pickup, gate| {
+            dispatching(runtime, |told| {
+                let waits = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+                told.wait_for(waits, "waiting");
+                id = Some(waits);
+            });
+        },
+    );
+    let id = id.expect("tried once");
+    assert_eq!(
+        journey(storage.as_ref(), id).attempts.tries,
+        1,
+        "in the Ledger"
+    );
+
+    // The node restarted: two tries of three are left, not three again.
+    let tries = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&tries);
+    let (far, _) = FarEnd::answering(Box::new(move |_| {
+        counted.fetch_add(1, Ordering::Relaxed);
+        Err(TransportError {
+            message: "still down".to_string(),
+            retryable: true,
+        })
+    }));
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, retried(2, "10ms")),
+        |runtime, _, _| {
+            dispatching(runtime, |told| told.wait_for(id, "failed"));
+        },
+    );
+    assert_eq!(
+        tries.load(Ordering::Relaxed),
+        2,
+        "counted on from the Ledger"
+    );
+    let failed = journey(storage.as_ref(), id);
+    assert_eq!(failed.state, JourneyState::Failed);
+    assert_eq!(failed.attempts.tries, 3);
 }

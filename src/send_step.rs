@@ -7,10 +7,16 @@
 //!                 Ledger; one this node sends is claimed in the same write
 //! -> claim        through Xmip Storage: the Publication's, or a scan's
 //! -> send         the Port's Send Locations in order, retry and failover
-//! -> hand on      one write: the outcome on the Journey — Completed, or
-//!                 Failed with its reason — its place let go of, the claim
-//!                 released; or Recovering, the claim kept to its due time
+//! -> hand on      one write: the outcome on the Journey — Completed and
+//!                 out of its queue, or Failed with its reason and kept
+//!                 there — its tries, the claim released; or Recovering,
+//!                 its tries and the claim kept to its due time
 //! ```
+//!
+//! **One Journey per Send Port.** A Send Port Group's Journeys are opened
+//! one per Port at the Publication, each in its own Port's queue
+//! (`runtime-model.md` section 10), so each Port of a Group is sent, retried,
+//! failed and acted on alone.
 //!
 //! **The receive cycle sends nothing.** It ends at the Publication's durable
 //! write and the acknowledgement; departure is this step's. A Journey whose
@@ -32,12 +38,17 @@
 //!
 //! **A Sequential Send Port keeps its order** by its order key: a sequence
 //! has one Journey in flight at a time, the oldest in its queue first, and
-//! one that failed blocks it, kept in the queue, or is set aside, as its
-//! `on_failure` says (`runtime-model.md` section 3, *A claim is not
-//! ordering*).
+//! one that failed blocks it, or is set aside, as its `on_failure` says
+//! (`runtime-model.md` section 3, *A claim is not ordering*).
+//!
+//! **A Journey that failed waits for an operator** in its queue: Retry
+//! sends it again, Dismiss ends it Dismissed, each an act through the
+//! node's orders, audited ([`SendStep::act`], `runtime-model.md` section
+//! 13). A retry's count is the Journey's `attempts`, kept with its every
+//! hand-on, so it survives a restart and another node taking it up.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use context::IdentityFacts;
@@ -55,6 +66,7 @@ use crate::tuning::Tuning;
 
 mod dispatch;
 mod figures;
+mod journey_act;
 mod pass;
 mod scan;
 
@@ -141,9 +153,15 @@ struct State {
     /// Waiting for their due time, retries.
     due: Vec<(Instant, Departure)>,
     owned: HashMap<JourneyId, Owned>,
-    /// Read and found not to be sent — unreadable, or finished though still
-    /// in a queue — audited once and passed over by every scan after.
-    passed: HashSet<JourneyId>,
+    /// Read at their place in a queue and found not to be sent —
+    /// unreadable, failed and set aside, or finished though still in a
+    /// queue — passed over by every scan after. A Retry moves a Journey to
+    /// a new place, where it is read again.
+    passed: HashSet<(JourneyId, u64)>,
+    /// The Send Ports this node sends, each with whether a Journey of it
+    /// that failed blocks its sequence: what an operator's act on one of
+    /// its Journeys is decided by.
+    ports: BTreeMap<String, bool>,
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
     figures: BTreeMap<String, PortFigures>,
@@ -255,7 +273,7 @@ impl SendStep {
                 to,
                 queue,
                 claim,
-                progress: Progress::default(),
+                progress: Progress::of(journey.attempts),
                 sequence: None,
             });
         }
@@ -309,9 +327,8 @@ impl SendStep {
         let state = self.lock();
         let mut figures = state.figures.clone();
         for (_, waiting) in &state.due {
-            for port in waiting.progress.ports.keys() {
-                figures.entry(port.clone()).or_default().waiting += 1;
-            }
+            let port = waiting.to.name().to_string();
+            figures.entry(port).or_default().waiting += 1;
         }
         figures
     }
@@ -319,7 +336,35 @@ impl SendStep {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// `step` registered, so the runtime's library finds it by its node
+    /// and acts on its Journeys (`xmip_operate.h` section 16).
+    pub fn register(step: &Arc<Self>) {
+        let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
+        registered.retain(|held| held.strong_count() > 0);
+        registered.push(Arc::downgrade(step));
+    }
+
+    /// Every node's send step this process holds.
+    #[must_use]
+    pub fn registered() -> Vec<Arc<Self>> {
+        REGISTERED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// The node it sends for: `xmip:///<cluster>/node/<name>`.
+    #[must_use]
+    pub fn node(&self) -> &str {
+        &self.node
+    }
 }
+
+/// Every node's send step in this process, registered.
+static REGISTERED: Mutex<Vec<Weak<SendStep>>> = Mutex::new(Vec::new());
 
 /// Whether what is bound for `to` is sent in sequence: a Sequential Send
 /// Port, or a Group with one among its Ports.

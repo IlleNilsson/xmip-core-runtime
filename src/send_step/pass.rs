@@ -33,8 +33,9 @@ pub enum Ended {
         departed: Vec<Departed>,
     },
     /// Every Location failed its tries: written Failed with `reason`, its
-    /// Message with it; out of its queue, or kept there where a Sequential
-    /// Send Port blocks behind it.
+    /// Message with it, kept in its queue for an operator's Retry or
+    /// Dismiss; a Sequential Send Port whose `on_failure` is `block` holds
+    /// its sequence behind it.
     Failed {
         reason: String,
         departed: Vec<Departed>,
@@ -47,11 +48,11 @@ pub enum Ended {
     Unwritten(String),
 }
 
-/// One pass of `departure`'s send — every Port not yet sent tried once on
-/// its active Send Location, failing over as its policy says — and its
-/// hand-on, one write: the outcome on the Journey, with what was tried in
-/// words, its place let go of or kept, and the claim released or kept to
-/// its due time.
+/// One pass of `departure`'s send — its Send Port, unless sent already,
+/// tried once on its active Send Location, failing over as its policy says
+/// — and its hand-on, one write: the outcome on the Journey, with what was
+/// tried in words and its tries, its place let go of where it was sent,
+/// and the claim released or kept to its due time.
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let Departure {
         work,
@@ -61,19 +62,19 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         ..
     } = departure;
     let departed = depart_to(runtime, work, facts, to, progress);
-    let (state, kept, leaves) = if progress.delivered() {
-        (JourneyState::Completed, None, true)
+    let (state, kept) = if progress.sent {
+        (JourneyState::Completed, None)
     } else if progress.waiting() {
-        let after = backoff(runtime, departure);
-        (JourneyState::Recovering, Some(after), false)
+        let after = backoff(runtime, &departure.to);
+        (JourneyState::Recovering, Some(after))
     } else {
-        (JourneyState::Failed, None, !blocks(runtime, &departure.to))
+        (JourneyState::Failed, None)
     };
     let mut outcome = said(&departed);
     if let Some(after) = kept {
         outcome = format!("{outcome}; tried again in {after:?}");
     }
-    let journey = departure.work.journey.clone().append(
+    let mut journey = departure.work.journey.clone().append(
         JourneyEntry {
             execution_id: ExecutionId::new(runtime.ids.next_u128()),
             message_id: departure.work.message.message_id(),
@@ -83,18 +84,20 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         },
         state,
     );
+    journey.attempts = departure.progress.attempts();
     let lease = runtime.send.lease();
     let hand_on = HandOn {
         claim: departure.claim.clone(),
         result: record(&journey),
         messages: Vec::new(),
         next: Vec::new(),
-        leaves: if leaves {
+        leaves: if state == JourneyState::Completed {
             vec![departure.queue]
         } else {
             Vec::new()
         },
         queued: Vec::new(),
+        requeued: Vec::new(),
         kept_for_nanos: kept.map(|after| nanos(after + lease)),
     };
     match runtime.storage.hand_on(&hand_on) {
@@ -112,28 +115,22 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         (JourneyState::Completed, _) => Ended::Completed(departed),
         (_, Some(after)) => Ended::Waiting { after, departed },
         _ => Ended::Failed {
-            reason: departure.progress.reasons(),
+            reason: format!(
+                "{}: {}",
+                departure.to.name(),
+                departure.progress.given_up.as_deref().unwrap_or_default()
+            ),
             departed,
         },
     }
 }
 
-/// The longest backoff among the Ports `departure` still waits on.
-fn backoff(runtime: &Runtime<'_>, departure: &Departure) -> Duration {
-    match runtime.sends.to(&departure.to) {
-        Destination::Ports(ports) => ports
-            .iter()
-            .filter(|port| {
-                departure
-                    .progress
-                    .ports
-                    .get(port.name)
-                    .is_some_and(crate::departure::PortProgress::waiting)
-            })
-            .map(crate::sending::Port::backoff)
-            .max()
-            .unwrap_or_default(),
-        Destination::Process | Destination::Nowhere => Duration::ZERO,
+/// How long the Send Port `to` waits before its active Location is tried
+/// again.
+fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
+    match to {
+        Subscriber::SendPort(port) => runtime.sends.port(port).backoff(),
+        Subscriber::SendGroup(_) | Subscriber::Process(_) => Duration::ZERO,
     }
 }
 

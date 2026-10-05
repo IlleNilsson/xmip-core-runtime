@@ -93,7 +93,13 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             return Err(why);
         }
     };
-    let to = released.destination.clone();
+    // Its Send Port, where it leads to one — a Send Port Group's Journey
+    // to its own Port — or where its Subscription leads.
+    let to = work
+        .journey
+        .send_port
+        .clone()
+        .map_or_else(|| released.destination.clone(), route::Subscriber::SendPort);
     let queue = step.queue(&to);
     let sent_here = runtime.sends.serves(&to) && !send_step::sequential(runtime.sends, &to);
     let moved = HandOn {
@@ -107,6 +113,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             journey: id,
             body: body.clone(),
         }],
+        requeued: Vec::new(),
         kept_for_nanos: sent_here
             .then(|| u64::try_from(step.lease().as_nanos()).unwrap_or(u64::MAX)),
     };
@@ -122,12 +129,12 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
     pickup.moved(released);
     if sent_here {
         step.hand(Departure {
+            progress: Progress::of(work.journey.attempts),
             work,
             facts,
             to,
             queue,
             claim,
-            progress: Progress::default(),
             sequence: None,
         });
     } else {

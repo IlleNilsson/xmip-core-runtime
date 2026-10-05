@@ -1,6 +1,7 @@
 //! Publication's one write into the Ledger (`runtime-model.md` sections 5
 //! and 9): the Message record, a Journey for every Subscription routing
-//! matched, what a paused Subscription holds, the rest in the queue of where
+//! matched — one for each Send Port of a Send Port Group (section 10) —
+//! what a paused Subscription holds, the rest in the queue of where
 //! each leads with this node's claims, or — where nothing matched — the
 //! Dead Message Queue entry, and the audit record, all or nothing.
 
@@ -20,9 +21,9 @@ use crate::send_step::{LinedUp, SendStep};
 use crate::sending::Sends;
 
 /// What a Publication wrote: a Journey for every Subscription routing
-/// matched, in the order they were asked, which of them a paused
-/// Subscription holds, and where the rest wait to be sent — those this
-/// node claimed among them.
+/// matched and every Send Port it reaches, in the order they were asked,
+/// which of them a paused Subscription holds, and where the rest wait to be
+/// sent — those this node claimed among them.
 pub struct Published {
     pub journeys: Vec<Journey>,
     pub holding: Holding,
@@ -41,35 +42,62 @@ pub struct Publisher<'a> {
     pub sends: &'a Sends,
 }
 
-/// A Journey for every Subscription `routing` matched, in the order they
-/// were asked — holding `held`, caused by that Subscription, at depth zero,
-/// its identifier minted by `ids`: what a Publication opens, and a Replay
-/// from the Dead Message Queue.
+/// A Journey a Publication opens: the Subscription that matched and where
+/// the Journey leads — a Send Port, an Xmip Process, or a Send Port Group
+/// no Application of this node declares.
+#[derive(Clone, Debug)]
+pub struct Opened {
+    pub journey: Journey,
+    pub subscription: String,
+    pub to: Subscriber,
+}
+
+/// A Journey for every Subscription `routing` matched and every Send Port
+/// `pickup` says it reaches — one per Port of a Send Port Group, each led
+/// to its Port (`runtime-model.md` section 10: *A Send Port Group is only a
+/// named set: routing already made one Journey per Send Port in it*) — in
+/// the order they were asked, holding `held`, caused by that Subscription,
+/// at depth zero, its identifier minted by `ids`: what a Publication opens,
+/// and a Replay from the Dead Message Queue.
 pub(crate) fn opened(
     routing: &Routing,
+    pickup: &Pickup,
     held: JourneyMessageRef,
     ids: &dyn IdGenerator,
-) -> Vec<Journey> {
-    routing
-        .evaluations
-        .iter()
-        .filter(|evaluation| evaluation.matched())
-        .map(|evaluation| {
+) -> Vec<Opened> {
+    let matched = routing.evaluations.iter().filter(|e| e.matched());
+    matched
+        .flat_map(|evaluation| {
+            let name = &evaluation.subscription_id;
             let cause = match &evaluation.destination {
-                Subscriber::Process(process) => {
-                    ChainCause::process(&evaluation.subscription_id, process)
-                }
+                Subscriber::Process(process) => ChainCause::process(name, process),
                 Subscriber::SendPort(_) | Subscriber::SendGroup(_) => {
-                    ChainCause::subscription(&evaluation.subscription_id)
+                    ChainCause::subscription(name)
                 }
             };
-            Journey::matched(JourneyId::new(ids.next_u128()), cause).holding(held)
+            pickup
+                .reaches(name, &evaluation.destination)
+                .into_iter()
+                .map(move |to| {
+                    let mut journey =
+                        Journey::matched(JourneyId::new(ids.next_u128()), cause.clone())
+                            .holding(held);
+                    if let Subscriber::SendPort(port) = &to {
+                        journey.send_port = Some(port.clone());
+                    }
+                    Opened {
+                        journey,
+                        subscription: name.clone(),
+                        to,
+                    }
+                })
         })
         .collect()
 }
 
 /// Publication's write, through `publisher`: `message`'s record, a Journey
-/// for every Subscription `routing` matched ([`opened`]), those of them
+/// for every Subscription `routing` matched and every Send Port it reaches
+/// ([`opened`]), those of them
 /// `pickup` says a Subscription holds, the rest each in the queue of where
 /// it leads, to be sent — claimed by this node where it sends it
 /// ([`SendStep::line_up`]) — each with what `body` says is kept beside it,
@@ -98,7 +126,8 @@ pub fn publish(
         message_id: message.message_id(),
         stream_id: message.sections()[0].stream.id(),
     };
-    let journeys = opened(routing, held, publisher.ids);
+    let opened = opened(routing, pickup, held, publisher.ids);
+    let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
     let (holding, lined, dead) = if journeys.is_empty() {
         let now = publisher.clock.unix_timestamp_nanos();
         let at = (pickup.node(), location, now);
@@ -106,8 +135,8 @@ pub fn publish(
         (Holding::default(), LinedUp::default(), Some(entry))
     } else {
         let kept = body();
-        let holding = pickup.holding(routing, &journeys, || kept.clone());
-        let departing = holding.departing(routing, &journeys);
+        let holding = pickup.holding(&opened, || kept.clone());
+        let departing = holding.departing(&opened);
         let lined = (publisher.send).line_up(publisher.sends, &departing, &kept, publisher.ids);
         (holding, lined, None)
     };

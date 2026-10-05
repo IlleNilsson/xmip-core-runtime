@@ -7,7 +7,8 @@
 //! keeps the two apart: routing never decides *how* something gets somewhere.
 //! A bound Send Port is the Send Location its binding gives it, named as the
 //! Port (ADR-0064), or the Send Locations its `send_locations` names, in
-//! that order; a Send Port Group reaches its Ports together. Each Port's
+//! that order; a Send Port Group reaches each of its Ports by a Journey of
+//! its own, opened at its Publication. Each Port's
 //! policy — `retry`, `failover`, `execution_style`, `order_key`,
 //! `on_failure` (ADR-0031, amendment 2026-10-01) — is its design's.
 
@@ -133,8 +134,9 @@ impl Sends {
         }
     }
 
-    /// Every destination this node sends, by the Ports and Groups its
-    /// Applications declare and its Locations serve.
+    /// Every Send Port this node sends, by the Ports its Applications
+    /// declare and its Locations serve. A Send Port Group is not among
+    /// them: its Journeys are one per Port, each in its Port's queue.
     #[must_use]
     pub fn served(&self) -> Vec<Subscriber> {
         // A Send Port by its design, or a bound one by the Location named as
@@ -154,16 +156,13 @@ impl Sends {
         names
             .into_iter()
             .map(|name| Subscriber::SendPort(name.to_string()))
-            .chain(
-                self.groups
-                    .iter()
-                    .map(|group| Subscriber::SendGroup(group.name.clone())),
-            )
             .filter(|to| self.serves(to))
             .collect()
     }
 
-    fn port<'a>(&'a self, name: &'a str) -> Port<'a> {
+    /// The Send Port `name` as this node sends through it.
+    #[must_use]
+    pub fn port<'a>(&'a self, name: &'a str) -> Port<'a> {
         let policy = self.ports.iter().find(|port| port.name == name);
         let named: Vec<&str> = match policy {
             Some(policy) if !policy.send_locations.is_empty() => {
