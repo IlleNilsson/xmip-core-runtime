@@ -9,7 +9,7 @@
 
 use configure::XmipApplication;
 use configure::application::destination_words;
-use route::Subscription;
+use route::{Subscriber, Subscription};
 
 use crate::start::ApplicationFile;
 
@@ -23,6 +23,13 @@ pub struct ConfiguredSubscription {
     pub file: String,
     /// Its `[[subscriptions]]` entry, as the file says it.
     pub entry: String,
+    /// The Send Ports it reaches, each its own Journey: its Send Port, or
+    /// every Port of its Send Port Group in the Group's order
+    /// (`runtime-model.md` section 10: *A Send Port Group is only a named
+    /// set: routing already made one Journey per Send Port in it*). None
+    /// for an Xmip Process, or a Group no Application it is drawn in
+    /// declares.
+    pub ports: Vec<String>,
 }
 
 impl ConfiguredSubscription {
@@ -40,6 +47,7 @@ impl ConfiguredSubscription {
                     .subscriptions
                     .iter()
                     .map(move |subscription| Self {
+                        ports: reached(&subscription.destination, application),
                         subscription: subscription.clone(),
                         application: file.name.clone(),
                         file: file.file.clone(),
@@ -59,6 +67,10 @@ impl ConfiguredSubscription {
     #[must_use]
     pub fn unfiled(subscription: Subscription) -> Self {
         Self {
+            ports: match &subscription.destination {
+                Subscriber::SendPort(port) => vec![port.clone()],
+                Subscriber::SendGroup(_) | Subscriber::Process(_) => Vec::new(),
+            },
             subscription,
             application: String::new(),
             file: String::new(),
@@ -76,5 +88,20 @@ impl ConfiguredSubscription {
     #[must_use]
     pub fn destination(&self) -> String {
         destination_words(&self.subscription.destination)
+    }
+}
+
+/// The Send Ports `destination` reaches in `application`: its Send Port, or
+/// every Port of the Send Port Group it names there.
+fn reached(destination: &Subscriber, application: &XmipApplication) -> Vec<String> {
+    match destination {
+        Subscriber::SendPort(port) => vec![port.clone()],
+        Subscriber::SendGroup(group) => application
+            .send_port_groups
+            .iter()
+            .find(|declared| &declared.name == group)
+            .map(|declared| declared.send_ports.clone())
+            .unwrap_or_default(),
+        Subscriber::Process(_) => Vec::new(),
     }
 }

@@ -24,8 +24,11 @@
 //! `dead_message_queue.rs` a Message nothing matched, kept with why and
 //! replayed; `panicked.rs` a carrying thread that panics, settled as failed;
 //! `send.rs` the send step reading its Journeys from the Ledger — Failed
-//! and Completed written, a retry's backoff holding no thread, a Sequential
-//! Send Port's order; `send_killed.rs` the send step killed before it sent
+//! and Completed written, a retry's backoff holding no thread and its count
+//! surviving a restart, a Sequential Send Port's order; `send_group.rs` a
+//! Send Port Group's one Journey per Port, and the deduplication key every
+//! send carries; `journey_act.rs` an operator's Retry and Dismiss of a
+//! Journey that failed; `send_killed.rs` the send step killed before it sent
 //! and mid-send, and what another node, or the node restarted, sends;
 //! `sending.rs` the test node that sends they run, and its far end.
 
@@ -33,10 +36,12 @@ mod bounded;
 mod dead_message_queue;
 mod halts_at_publication;
 mod held;
+mod journey_act;
 mod killed;
 mod panicked;
 mod receive_cycle;
 mod send;
+mod send_group;
 mod send_killed;
 mod sending;
 

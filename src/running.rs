@@ -185,6 +185,7 @@ impl Running {
             &tree.tuning,
             linked.audit.clone(),
         ));
+        SendStep::register(&send);
         let stopping = Arc::new(AtomicBool::new(false));
         let tally = Arc::new(Tally::default());
         let origin = origin(linked.audit.as_ref(), &scope);

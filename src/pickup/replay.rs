@@ -93,7 +93,8 @@ impl Pickup {
             message_id: id,
             stream_id: entry.stream,
         };
-        let journeys = crate::ledger::opened(&routing, held, &ids);
+        let opened = crate::ledger::opened(&routing, self, held, &ids);
+        let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
         if journeys.is_empty() {
             let why: Vec<String> = routing
                 .declines()
@@ -110,7 +111,7 @@ impl Pickup {
                 }
             ));
         }
-        let holding = self.held(&routing, &journeys, || entry.body.clone(), true);
+        let holding = self.held(&opened, || entry.body.clone(), true);
         let replay = Replay {
             queue,
             message: id,

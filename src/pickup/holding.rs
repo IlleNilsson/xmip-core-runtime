@@ -5,9 +5,10 @@
 
 use journey::Journey;
 use persist::storage::Hold;
-use route::{Routing, Subscriber};
+use route::Subscriber;
 
 use super::Pickup;
+use crate::ledger::Opened;
 
 /// Which of a Publication's Journeys a Subscription holds: what the
 /// Publication's write keeps, and what the node counts once it is durable.
@@ -25,49 +26,36 @@ impl Holding {
         &self.holds
     }
 
-    /// Of `journeys`, opened one for each Subscription `routing` matched in
-    /// its order, the ones no Subscription holds, each with where it leads:
-    /// what goes on to be sent now.
+    /// Of the Journeys a Publication `opened`, the ones no Subscription
+    /// holds, each with where it leads: what goes on to be sent now.
     #[must_use]
-    pub fn departing<'a>(
-        &self,
-        routing: &'a Routing,
-        journeys: &'a [Journey],
-    ) -> Vec<(&'a Journey, &'a Subscriber)> {
+    pub fn departing<'a>(&self, opened: &'a [Opened]) -> Vec<(&'a Journey, &'a Subscriber)> {
         let held = |name: &str| self.held.iter().any(|(_, held)| held == name);
-        routing
-            .evaluations
+        opened
             .iter()
-            .filter(|evaluation| evaluation.matched())
-            .zip(journeys)
-            .filter(|(evaluation, _)| !held(&evaluation.subscription_id))
-            .map(|(evaluation, journey)| (journey, &evaluation.destination))
+            .filter(|one| !held(&one.subscription))
+            .map(|one| (&one.journey, &one.to))
             .collect()
     }
 }
 
 impl Pickup {
-    /// Which of `journeys`, the Journeys a Publication opens — one for each
-    /// Subscription `routing` matched, in its order — a Subscription holds:
-    /// one that is paused, or whose queue holds anything still. What the
-    /// holder keeps beside each is `body`'s, asked once, where one is held.
-    pub fn holding(
-        &self,
-        routing: &Routing,
-        journeys: &[Journey],
-        body: impl FnOnce() -> Vec<u8>,
-    ) -> Holding {
-        self.held(routing, journeys, body, false)
+    /// Which of the Journeys a Publication `opened` — one for each
+    /// Subscription routing matched and each Send Port it reaches, in
+    /// routing's order — a Subscription holds: one that is paused, or whose
+    /// queue holds anything still. What the holder keeps beside each is
+    /// `body`'s, asked once, where one is held.
+    pub fn holding(&self, opened: &[Opened], body: impl FnOnce() -> Vec<u8>) -> Holding {
+        self.held(opened, body, false)
     }
 
-    /// Which of `journeys` its Subscription holds — as [`Pickup::holding`]
+    /// Which of the Journeys `opened` its Subscription holds — as [`Pickup::holding`]
     /// decides, or, where `every` says, all of them: what a Replay from the
     /// Dead Message Queue opens has no receive cycle to depart from, so each
     /// is held and picked up from its queue as a resume picks up.
     pub(super) fn held(
         &self,
-        routing: &Routing,
-        journeys: &[Journey],
+        opened: &[Opened],
         body: impl FnOnce() -> Vec<u8>,
         every: bool,
     ) -> Holding {
@@ -75,9 +63,13 @@ impl Pickup {
         let mut holding = Holding::default();
         let mut body = Some(body);
         let mut kept = Vec::new();
-        let matched = routing.evaluations.iter().filter(|e| e.matched());
-        for (evaluation, journey) in matched.zip(journeys) {
-            let name = evaluation.subscription_id.as_str();
+        for Opened {
+            journey,
+            subscription,
+            ..
+        } in opened
+        {
+            let name = subscription.as_str();
             let Some(index) = state.index(name) else {
                 continue;
             };

@@ -13,14 +13,16 @@ use path::expression::Expression;
 use persist::storage::XmipStorage;
 use receive::ReceivedStream;
 use route::{Gathering, Subscriber, Subscription};
+use xaudit::program_audit::ProgramAudit;
 use xcore::{SystemClock, UuidV7Generator, mechanism};
 use xmip_core_runtime::configured_subscription::ConfiguredSubscription;
-use xmip_core_runtime::fixture::{Always, Open, send_step_of};
+use xmip_core_runtime::fixture::{Always, Open};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{Carried, Parties, ReceiveCycle, Runtime, carry};
 use xmip_core_runtime::outcome::Arrived;
 use xmip_core_runtime::pickup::Pickup;
 use xmip_core_runtime::receiving::ReceiveGate;
+use xmip_core_runtime::send_step::SendStep;
 use xmip_core_runtime::sending::Sends;
 use xmip_core_runtime::tuning::Tuning;
 
@@ -74,16 +76,19 @@ pub fn on_runtime_with<T>(
         sends: Sends::default(),
         tuning: Tuning::default(),
         node: node(),
+        audit: None,
     };
     on_node(storage, (chunk, subscriptions), sender, run)
 }
 
-/// What a test node sends with: its Send Locations and Send Ports, its
-/// `[tuning]`, and the node it is.
+/// What a test node sends with: its Send Locations, Send Ports and Send
+/// Port Groups, its `[tuning]`, the node it is, and where its send step
+/// audits.
 pub struct Sender {
     pub sends: Sends,
     pub tuning: Tuning,
     pub node: String,
+    pub audit: Option<ProgramAudit>,
 }
 
 /// [`on_runtime_with`]'s receive path, on a node sending as `sender`
@@ -104,7 +109,14 @@ pub fn on_node<T>(
         sends,
         tuning,
         node,
+        audit,
     } = sender;
+    let step = SendStep::new(
+        (&configure::fixture::test_cluster().scope(), &node),
+        Arc::clone(storage),
+        &tuning,
+        audit,
+    );
     let origin = xaudit::origin::Origin::here("ledger-test");
     let runtime = Runtime {
         ids: &UuidV7Generator,
@@ -115,7 +127,7 @@ pub fn on_node<T>(
         gathering: &gathering,
         treatment: MessageTreatment::default(),
         sends: &sends,
-        send: send_step_of(storage, &node, &tuning),
+        send: &step,
         transport_identifiers: &[],
         message_identifiers: &[],
         policies: &policies,
@@ -124,10 +136,23 @@ pub fn on_node<T>(
         chunk,
         origin: &origin,
     };
+    // A Subscription to a Send Port Group reaches the Ports the node's
+    // Group declares, as one drawn in an Application does.
     let configured = subscriptions
         .iter()
         .cloned()
-        .map(ConfiguredSubscription::unfiled)
+        .map(|subscription| {
+            let mut configured = ConfiguredSubscription::unfiled(subscription);
+            if let Subscriber::SendGroup(group) = &configured.subscription.destination {
+                configured.ports = sends
+                    .groups
+                    .iter()
+                    .find(|declared| &declared.name == group)
+                    .map(|declared| declared.send_ports.clone())
+                    .unwrap_or_default();
+            }
+            configured
+        })
         .collect();
     let pickup = Pickup::open(&node, configured, Arc::clone(storage), None).expect("opened");
     let gate = ReceiveGate::new(

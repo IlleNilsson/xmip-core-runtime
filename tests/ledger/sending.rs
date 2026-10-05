@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use configure::DesignedSendPort;
+use configure::{DesignedSendPort, SendPortGroup};
 use journey::Journey;
 use persist::fixture::Memory;
 use persist::storage::{Embedded, XmipStorage};
@@ -44,8 +44,13 @@ pub fn order(number: u32) -> ReceivedStream {
 
 /// The Send Port `Out`, its policy what `shaped` makes of none.
 pub fn out(shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedSendPort {
+    port("Out", shaped)
+}
+
+/// The Send Port `name`, its policy what `shaped` makes of none.
+pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedSendPort {
     let mut port = DesignedSendPort {
-        name: "Out".to_string(),
+        name: name.to_string(),
         send_locations: Vec::new(),
         retry: None,
         failover: None,
@@ -69,14 +74,29 @@ pub fn quick() -> Tuning {
 
 /// The node at `node` sending `Out` to `far` by `port`.
 pub fn sender(node: String, far: FarEnd, port: DesignedSendPort) -> Sender {
+    senders(node, vec![(far, port)], Vec::new())
+}
+
+/// The node at `node` sending each Send Port to its far end, by its
+/// policy, with the Send Port Groups `groups`.
+pub fn senders(
+    node: String,
+    ports: Vec<(FarEnd, DesignedSendPort)>,
+    groups: Vec<SendPortGroup>,
+) -> Sender {
+    let (locations, ports) = ports
+        .into_iter()
+        .map(|(far, port)| (far.at(&port.name), port))
+        .unzip();
     Sender {
         sends: Sends {
-            locations: vec![far.at("Out")],
-            ports: vec![port],
-            ..Sends::default()
+            locations,
+            ports,
+            groups,
         },
         tuning: quick(),
         node,
+        audit: None,
     }
 }
 
@@ -149,7 +169,12 @@ pub fn journey(storage: &dyn XmipStorage, id: JourneyId) -> Journey {
 
 /// The Journeys waiting in `Out`'s queue, oldest first.
 pub fn waiting(runtime: &Runtime<'_>) -> Vec<JourneyId> {
-    let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
+    waiting_in(runtime, "Out")
+}
+
+/// The Journeys waiting in the queue of the Send Port `port`, oldest first.
+pub fn waiting_in(runtime: &Runtime<'_>, port: &str) -> Vec<JourneyId> {
+    let queue = runtime.send.queue(&Subscriber::SendPort(port.to_string()));
     let read = runtime.storage.read_held(queue, 0, 64).expect("read");
     read.held.iter().map(|held| held.hold.journey).collect()
 }

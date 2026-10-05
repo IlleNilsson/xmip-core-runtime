@@ -65,9 +65,11 @@ impl Authorizer for Open {
 pub type Answer = Box<dyn Fn(&[u8]) -> transport::Result<()> + Send + Sync>;
 
 /// A Send Location's far end in a test: every Stream it took, in the order
-/// it took them, and the answer it gives each send.
+/// it took them, the deduplication key every send carried, and the answer
+/// it gives each send.
 pub struct FarEnd {
     taken: Arc<Mutex<Vec<Vec<u8>>>>,
+    keys: Arc<Mutex<Vec<String>>>,
     answer: Answer,
 }
 
@@ -78,9 +80,17 @@ impl FarEnd {
         let taken = Arc::new(Mutex::new(Vec::new()));
         let far = Self {
             taken: Arc::clone(&taken),
+            keys: Arc::default(),
             answer,
         };
         (far, taken)
+    }
+
+    /// The deduplication key of every send it was asked, taken or not, in
+    /// the order asked.
+    #[must_use]
+    pub fn keys(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.keys)
     }
 
     /// The Send Location `name` sending to it.
@@ -121,7 +131,15 @@ impl transport::Transport for FarEnd {
         transport::Arrivals::Unordered("it receives nothing")
     }
 
-    fn send(&self, _target: &str, bytes: &[u8]) -> transport::Result<()> {
+    fn send(&self, target: &str, bytes: &[u8]) -> transport::Result<()> {
+        self.send_keyed(target, bytes, "")
+    }
+
+    fn send_keyed(&self, _target: &str, bytes: &[u8], key: &str) -> transport::Result<()> {
+        self.keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(key.to_string());
         (self.answer)(bytes)?;
         self.taken
             .lock()

@@ -1,10 +1,11 @@
-//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read and edited
-//! for the designer (ADR-0064, amendment 2026-10-03), what the exports do.
+//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read, edited and
+//! sliced for the designer and the Operation Desktop (ADR-0064, amendment
+//! 2026-10-03; ADR-0031, amendment 2026-10-05), what the exports do.
 //! The exports are `ffi/design.rs`'s; each reads its text, calls this, and
 //! writes back what it answers.
 //!
 //! Nothing here is a rule. The file's views, an Xmip Application's routes,
-//! a filter's text and structure and every edit are
+//! a filter's text and structure, every edit and the slicing are
 //! `xmip-core-configure`'s; this reads the JSON a surface hands over into
 //! configure's types and writes configure's answers as JSON, which is how
 //! they cross — in memory, never to disk (ADR-0031 clause 2).
@@ -12,14 +13,56 @@
 use configure::filter::{self, FilterPart};
 use configure::view_edit::{ClusterEdit, apply};
 use configure::views::Views;
+use configure::{DocumentKind, document_kind};
 use serde::Serialize;
 
-/// The cluster's file as one view per artifact kind, [`Views::of`].
+/// Why a node's own document is not sliced: it is the slice.
+pub const NOT_A_CLUSTER: &str = "this is a node's configuration document, not a cluster's \
+                                 xmip.toml: it declares no [nodes]; only the cluster's file is \
+                                 edited, and each node's is sliced from it";
+
+/// The cluster's file as one view per artifact kind, [`Views::of`], with
+/// `document`: `cluster` where the text declares its nodes and `node` where
+/// it is a node's own document, [`document_kind`] — so a surface offers no
+/// node's file for editing without a rule of its own (ADR-0031, amendment
+/// 2026-10-05).
 ///
 /// # Errors
 /// The reader's words when the text is not TOML.
 pub fn views(cluster: &str) -> Result<String, String> {
-    json(&Views::of(cluster)?)
+    let mut answer =
+        serde_json::to_value(Views::of(cluster)?).map_err(|error| error.to_string())?;
+    answer["document"] = match document_kind(cluster) {
+        DocumentKind::Cluster => "cluster",
+        DocumentKind::Node => "node",
+    }
+    .into();
+    json(&answer)
+}
+
+/// Each node's configuration document sliced from the cluster's file by
+/// the one slicing, [`configure::slices`] — or the one node `node` names,
+/// [`configure::slice`] — as `{"slices":[{"node","text"}]}`: what a surface
+/// writes and ships to each node when the cluster's file is saved (ADR-0031,
+/// amendment 2026-10-05).
+///
+/// # Errors
+/// A node's own document, which is never sliced; or the slicing's words:
+/// the text is not TOML, declares no such node, or a node does not slice.
+pub fn slices(cluster: &str, node: &str) -> Result<String, String> {
+    if document_kind(cluster) == DocumentKind::Node {
+        return Err(NOT_A_CLUSTER.to_string());
+    }
+    let sliced = if node.is_empty() {
+        configure::slices(cluster)?
+    } else {
+        vec![(node.to_string(), configure::slice(cluster, node)?)]
+    };
+    let slices: Vec<serde_json::Value> = sliced
+        .into_iter()
+        .map(|(node, text)| serde_json::json!({ "node": node, "text": text }))
+        .collect();
+    json(&serde_json::json!({ "slices": slices }))
 }
 
 /// A filter's text as rows and groups, [`filter::structure`].
@@ -72,6 +115,7 @@ mod tests {
             serde_json::from_str(&views(CLUSTER).expect("views")).expect("JSON");
 
         assert_eq!(answer["views"][0]["kind"], "cluster");
+        assert_eq!(answer["document"], "node");
         let route = &answer["views"][10];
         assert_eq!(route["kind"], "route");
         assert_eq!(route["entries"][0]["routes"]["application"], "Orders");
@@ -104,5 +148,30 @@ mod tests {
 
         assert!(edited.contains("name = \"Ledger\""), "{edited}");
         assert!(edit(CLUSTER, r#"{"remove-everything":{}}"#).is_err());
+    }
+
+    #[test]
+    fn the_slices_cross_as_the_one_slicing_writes_them() {
+        let test = configure::fixture::test_cluster();
+        let [one, two] = [0, 1].map(|place| test.node(place).name.clone());
+        let cluster = format!("{CLUSTER}\n[nodes.{one}]\n\n[nodes.{two}]\n");
+        let every: serde_json::Value =
+            serde_json::from_str(&slices(&cluster, "").expect("slices")).expect("JSON");
+
+        assert_eq!(every["slices"].as_array().map(Vec::len), Some(2));
+        assert_eq!(every["slices"][0]["node"], one.as_str());
+        assert_eq!(
+            every["slices"][0]["text"],
+            configure::slice(&cluster, &one).expect("slice")
+        );
+
+        let only: serde_json::Value =
+            serde_json::from_str(&slices(&cluster, &two).expect("slice")).expect("JSON");
+        assert_eq!(only["slices"][0]["node"], two.as_str());
+        assert!(slices(&cluster, &format!("{one}{two}")).is_err());
+        assert_eq!(
+            slices(&format!("[service]\nnode_name = \"{one}\"\n"), ""),
+            Err(NOT_A_CLUSTER.to_string())
+        );
     }
 }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use route::Subscriber;
 
-use super::pass::{Ended, send};
+use super::pass::{Ended, blocks, send};
 use super::scan::scan;
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
@@ -36,6 +36,10 @@ pub fn dispatch<'scope, 'env>(
             let queue = step.queue(&to);
             (to, queue)
         })
+        .collect();
+    step.lock().ports = served
+        .iter()
+        .map(|(to, _)| (to.name().to_string(), blocks(runtime, to)))
         .collect();
     let mut next_scan = Instant::now();
     let mut next_renewal = Instant::now() + step.lease / 3;
@@ -162,20 +166,14 @@ impl SendStep {
                 state = self.lock();
             }
             Ended::Completed(_) => {
-                for port in departure.progress.ports.keys() {
-                    state.figures.entry(port.clone()).or_default().sent += 1;
-                }
+                let port = departure.to.name().to_string();
+                state.figures.entry(port).or_default().sent += 1;
             }
             Ended::Failed { reason, .. } => {
-                for (port, progress) in &departure.progress.ports {
-                    let figures = state.figures.entry(port.clone()).or_default();
-                    if progress.sent {
-                        figures.sent += 1;
-                    } else {
-                        figures.failed += 1;
-                        figures.last_failure = Some((id.to_string(), reason.clone()));
-                    }
-                }
+                let port = departure.to.name().to_string();
+                let figures = state.figures.entry(port).or_default();
+                figures.failed += 1;
+                figures.last_failure = Some((id.to_string(), reason.clone()));
                 self.failed(&format!("the Journey {id} to {}: {reason}", departure.to));
             }
             Ended::Lost(_) => {}
