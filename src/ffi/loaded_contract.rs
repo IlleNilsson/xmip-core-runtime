@@ -343,8 +343,7 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    /// Where the real module is. `XMIP_MODULE_LIBRARY` first, as
-    /// `contract/probe/verify.ps1` takes `XMIP_CONTRACT_PROBE`; else the
+    /// Where the real module is. `XMIP_MODULE_LIBRARY` first; else the
     /// estate's own mount, because this repository is a submodule of it and
     /// the technology it drives is another.
     ///
