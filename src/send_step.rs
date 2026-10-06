@@ -22,7 +22,14 @@
 //! write and the acknowledgement; departure is this step's. A Journey whose
 //! Send Port this node sends is claimed in the Publication's own write and
 //! handed to the Send pool in memory, so the send starts without a sync of
-//! its own; any other waits in its queue for a node that sends it.
+//! its own, where the pool has room for it; any other waits in its queue
+//! for a node that sends it, or for room.
+//!
+//! **The pool's threads bound what the node holds.** Every Journey it
+//! claims — at a Publication, a resumed Subscription's move, a scan — is
+//! admitted to a place in the Send pool first ([`admission`]); what has
+//! none stays durable and unclaimed in its queue, read again the moment a
+//! place frees.
 //!
 //! **A retry waiting for its backoff holds no thread.** Its due time is in
 //! the Ledger — its claim kept until then, written in the hand-on — and the
@@ -48,7 +55,7 @@
 //! hand-on, so it survives a restart and another node taking it up.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use context::IdentityFacts;
@@ -64,11 +71,13 @@ use crate::pool::Limits;
 use crate::sending::{Destination, Sends, queue};
 use crate::tuning::Tuning;
 
+mod admission;
 mod dispatch;
 mod failed;
 mod figures;
 mod journey_act;
 mod pass;
+mod registered;
 mod scan;
 
 pub use dispatch::dispatch;
@@ -123,6 +132,8 @@ pub struct LinedUp {
     pub claims: Vec<Claim>,
     /// The claimed ones, by Journey: where each leads and its queue.
     claimed: Vec<(JourneyId, Subscriber, u128, Claim)>,
+    /// The places in the Send pool admitted for them.
+    admitted: usize,
 }
 
 /// A node's send step: what it sends, what it holds claimed, what waits for
@@ -155,6 +166,14 @@ struct State {
     /// Waiting for their due time, retries.
     due: Vec<(Instant, Departure)>,
     owned: HashMap<JourneyId, Owned>,
+    /// Places in the Send pool admitted for Journeys not yet owned.
+    admitted: usize,
+    /// Found unclaimed by a scan, each under a place admitted, being
+    /// claimed on a send thread.
+    taking: HashSet<JourneyId>,
+    /// Queues holding Journeys the pool had no room for, read again once a
+    /// place frees.
+    starved: Vec<u128>,
     /// Read at their place in a queue and found not to be sent —
     /// unreadable, failed and set aside, or finished though still in a
     /// queue — passed over by every scan after. A Retry moves a Journey to
@@ -215,7 +234,8 @@ impl SendStep {
     /// where it leads — lined up: each kept at the end of its destination's
     /// queue, beside it `body`, the identity it arrived with in its one
     /// form; and those this node sends, on a Send Port that is not
-    /// Sequential, claimed by it in the same write, minted by `ids`.
+    /// Sequential, claimed by it in the same write, minted by `ids` — as
+    /// many as the Send pool admits; the rest wait unclaimed for room.
     #[must_use]
     pub fn line_up(
         &self,
@@ -224,7 +244,13 @@ impl SendStep {
         body: &[u8],
         ids: &dyn IdGenerator,
     ) -> LinedUp {
-        let mut lined = LinedUp::default();
+        let sent_here = |to: &Subscriber| sends.serves(to) && !sequential(sends, to);
+        let wanted = departing.iter().filter(|(_, to)| sent_here(to)).count();
+        let mut lined = LinedUp {
+            admitted: self.admit(wanted),
+            ..LinedUp::default()
+        };
+        let mut places = lined.admitted;
         for (journey, to) in departing {
             let queue = self.queue(to);
             let journey = journey.journey_id();
@@ -233,7 +259,8 @@ impl SendStep {
                 journey,
                 body: body.to_vec(),
             });
-            if sends.serves(to) && !sequential(sends, to) {
+            if places > 0 && sent_here(to) {
+                places -= 1;
                 let claim = Claim {
                     journey,
                     holder: self.node.clone(),
@@ -249,8 +276,9 @@ impl SendStep {
 
     /// What `lined` claimed, durable now in its Publication, handed to the
     /// Send pool: each of `journeys` it claimed, with `work`'s Message and
-    /// the identity it arrived with, `facts`. A queue holding a Journey
-    /// this node sends and did not claim is read at once.
+    /// the identity it arrived with, `facts`, each in the place admitted
+    /// for it. A queue holding a Journey this node sends and did not claim
+    /// is read at once, or once a place frees.
     pub fn handed(
         &self,
         lined: LinedUp,
@@ -259,6 +287,7 @@ impl SendStep {
         facts: &IdentityFacts,
     ) {
         let mut state = self.lock();
+        state.admitted = state.admitted.saturating_sub(lined.admitted);
         for (id, to, queue, claim) in lined.claimed {
             let Some(journey) = journeys.iter().find(|j| j.journey_id() == id) else {
                 continue;
@@ -294,19 +323,16 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// `departure`, claimed by this node, handed to the Send pool.
+    /// `departure`, claimed by this node under a place the Send pool
+    /// admitted for it ([`SendStep::admit`]), handed to the pool.
     pub fn hand(&self, departure: Departure) {
-        let mut state = self.lock();
-        state.owned.insert(
-            departure.work.journey.journey_id(),
-            Owned {
-                claim: departure.claim.clone(),
-                queue: departure.queue,
-                sequence: departure.sequence.clone(),
-            },
-        );
-        state.handed.push_back(departure);
-        drop(state);
+        let owned = Owned {
+            claim: departure.claim.clone(),
+            queue: departure.queue,
+            sequence: departure.sequence.clone(),
+        };
+        self.own(departure.work.journey.journey_id(), owned);
+        self.lock().handed.push_back(departure);
         self.wake.notify_all();
     }
 
@@ -328,37 +354,8 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// How many more Journeys the Send pool can take now: its most threads,
-    /// less what this node has in flight — handed to it, queued or sending.
-    /// A scan claims no more than this, so nothing it claims waits past its
-    /// lease behind a backlog.
-    pub(crate) fn room(&self) -> usize {
-        let state = self.lock();
-        let flying = state.owned.len().saturating_sub(state.due.len());
-        self.limits.most.max(1).saturating_sub(flying)
-    }
-
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// `step` registered, so the runtime's library finds it by its node
-    /// and acts on its Journeys (`xmip_operate.h` section 16).
-    pub fn register(step: &Arc<Self>) {
-        let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
-        registered.retain(|held| held.strong_count() > 0);
-        registered.push(Arc::downgrade(step));
-    }
-
-    /// Every node's send step this process holds.
-    #[must_use]
-    pub fn registered() -> Vec<Arc<Self>> {
-        REGISTERED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect()
     }
 
     /// The Send Ports it sends, by name.
@@ -373,9 +370,6 @@ impl SendStep {
         &self.node
     }
 }
-
-/// Every node's send step in this process, registered.
-static REGISTERED: Mutex<Vec<Weak<SendStep>>> = Mutex::new(Vec::new());
 
 /// Whether what is bound for `to` is sent in sequence: a Sequential Send
 /// Port, or a Group with one among its Ports.

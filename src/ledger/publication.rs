@@ -165,6 +165,8 @@ pub fn publish(
         lease_nanos: u64::try_from(publisher.send.lease().as_nanos()).unwrap_or(u64::MAX),
     };
     publisher.storage.publish(&publication).map_err(|why| {
+        // Nothing it claimed is claimed: the places admitted are free.
+        publisher.send.withdrawn(&lined);
         format!(
             "Xmip Storage did not take the Publication of the Message {}: {why}",
             message.message_id()

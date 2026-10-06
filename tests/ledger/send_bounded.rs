@@ -5,6 +5,9 @@
 //!   with why, its claim ended, counted, never left owned and renewed;
 //! - a scan claims no more than the Send pool can take, so a backlog
 //!   waits unclaimed in its queue rather than behind the pool;
+//! - so does a Publication: what the pool has no place for stays durable
+//!   and unclaimed, never in memory, and is sent once a place frees;
+//! - Journeys another node holds keep no place from those behind them;
 //! - claims in flight are renewed while a scan is held up, however long;
 //! - a Journey that failed before a restart is the Port's evidence again
 //!   once a scan reads it, and is let go of when an operator acts on it.
@@ -118,6 +121,71 @@ fn a_scan_claims_no_more_than_the_send_pool_can_take() {
 }
 
 #[test]
+fn a_publication_claims_no_more_than_the_send_pool_can_take() {
+    let storage = memory();
+    let most = hardware_threads();
+    let count = u32::try_from(most + 8).expect("a count");
+    let (gate, entered) = (Arc::new(Gate::default()), Arc::new(AtomicUsize::new(0)));
+    let (far, _) = FarEnd::answering(held_at(&gate, &entered));
+    let mut sending = sender(node(), far, out(|_| {}));
+    sending.tuning.send_threads_per_hardware_thread = 1;
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sending,
+        |runtime, pickup, carrying| {
+            dispatching(runtime, |told| {
+                let ids: Vec<JourneyId> = (1..=count)
+                    .map(|n| carry(runtime, pickup, carrying, order(n)).journeys[0].journey_id())
+                    .collect();
+                until(|| entered.load(Ordering::Acquire) == most, "the pool full");
+                let held = ids
+                    .iter()
+                    .filter(|id| !free(storage.as_ref(), **id))
+                    .count();
+                gate.open();
+                for id in &ids {
+                    told.wait_for(*id, "completed");
+                }
+                assert_eq!(held, most, "the rest left durable and unclaimed");
+            });
+        },
+    );
+}
+
+#[test]
+fn journeys_another_node_holds_keep_no_place_from_those_behind_them() {
+    let storage = memory();
+    let most = hardware_threads();
+    let count = u32::try_from(most + 8).expect("a count");
+    let ids: Vec<JourneyId> = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
+        (1..=count)
+            .map(|n| carry(runtime, pickup, gate, order(n)).journeys[0].journey_id())
+            .collect()
+    });
+    // The oldest, as many as the pool has places, held by a live node.
+    let other = configure::fixture::test_cluster().node_scope(1);
+    let held = |id: JourneyId| {
+        let lease = Duration::from_secs(30);
+        let claim = storage.claim(id, &other, id.value() ^ 0x07e5, lease);
+        claim.expect("asked").is_some()
+    };
+    for id in &ids[..most] {
+        until(|| held(*id), "held by another node");
+    }
+    let (far, _) = FarEnd::answering(taking());
+    let mut sending = sender(node(), far, out(|_| {}));
+    sending.tuning.send_threads_per_hardware_thread = 1;
+    on_node(&storage, (CHUNK, &onward()), sending, |runtime, _, _| {
+        dispatching(runtime, |told| {
+            for id in &ids[most..] {
+                told.wait_for(*id, "completed");
+            }
+        });
+    });
+}
+
+#[test]
 fn a_claim_in_flight_is_renewed_while_a_scan_is_held_up() {
     let (interleaved, storage) = interleaving();
     let (gate, entered) = (Arc::new(Gate::default()), Arc::new(AtomicUsize::new(0)));
@@ -189,10 +257,10 @@ fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on()
                     figures.oldest_failing
                 );
                 assert_eq!(
-                    figures.last_failure.map(|(journey, _)| journey),
-                    Some(id.to_string()),
-                    "the evidence names it"
+                    figures.last_failure, None,
+                    "what failed now is not history: none failed since the restart"
                 );
+                assert!(!figures.blocked, "not a Sequential Port");
                 let page = runtime.send.failed_journeys("Out", 0, 10).expect("read");
                 assert_eq!(page.journeys.len(), 1, "read from Xmip Storage too");
                 assert_eq!(page.journeys[0].journey, id);

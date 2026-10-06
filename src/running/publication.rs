@@ -17,14 +17,17 @@
 //! <node>/send/<Port>         each Send Port this node sends, apart from its
 //!                            Send Locations: what it sent, what failed — the
 //!                            last Journey that did, and why — what waits,
-//!                            and how many failed wait in its queue
+//!                            and how many failed wait in its queue: Done
+//!                            while any does, Fine once none does
 //! <node>/process/<name>      each Subscription: Fine, or Paused by whom
 //! ```
 //!
-//! **The Journeys that failed** at each Send Port with any waiting in its
-//! queue are published beside the records (`observe::FailedJourneys`):
-//! how many, and the oldest hundred with why, so a surface offers Retry and
-//! Dismiss on each at the Port's scope; the rest are read from Xmip Storage
+//! **The Journeys that failed** at every Send Port the node sends are
+//! published beside the records (`observe::FailedJourneys`): how many wait
+//! in its queue now — zero where none — whether they block its sequence,
+//! and the oldest hundred with why, so a surface offers Retry and Dismiss
+//! on each at the Port's scope; apart from them, the last that failed there
+//! since the node started, as history. The rest are read from Xmip Storage
 //! a page at a time (`xmip_failed_journeys_v1`).
 //!
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
@@ -46,8 +49,8 @@
 use node::{Capability, Stage};
 use observe::topology::{draw, party};
 use observe::{
-    Count, Counted, FailedJourney, FailedJourneys, Health, HealthRecord, PauseState, Publication,
-    Snapshot, Topology, now_unix_nanos,
+    Count, Counted, FailedJourneys, Health, HealthRecord, PauseState, Publication, Snapshot,
+    Topology, now_unix_nanos,
 };
 
 use std::collections::BTreeMap;
@@ -92,11 +95,7 @@ impl Running {
             snapshot.record_health(HealthRecord {
                 scope,
                 health,
-                severity: match health {
-                    Health::Fine => 0,
-                    Health::Paused => 30,
-                    _ => 90,
-                },
+                severity: severity(health),
                 evidence,
                 observed_unix_nanos: now,
             });
@@ -133,10 +132,7 @@ impl Running {
             );
         }
         let figures = self.send.figures();
-        for (scope, health, evidence) in stage_records(&node, &self.locations, &failures, &figures)
-        {
-            record(scope, health, evidence);
-        }
+        let staged = stage_records(&node, &self.locations, &failures, &figures);
         let subscriptions = self.pickup.standing();
         for subscription in &subscriptions {
             let scope = format!("{node}/{}/{}", Stage::Process.name(), subscription.name);
@@ -158,6 +154,15 @@ impl Running {
         }
         for subscription in subscriptions {
             snapshot.record_subscription(subscription);
+        }
+        for (scope, (health, severity), evidence) in staged {
+            snapshot.record_health(HealthRecord {
+                scope,
+                health,
+                severity,
+                evidence,
+                observed_unix_nanos: now,
+            });
         }
         // The oldest of its Dead Message Queue; one that cannot be read now
         // is published at the next look.
@@ -249,21 +254,29 @@ impl Running {
 /// a Send Location adds to that Location's record. Until 2026-10-05 the
 /// figures were looked up by each Send Location's name, so a Port of
 /// several Locations had none published.
+///
+/// **A Port with failed Journeys waiting in its queue now is Done** —
+/// blocked or failed, the pain an operator's Retry or Dismiss solves — and
+/// one whose sequence is blocked behind them the most severe; what failed
+/// before and was acted on since is history in its figures and leaves it
+/// Fine. Until 2026-10-06 a Port was Fine whatever waited in its queue, so
+/// a surface's list of what needs attention left it out.
 fn stage_records(
     node: &str,
     locations: &[(&'static str, configure::ConfiguredLocation)],
     failures: &[(String, String)],
     figures: &BTreeMap<String, PortFigures>,
-) -> Vec<(String, Health, String)> {
-    let mut records: Vec<(String, Health, String)> = locations
+) -> Vec<StageRecord> {
+    let fine = (Health::Fine, severity(Health::Fine));
+    let mut records: Vec<StageRecord> = locations
         .iter()
         .map(|(stage, location)| {
             let scope = format!("{node}/{stage}/{}", location.name);
             match failures.iter().find(|(name, _)| name == &location.name) {
-                Some((_, why)) => (scope, Health::Done, why.clone()),
+                Some((_, why)) => (scope, (Health::Done, severity(Health::Done)), why.clone()),
                 None => (
                     scope,
-                    Health::Fine,
+                    fine,
                     format!("started; {} at {}", location.transport, location.address),
                 ),
             }
@@ -271,43 +284,48 @@ fn stage_records(
         .collect();
     for (port, sent) in figures {
         let scope = format!("{node}/{}/{port}", Stage::Send.name());
+        let mood = match (sent.failing, sent.blocked) {
+            (0, _) => fine,
+            (_, true) => (Health::Done, BLOCKED_SEVERITY),
+            (_, false) => (Health::Done, severity(Health::Done)),
+        };
         match records.iter_mut().find(|(at, _, _)| *at == scope) {
-            Some((_, Health::Fine, evidence)) => {
+            Some((_, standing, evidence)) if *standing == fine => {
+                *standing = mood;
                 evidence.push_str(&format!("; {}", sent.evidence()));
             }
             Some(_) => {}
-            None => records.push((
-                scope,
-                Health::Fine,
-                format!("Send Port; {}", sent.evidence()),
-            )),
+            None => records.push((scope, mood, format!("Send Port; {}", sent.evidence()))),
         }
     }
     records
 }
 
-/// The Journeys that failed at each Send Port of `figures` that has any
-/// waiting in its queue: how many, and the oldest with why — what a surface
-/// lists at `<node>/send/<Port>` with Retry and Dismiss on each.
+/// The severity a record of `health` carries: none while Fine, a deliberate
+/// hold's, and the pain's.
+const fn severity(health: Health) -> u8 {
+    match health {
+        Health::Fine => 0,
+        Health::Paused => 30,
+        _ => 90,
+    }
+}
+
+/// The severity of a Send Port whose sequence is blocked behind a Journey
+/// that failed: above every other Done, since nothing more of that order
+/// key goes until an operator acts.
+const BLOCKED_SEVERITY: u8 = 95;
+
+/// One stage record: its scope, its mood with its severity, its evidence.
+type StageRecord = (String, (Health, u8), String);
+
+/// The Journeys that failed at every Send Port of `figures`, each as
+/// [`PortFigures::published`] says it — a Port with none now among them.
 fn failed_journeys(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<FailedJourneys> {
-    figures
+    let published = figures
         .iter()
-        .filter(|(_, figures)| figures.failing > 0)
-        .map(|(port, figures)| FailedJourneys {
-            node: node.to_string(),
-            send_port: port.clone(),
-            count: figures.failing,
-            journeys: figures
-                .oldest_failing
-                .iter()
-                .map(|failed| FailedJourney {
-                    journey: failed.journey.to_string(),
-                    sequence: failed.place,
-                    reason: failed.reason.clone(),
-                })
-                .collect(),
-        })
-        .collect()
+        .map(|(port, figures)| figures.published(node, port));
+    published.collect()
 }
 
 /// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself,
@@ -382,11 +400,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_send_port_of_several_locations_publishes_its_figures_at_its_own_scope() {
-        let cluster = configure::fixture::test_cluster();
-        let node = cluster.node_scope(0);
-        let location = |name: &str| configure::ConfiguredLocation {
+    fn configured(name: &str) -> configure::ConfiguredLocation {
+        configure::ConfiguredLocation {
             name: name.to_string(),
             start: true,
             transport: "file".to_string(),
@@ -396,8 +411,83 @@ mod tests {
             settings: configure::LocationSettings::default(),
             contract_settings: configure::LocationSettings::default(),
             accept: configure::Accept::default(),
+        }
+    }
+
+    /// The mood and severity of the Port `Out`'s own record, figured
+    /// `figures`, and its evidence.
+    fn out_standing(figures: PortFigures) -> ((Health, u8), String) {
+        let node = configure::fixture::test_cluster().node_scope(0);
+        let figures = BTreeMap::from([("Out".to_string(), figures)]);
+        let port = format!("{node}/send/Out");
+        stage_records(&node, &[], &[], &figures)
+            .into_iter()
+            .find(|(scope, _, _)| *scope == port)
+            .map(|(_, standing, evidence)| (standing, evidence))
+            .expect("the Port's own record")
+    }
+
+    #[test]
+    fn a_send_port_with_failed_journeys_waiting_now_is_done_and_blocked_the_worst() {
+        let history = PortFigures {
+            failed: 3,
+            last_failure: Some(("j-1".to_string(), "refused".to_string())),
+            ..PortFigures::default()
         };
-        let locations = [("send", location("Primary")), ("send", location("Backup"))];
+        let (standing, evidence) = out_standing(history.clone());
+        assert_eq!(standing, (Health::Fine, 0), "history alone: {evidence}");
+
+        let failing = PortFigures {
+            failing: 1,
+            ..history.clone()
+        };
+        let (standing, _) = out_standing(failing);
+        assert_eq!(standing, (Health::Done, 90), "waiting for an operator");
+
+        let blocked = PortFigures {
+            failing: 1,
+            blocked: true,
+            ..history
+        };
+        let (standing, evidence) = out_standing(blocked);
+        assert_eq!(standing, (Health::Done, BLOCKED_SEVERITY));
+        assert!(evidence.contains("blocked behind them"), "{evidence}");
+        assert!(BLOCKED_SEVERITY > severity(Health::Done), "the worst first");
+    }
+
+    #[test]
+    fn every_send_port_publishes_its_failed_journeys_now_apart_from_its_last() {
+        let node = configure::fixture::test_cluster().node_scope(0);
+        let figures = BTreeMap::from([(
+            "Out".to_string(),
+            PortFigures {
+                failed: 1,
+                last_failure: Some(("j-1".to_string(), "refused".to_string())),
+                ..PortFigures::default()
+            },
+        )]);
+
+        let published = failed_journeys(&node, &figures);
+
+        assert_eq!(published.len(), 1, "none now is published too");
+        let out = &published[0];
+        assert_eq!((out.count, out.blocked), (0, false), "none now");
+        assert!(out.journeys.is_empty());
+        let last = out.last_failure.as_ref().expect("history kept apart");
+        assert_eq!(
+            (last.journey.as_str(), last.reason.as_str()),
+            ("j-1", "refused")
+        );
+    }
+
+    #[test]
+    fn a_send_port_of_several_locations_publishes_its_figures_at_its_own_scope() {
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node_scope(0);
+        let locations = [
+            ("send", configured("Primary")),
+            ("send", configured("Backup")),
+        ];
         let figures = BTreeMap::from([(
             "Out".to_string(),
             PortFigures {
@@ -411,11 +501,11 @@ mod tests {
         let records = stage_records(&node, &locations, &[], &figures);
 
         let port = format!("{node}/send/Out");
-        let (_, health, evidence) = records
+        let (_, standing, evidence) = records
             .iter()
             .find(|(scope, _, _)| *scope == port)
             .expect("the Port's own record");
-        assert_eq!(*health, Health::Fine);
+        assert_eq!(standing.0, Health::Done, "two wait for an operator");
         assert!(evidence.contains("failed in its queue 2"), "{evidence}");
         assert!(
             evidence.contains("the Journey j-2 failed: refused"),
