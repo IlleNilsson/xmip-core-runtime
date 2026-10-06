@@ -26,6 +26,13 @@
 //! (`runtime-model.md` section 10: *A retry waiting for its backoff holds no
 //! thread*). The Journey's identifier goes with every send, the key an
 //! endpoint that deduplicates delivers it once by (section 15).
+//!
+//! **No attempt without the claim.** Before each Location is tried, the
+//! send step is asked whether the Journey's claim is still surely this
+//! node's; where it is not — found another's, or unconfirmed for longer
+//! than its lease — the pass stops, and no Location is tried again from
+//! here (section 10, *Corrected 2026-10-06*). A send already under way
+//! goes on: its Journey's identifier lets the far end deduplicate it.
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
@@ -134,13 +141,15 @@ impl Progress {
 /// deduplication key. A Location that may be tried again is left waiting,
 /// its backoff the send step's to keep. A Send Port Group is sent as one
 /// Journey per Port, opened at its Publication, so one that reaches here is
-/// declared by no Application of this node.
+/// declared by no Application of this node. `owned` says, before each
+/// Location is tried, whether the Journey is still this node's to send; the
+/// pass stops where it is not, nothing more tried.
 pub fn depart_to(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
     facts: &IdentityFacts,
     to: &Subscriber,
-    progress: &mut Progress,
+    (progress, owned): (&mut Progress, &dyn Fn() -> bool),
 ) -> Vec<Departed> {
     if !progress.waiting() {
         return Vec::new();
@@ -148,7 +157,7 @@ pub fn depart_to(
     match (to, runtime.sends.to(to)) {
         (Subscriber::SendPort(_), Destination::Ports(ports)) => ports
             .first()
-            .map(|port| depart_port(runtime, (work, facts), port, progress))
+            .map(|port| depart_port(runtime, (work, facts), port, (progress, owned)))
             .unwrap_or_default(),
         (_, Destination::Process) => vec![Departed::ProcessNotRun { to: to.clone() }],
         _ => {
@@ -162,16 +171,20 @@ pub fn depart_to(
 }
 
 /// One Port's part of a pass: its active Location tried, and the next
-/// after it where it fails over.
+/// after it where it fails over — each only while `owned` says the Journey
+/// is still this node's.
 fn depart_port(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
     port: &Port<'_>,
-    standing: &mut Progress,
+    (standing, owned): (&mut Progress, &dyn Fn() -> bool),
 ) -> Vec<Departed> {
     let to = Subscriber::SendPort(port.name.to_string());
     let mut departed = Vec::new();
     loop {
+        if !owned() {
+            return departed;
+        }
         let Some(sending) = port.locations.get(standing.location) else {
             standing.given_up = Some(format!("no Send Location for {to} on this node"));
             departed.push(Departed::NoSuchDestination { to });

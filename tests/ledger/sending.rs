@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 
 use configure::{DesignedSendPort, SendPortGroup};
 use journey::{Journey, JourneyEntry, JourneyState};
+use persist::EncryptedStore;
 use persist::fixture::Memory;
 use persist::storage::{Embedded, HandOn, JourneyRecord, XmipStorage};
 use receive::ReceivedStream;
 use route::Subscriber;
 use secret::{Held, KekName};
 use transport::TransportError;
-use xcore::{ExecutionId, JourneyId, MessageId};
+use xcore::{Clock, ExecutionId, JourneyId, MessageId};
 use xmip_core_runtime::fixture::{Answer, Failing, FarEnd};
 use xmip_core_runtime::message_path::Runtime;
 use xmip_core_runtime::send_step::{Departure, Ended, dispatch};
@@ -32,6 +33,33 @@ pub fn memory() -> Arc<dyn XmipStorage> {
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");
     Arc::new(Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened"))
+}
+
+/// A clock a test moves by hand: the Storage node's, so a claim lapses
+/// when the test says.
+#[derive(Default)]
+pub struct Pinned(Mutex<i128>);
+
+impl Pinned {
+    pub fn pass(&self, by: Duration) {
+        let nanos = i128::try_from(by.as_nanos()).expect("a span");
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) += nanos;
+    }
+}
+
+impl Clock for Pinned {
+    fn unix_timestamp_nanos(&self) -> i128 {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A test Storage node in memory telling time by `clock`.
+pub fn telling(clock: &Arc<Pinned>) -> Arc<dyn XmipStorage> {
+    let keys = Held::new(secret::fixture::Memory::default());
+    let kek = KekName::new("storage").expect("a name");
+    let open = || EncryptedStore::open(Memory::default(), &keys, &kek).expect("opened");
+    let clock = Arc::clone(clock) as Arc<dyn Clock>;
+    Arc::new(Embedded::over(open(), open(), clock).expect("a Storage node"))
 }
 
 /// A test Storage node in memory, and Xmip Storage over it that fails, or

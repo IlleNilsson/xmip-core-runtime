@@ -43,6 +43,14 @@
 //! Port held. Claims of work in flight are renewed while it runs; a stop
 //! gives back the claims of what waits ([`SendStep::close`]).
 //!
+//! **A claim found lost is not sent on** ([`renewal`]). A renewal that
+//! finds the claim another's stops every further attempt from this node;
+//! one Xmip Storage does not answer leaves the claim unconfirmed — its Send
+//! Port Done, a flat-out error — and attempts go on only while a lease from the last
+//! confirmation lasts, after which the claim is presumed lost, audited, and
+//! no Location is tried again from here. A send already under way keeps the
+//! Journey's identifier as its deduplication key.
+//!
 //! **A Sequential Send Port keeps its order** by its order key: a sequence
 //! has one Journey in flight at a time, the oldest in its queue first, and
 //! one that failed blocks it, or is set aside, as its `on_failure` says
@@ -78,8 +86,10 @@ mod figures;
 mod journey_act;
 mod pass;
 mod registered;
+mod renewal;
 mod scan;
 
+use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
 pub use figures::{FailedJourney, PUBLISHED_FAILED, PortFigures};
@@ -121,6 +131,11 @@ pub struct Departure {
     pub progress: Progress,
     /// Its order key's value, on a Sequential Send Port.
     pub sequence: Option<String>,
+    /// The latest this node is sure its claim holds, on its own clock: a
+    /// lease — waiting for a retry, its due time and a lease — from when
+    /// the request that last confirmed the claim was asked, so no two
+    /// clocks are ever compared.
+    pub until: Instant,
 }
 
 /// What a Publication writes for the Journeys that go on to be sent: each
@@ -134,6 +149,9 @@ pub struct LinedUp {
     claimed: Vec<(JourneyId, Subscriber, u128, Claim)>,
     /// The places in the Send pool admitted for them.
     admitted: usize,
+    /// When it was lined up, before its Publication was asked: what its
+    /// claims are surely held a lease from.
+    asked: Option<Instant>,
 }
 
 /// A node's send step: what it sends, what it holds claimed, what waits for
@@ -148,15 +166,6 @@ pub struct SendStep {
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
     wake: Condvar,
-}
-
-/// A Journey this node holds claimed: in flight on the Send pool, or
-/// waiting for its due time.
-#[derive(Clone, Debug)]
-struct Owned {
-    claim: Claim,
-    queue: u128,
-    sequence: Option<String>,
 }
 
 #[derive(Default)]
@@ -248,6 +257,7 @@ impl SendStep {
         let wanted = departing.iter().filter(|(_, to)| sent_here(to)).count();
         let mut lined = LinedUp {
             admitted: self.admit(wanted),
+            asked: Some(Instant::now()),
             ..LinedUp::default()
         };
         let mut places = lined.admitted;
@@ -286,21 +296,14 @@ impl SendStep {
         work: &ReceivedWork,
         facts: &IdentityFacts,
     ) {
+        let until = lined.asked.unwrap_or_else(Instant::now) + self.lease;
         let mut state = self.lock();
         state.admitted = state.admitted.saturating_sub(lined.admitted);
         for (id, to, queue, claim) in lined.claimed {
             let Some(journey) = journeys.iter().find(|j| j.journey_id() == id) else {
                 continue;
             };
-            state.owned.insert(
-                id,
-                Owned {
-                    claim: claim.clone(),
-                    queue,
-                    sequence: None,
-                },
-            );
-            state.handed.push_back(Departure {
+            let departure = Departure {
                 work: ReceivedWork {
                     journey: journey.clone(),
                     message: work.message.clone(),
@@ -311,7 +314,10 @@ impl SendStep {
                 claim,
                 progress: Progress::of(journey.attempts),
                 sequence: None,
-            });
+                until,
+            };
+            state.owned.insert(id, Owned::of(&departure));
+            state.handed.push_back(departure);
         }
         for hold in &lined.holds {
             let claimed = state.owned.contains_key(&hold.journey);
@@ -326,12 +332,7 @@ impl SendStep {
     /// `departure`, claimed by this node under a place the Send pool
     /// admitted for it ([`SendStep::admit`]), handed to the pool.
     pub fn hand(&self, departure: Departure) {
-        let owned = Owned {
-            claim: departure.claim.clone(),
-            queue: departure.queue,
-            sequence: departure.sequence.clone(),
-        };
-        self.own(departure.work.journey.journey_id(), owned);
+        self.own(departure.work.journey.journey_id(), Owned::of(&departure));
         self.lock().handed.push_back(departure);
         self.wake.notify_all();
     }

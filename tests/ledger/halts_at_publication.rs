@@ -43,7 +43,7 @@ impl XmipStorage for HaltsAtPublication {
         self.0.write_message(message)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(), PersistError> {
+    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
         say(&format!("halting {}", publication.message.message.value()));
         loop {
             std::thread::park();

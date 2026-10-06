@@ -650,7 +650,15 @@ mod tests {
         routing
             .destinations()
             .into_iter()
-            .flat_map(|to| depart_to(runtime, work, facts, to, &mut Progress::default()))
+            .flat_map(|to| {
+                depart_to(
+                    runtime,
+                    work,
+                    facts,
+                    to,
+                    (&mut Progress::default(), &|| true),
+                )
+            })
             .collect()
     }
 

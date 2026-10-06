@@ -23,7 +23,7 @@
 //! was not read.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use persist::storage::{HandOn, Hold};
 
@@ -126,6 +126,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         step.withdraw(usize::from(sent_here));
         Err(why)
     };
+    let asked = Instant::now();
     match storage.hand_on(&moved) {
         Ok(true) => {}
         Ok(false) => return not_moved(format!("the claim on the Journey {id} lapsed")),
@@ -145,6 +146,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             queue,
             claim,
             sequence: None,
+            until: asked + step.lease(),
         });
     } else {
         step.ask(queue);

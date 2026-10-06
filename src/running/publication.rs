@@ -260,7 +260,13 @@ impl Running {
 /// one whose sequence is blocked behind them the most severe; what failed
 /// before and was acted on since is history in its figures and leaves it
 /// Fine. Until 2026-10-06 a Port was Fine whatever waited in its queue, so
-/// a surface's list of what needs attention left it out.
+/// a surface's list of what needs attention left it out. **A Port with a
+/// claim whose renewal Xmip Storage has not answered is Done** from the
+/// first, its evidence naming Xmip Storage, how many and since when — the
+/// owner, 2026-10-06: *Storage is not here is a flat-out error*. Its sends
+/// go on only while each claim surely holds, a lease from its last
+/// confirmation, and stop once it may not (`crate::send_step`); that window
+/// bounds attempts and softens nothing. Until 2026-10-06 it was Stressed.
 fn stage_records(
     node: &str,
     locations: &[(&'static str, configure::ConfiguredLocation)],
@@ -284,10 +290,10 @@ fn stage_records(
         .collect();
     for (port, sent) in figures {
         let scope = format!("{node}/{}/{port}", Stage::Send.name());
-        let mood = match (sent.failing, sent.blocked) {
-            (0, _) => fine,
-            (_, true) => (Health::Done, BLOCKED_SEVERITY),
-            (_, false) => (Health::Done, severity(Health::Done)),
+        let mood = match (sent.failing, sent.blocked, sent.unconfirmed) {
+            (0, _, 0) => fine,
+            (0, _, _) | (_, false, _) => (Health::Done, severity(Health::Done)),
+            (_, true, _) => (Health::Done, BLOCKED_SEVERITY),
         };
         match records.iter_mut().find(|(at, _, _)| *at == scope) {
             Some((_, standing, evidence)) if *standing == fine => {
@@ -453,6 +459,50 @@ mod tests {
         assert_eq!(standing, (Health::Done, BLOCKED_SEVERITY));
         assert!(evidence.contains("blocked behind them"), "{evidence}");
         assert!(BLOCKED_SEVERITY > severity(Health::Done), "the worst first");
+    }
+
+    #[test]
+    fn a_send_port_whose_renewal_storage_does_not_answer_is_done_naming_storage_since_when() {
+        let unconfirmed = PortFigures {
+            unconfirmed: 2,
+            unanswered_since: Some(1_800_000_000_000_000_000),
+            lost: 1,
+            ..PortFigures::default()
+        };
+        let (standing, evidence) = out_standing(unconfirmed.clone());
+        assert_eq!(
+            standing,
+            (Health::Done, severity(Health::Done)),
+            "a flat-out error"
+        );
+        assert!(
+            evidence.contains("Xmip Storage has not answered the renewal of its claims 2"),
+            "{evidence}"
+        );
+        assert!(
+            evidence.contains("since 2027-01-15T08:00:00.000000000Z"),
+            "{evidence}"
+        );
+        assert!(evidence.contains("lost to another holder 1"), "{evidence}");
+
+        let blocked = PortFigures {
+            failing: 1,
+            blocked: true,
+            ..unconfirmed
+        };
+        let (standing, _) = out_standing(blocked);
+        assert_eq!(
+            standing,
+            (Health::Done, BLOCKED_SEVERITY),
+            "the worst first"
+        );
+
+        let lost_before = PortFigures {
+            lost: 1,
+            ..PortFigures::default()
+        };
+        let (standing, _) = out_standing(lost_before);
+        assert_eq!(standing.0, Health::Fine, "a loss is history");
     }
 
     #[test]

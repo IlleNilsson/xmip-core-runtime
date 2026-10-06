@@ -128,7 +128,7 @@ pub fn publish(
     };
     let opened = opened(routing, pickup, held, publisher.ids);
     let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
-    let (holding, lined, dead) = if journeys.is_empty() {
+    let (holding, mut lined, dead) = if journeys.is_empty() {
         let now = publisher.clock.unix_timestamp_nanos();
         let at = (pickup.node(), location, now);
         let entry = dead_message::entry(at, held, routing, unmatched, body());
@@ -164,7 +164,7 @@ pub fn publish(
         claims: lined.claims.clone(),
         lease_nanos: u64::try_from(publisher.send.lease().as_nanos()).unwrap_or(u64::MAX),
     };
-    publisher.storage.publish(&publication).map_err(|why| {
+    let holds = publisher.storage.publish(&publication).map_err(|why| {
         // Nothing it claimed is claimed: the places admitted are free.
         publisher.send.withdrawn(&lined);
         format!(
@@ -172,6 +172,10 @@ pub fn publish(
             message.message_id()
         )
     })?;
+    // Only what Xmip Storage says this node holds is sent from here: a
+    // Publication asked again after a lost answer holds none another node
+    // took up meanwhile.
+    publisher.send.confirmed(&mut lined, &holds);
     pickup.published(&holding);
     Ok(Published {
         journeys,

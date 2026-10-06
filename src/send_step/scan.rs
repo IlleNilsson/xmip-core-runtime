@@ -7,6 +7,7 @@
 //! one, or, where it blocks its sequence, makes it one to send where it is.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use configure::OnFailure;
 use context::IdentityFacts;
@@ -157,20 +158,11 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
 }
 
 /// What a claim took, owned by this node in the place admitted for it, as
-/// the departure it is sent as.
-fn owned(
-    step: &super::SendStep,
-    to: &Subscriber,
-    queue: u128,
-    (work, facts, claim, sequence): (ReceivedWork, IdentityFacts, Claim, Option<String>),
-) -> Departure {
-    let owned = Owned {
-        claim: claim.clone(),
-        queue,
-        sequence: sequence.clone(),
-    };
-    step.own(work.journey.journey_id(), owned);
-    Departure {
+/// the departure it is sent as: its claim surely held a lease from when it
+/// was asked.
+fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Departure {
+    let (work, facts, claim, sequence, asked) = one;
+    let departure = Departure {
         progress: Progress::of(work.journey.attempts),
         work,
         facts,
@@ -178,12 +170,20 @@ fn owned(
         queue,
         claim,
         sequence,
-    }
+        until: asked + step.lease,
+    };
+    step.own(departure.work.journey.journey_id(), Owned::of(&departure));
+    departure
 }
+
+/// What a claim took: the Journey and its Message, the identity it arrived
+/// with, the claim, its sequence on a Sequential Send Port, and when the
+/// claim was asked.
+type Took = (ReceivedWork, IdentityFacts, Claim, Option<String>, Instant);
 
 /// What a scan made of one entry.
 enum Taken {
-    One(Box<(ReceivedWork, IdentityFacts, Claim, Option<String>)>),
+    One(Box<Took>),
     Passed,
     /// Xmip Storage did not answer: the rest of the queue waits for the
     /// next scan.
@@ -221,6 +221,7 @@ fn claimed_first(
     let step = runtime.send;
     let id = place.0;
     let token = runtime.ids.next_u128();
+    let asked = Instant::now();
     let claim = match step.storage.claim(id, &step.node, token, step.lease) {
         Ok(Some(claim)) => claim,
         Ok(None) => return Taken::Passed,
@@ -233,7 +234,7 @@ fn claimed_first(
     match found {
         Ok(Found::Waiting(found)) => {
             let (work, facts) = *found;
-            Taken::One(Box::new((work, facts, claim, None)))
+            Taken::One(Box::new((work, facts, claim, None, asked)))
         }
         Ok(Found::Failed(_) | Found::Finished) => {
             let _ = step.storage.release(&claim);
@@ -297,6 +298,7 @@ fn in_sequence(
         return Taken::Passed;
     }
     let token = runtime.ids.next_u128();
+    let asked = Instant::now();
     let claim = match step.storage.claim(id, &step.node, token, step.lease) {
         Ok(Some(claim)) => claim,
         Ok(None) => return Taken::Passed,
@@ -305,7 +307,7 @@ fn in_sequence(
     match still_waiting(runtime, queue, place, body) {
         Some(Ok(found)) => {
             let (work, facts) = found;
-            Taken::One(Box::new((work, facts, claim, Some(told))))
+            Taken::One(Box::new((work, facts, claim, Some(told), asked)))
         }
         // Moved meanwhile: read afresh at the next scan, its sequence held
         // until then.
