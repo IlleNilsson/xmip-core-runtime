@@ -150,7 +150,7 @@ pub fn start(path: &str) -> Snapshot {
             "{} module(s), {} process(es), {} Subscription(s) validated and planned; not \
              running \u{2014} a node runs in the program that links its technologies",
             tree.modules_to_start.len(),
-            tree.xmip_processes_to_start.len(),
+            tree.work_processes_to_start.len(),
             tree.subscriptions.len()
         ),
         observed_unix_nanos: now,
@@ -166,7 +166,7 @@ pub fn start(path: &str) -> Snapshot {
         });
     }
 
-    for process in &tree.xmip_processes_to_start {
+    for process in &tree.work_processes_to_start {
         snapshot.record_health(HealthRecord {
             scope: format!("{node}/process/{}", process.name),
             health: Health::Stressed,
@@ -344,11 +344,10 @@ trusted_required = true
 library_path = "xmip_core_transport_file"
 symbol = "xmip_create_module_v1"
 
-[[xmip_processes]]
+[[work_processes]]
 name = "approval"
 start = true
 required_modules = ["file"]
-xmip_subprocesses = []
 extensions = []
 
 [[receive_locations]]
@@ -418,10 +417,10 @@ symbol = "xmip_create_module_v1"
 
     #[test]
     fn a_minimal_process_validates() {
-        // ADR-0031, amendment 2026-09-24: a Process that needs no module and
-        // has no Subprocess or Extension need not say so.
+        // ADR-0031, amendment 2026-09-24: a Work Process that needs no
+        // module and no Extension need not say so.
         let (head, _) = service();
-        let source = format!("{head}[[xmip_processes]]\nname = \"minimal\"\nstart = true\n");
+        let source = format!("{head}[[work_processes]]\nname = \"minimal\"\nstart = true\n");
 
         assert!(validate(&source).is_empty(), "{:?}", validate(&source));
     }
@@ -521,11 +520,14 @@ filter = "true"
             ["the Receive Location 'OrdersIn' of 'Orders' requires the node that takes it"]
         );
 
-        let astray = text.replace("{ send-port = \"Billing\" }", "{ process = \"Approval\" }");
+        let astray = text.replace(
+            "{ send-port = \"Billing\" }",
+            "{ work-process = \"Approval\" }",
+        );
         assert_eq!(
             validate(&astray),
             [
-                "Xmip Application 'Orders': Subscription 'billing' routes to the Xmip Process \
+                "Xmip Application 'Orders': Subscription 'billing' routes to the Work Process \
                  'Approval', which the Application does not declare"
             ]
         );

@@ -1,6 +1,6 @@
 //! The arrival path: what a Host Service does with a Stream that turns up.
 //!
-//! **Not an entity.** A Xmip Service, a Host Service and a Xmip Process each
+//! **Not an entity.** A Xmip Service, a Host Service and a Work Process each
 //! have identity, lifecycle and configuration. This has none of them — nobody
 //! authors one, nothing has one, and there is never more than one of it. It is
 //! behaviour, and it lives here because the Host Service is what executes it.
@@ -931,7 +931,7 @@ filter = "xmip.party = '{party}'"
 
         let subscriptions = vec![Subscription::new(
             "high-assurance-only",
-            Subscriber::Process("Approval".to_string()),
+            Subscriber::WorkProcess("Approval".to_string()),
             equals("xmip.transport.class", "highAssurance"),
         )];
 

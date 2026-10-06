@@ -43,7 +43,7 @@ pub struct Publisher<'a> {
 }
 
 /// A Journey a Publication opens: the Subscription that matched and where
-/// the Journey leads — a Send Port, an Xmip Process, or a Send Port Group
+/// the Journey leads — a Send Port, a Work Process, or a Send Port Group
 /// no Application of this node declares.
 #[derive(Clone, Debug)]
 pub struct Opened {
@@ -70,7 +70,7 @@ pub(crate) fn opened(
         .flat_map(|evaluation| {
             let name = &evaluation.subscription_id;
             let cause = match &evaluation.destination {
-                Subscriber::Process(process) => ChainCause::process(name, process),
+                Subscriber::WorkProcess(process) => ChainCause::process(name, process),
                 Subscriber::SendPort(_) | Subscriber::SendGroup(_) => {
                     ChainCause::subscription(name)
                 }
