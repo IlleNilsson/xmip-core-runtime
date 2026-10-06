@@ -374,19 +374,11 @@ mod tests {
             "ledger-{}",
             PLACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let keys = secret::Held::new(secret::fixture::Memory::default());
-        let storage = persist::storage::Embedded::open(
-            rocksdb::RocksDb::open(&place).expect("the runtime database"),
-            sqlite::Sqlite::in_memory().expect("the administration database"),
-            &keys,
-            &secret::KekName::new(crate::storage::KEK).expect("a name"),
-        )
-        .expect("the test Storage node");
         Linked {
             transports: vec![LinkedTransport::new(TcpTransport::SETTINGS, counted)],
             authenticators: vec![Box::new(Always::circumstance())],
             policies: vec![Box::new(Open)],
-            storage: Some(Arc::new(storage)),
+            storage: Some(Arc::new(test_storage(&place))),
             ..Linked::default()
         }
     }
@@ -467,11 +459,27 @@ address = "{far}"
         )
     }
 
-    /// A directory of its own holding `configuration`, and the
-    /// configuration's path.
+    /// A test Storage node at `place`, its key-encryption key in memory and
+    /// so as new as the node: a database already at `place` was sealed
+    /// under a key that ended with whatever opened it.
+    fn test_storage(place: &Path) -> persist::storage::Embedded<rocksdb::RocksDb, sqlite::Sqlite> {
+        let keys = secret::Held::new(secret::fixture::Memory::default());
+        persist::storage::Embedded::open(
+            rocksdb::RocksDb::open(place).expect("the runtime database"),
+            sqlite::Sqlite::in_memory().expect("the administration database"),
+            &keys,
+            &secret::KekName::new(crate::storage::KEK).expect("a name"),
+        )
+        .expect("the test Storage node")
+    }
+
+    /// A directory of its own holding `configuration` and nothing else, and
+    /// the configuration's path. Emptied first: it is named for the process,
+    /// and an earlier process of the same id may have left it.
     fn written(test: &str, configuration: &str) -> PathBuf {
         let directory =
             std::env::temp_dir().join(format!("xmip-running-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("a directory");
         let path = directory.join("node.toml");
         std::fs::write(&path, configuration).expect("writes the node");
@@ -837,6 +845,7 @@ address = "{far}"
                 "{reason}: {:?}",
                 refused.problems
             );
+            let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
         }
 
         // ADR-0066 clause 1: a filter naming what no route technology this
@@ -854,6 +863,22 @@ address = "{far}"
             "{refused}"
         );
         let _ = std::fs::remove_dir_all(directory.parent().expect("its directory"));
+    }
+
+    /// The directories are named for the process, and Windows gives a
+    /// process id again: what an earlier process of the same id left —
+    /// a ledger sealed under a key-encryption key that ended with it — is
+    /// not what the next one's test Storage node opens.
+    #[test]
+    fn what_an_earlier_process_of_the_same_id_left_is_gone() {
+        let earlier = written("left", "");
+        let place = earlier.parent().expect("its directory").join("ledger");
+        drop(test_storage(&place));
+
+        let path = written("left", "");
+
+        drop(test_storage(&place));
+        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 
     const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"contract-rust\"\nstart = true\n\
