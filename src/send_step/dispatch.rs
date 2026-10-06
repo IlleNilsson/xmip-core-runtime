@@ -7,9 +7,10 @@ use std::thread::Scope;
 use std::time::{Duration, Instant};
 
 use route::Subscriber;
+use xcore::JourneyId;
 
 use super::pass::{Ended, abandoned, blocks, send};
-use super::scan::scan;
+use super::scan::{self, Ready, Unclaimed, scan};
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
 use crate::pool::Pool;
@@ -21,7 +22,8 @@ const AGAIN: Duration = Duration::from_millis(250);
 /// The send step of `runtime` dispatching on its Send pool in `scope`,
 /// until it is closed and what was handed to it is sent; `settled` is told
 /// how each pass ended. Every queue this node sends is read as it starts,
-/// for no more than the pool can take. The claims of work in flight are
+/// for no more than the pool can take; one read when the pool had no room
+/// is read again as soon as a place frees. The claims of work in flight are
 /// renewed on a thread of their own, so no scan of a backlog, however
 /// long, holds a renewal back.
 pub fn dispatch<'scope, 'env>(
@@ -61,10 +63,19 @@ pub fn dispatch<'scope, 'env>(
         let now = Instant::now();
         let all = next_scan <= now;
         for (to, queue) in &served {
-            let room = step.room();
-            if room > 0 && (all || asked.contains(queue)) {
-                for departure in scan(runtime, to, *queue, room) {
-                    run(&pool, runtime, settled, departure);
+            if !all && !asked.contains(queue) {
+                continue;
+            }
+            // No room: read again the moment a place frees, not at the
+            // next scan.
+            if step.room() == 0 {
+                step.starve(*queue);
+                continue;
+            }
+            for ready in scan(runtime, to, *queue) {
+                match ready {
+                    Ready::Claimed(departure) => run(&pool, runtime, settled, *departure),
+                    Ready::Unclaimed(unclaimed) => take(&pool, runtime, settled, unclaimed),
                 }
             }
         }
@@ -207,6 +218,7 @@ impl SendStep {
             Ended::Unwritten(why) => self.failed(&why),
         }
         state.owned.remove(&id);
+        state.freed();
         drop(state);
         self.wake.notify_all();
     }
@@ -226,20 +238,62 @@ fn run<'env>(
     settled: Settled<'env>,
     departure: Departure,
 ) {
+    pool.run(Box::new(move || sent(runtime, settled, departure)));
+}
+
+/// `unclaimed` claimed and read on a thread of `pool`, under the place
+/// admitted for it, and sent there: a backlog's claims are taken side by
+/// side, sharing their commits, never one by one on the dispatching, which
+/// cost a commit's sync each until 2026-10-06. Where it is not this node's
+/// to send after all, or its claim panics, its place is given back
+/// ([`Taking`]).
+fn take<'env>(
+    pool: &Pool<'_, 'env>,
+    runtime: &'env Runtime<'env>,
+    settled: Settled<'env>,
+    unclaimed: Unclaimed,
+) {
     pool.run(Box::new(move || {
-        let mut sending = Sending {
+        let mut taking = Taking {
             runtime,
-            settled,
-            departure: Some(departure),
+            journey: Some(unclaimed.journey()),
         };
-        let Some(departure) = sending.departure.as_mut() else {
-            return;
-        };
-        let ended = send(runtime, departure);
-        if let Some(departure) = sending.departure.take() {
-            runtime.send.settle(settled, departure, ended);
+        if let Some(departure) = scan::take(runtime, &unclaimed) {
+            taking.journey = None;
+            sent(runtime, settled, departure);
         }
     }));
+}
+
+/// `departure` sent, and its pass settled — also where its send panics.
+fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: Departure) {
+    let mut sending = Sending {
+        runtime,
+        settled,
+        departure: Some(departure),
+    };
+    let Some(departure) = sending.departure.as_mut() else {
+        return;
+    };
+    let ended = send(runtime, departure);
+    if let Some(departure) = sending.departure.take() {
+        runtime.send.settle(settled, departure, ended);
+    }
+}
+
+/// A Journey a scan found, being claimed on a send thread: its place given
+/// back unless it was claimed and owned, however the claim ended.
+struct Taking<'env> {
+    runtime: &'env Runtime<'env>,
+    journey: Option<JourneyId>,
+}
+
+impl Drop for Taking<'_> {
+    fn drop(&mut self) {
+        if let Some(journey) = self.journey.take() {
+            self.runtime.send.untake(journey);
+        }
+    }
 }
 
 /// One Journey on a send thread, settled however its send ends. Sent to
@@ -280,10 +334,7 @@ fn resume<'env>(
             departure.claim = claim;
             run(pool, runtime, settled, departure);
         }
-        Ok(None) => {
-            let id = departure.work.journey.journey_id();
-            step.lock().owned.remove(&id);
-        }
+        Ok(None) => step.let_go(departure.work.journey.journey_id()),
         Err(_) => step.lock().due.push((Instant::now() + AGAIN, departure)),
     }
 }

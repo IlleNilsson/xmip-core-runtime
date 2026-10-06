@@ -202,6 +202,8 @@ pub fn carry(
     };
     if let Arrived::Routed { work, facts, .. } = &arrived {
         runtime.send.handed(lined, &journeys, work, facts);
+    } else {
+        runtime.send.withdrawn(&lined);
     }
     Carried {
         arrived,

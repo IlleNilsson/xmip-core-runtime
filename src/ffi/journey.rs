@@ -10,13 +10,13 @@
 
 use abi::ffi::{Str, status};
 use abi::operate::publication::Publication as Handle;
-use observe::{Act, FailedJourney, FailedJourneys, Scope};
+use observe::{Act, FailedJourneys, Scope};
 use serde_json::{Value, json};
 
 use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
-use crate::send_step::{PUBLISHED_FAILED, SendStep};
+use crate::send_step::{PUBLISHED_FAILED, PortFigures, SendStep};
 
 /// A list of failed Journeys as the header writes it: each Port's, with the
 /// place its next page reads from, where there is one.
@@ -37,12 +37,18 @@ fn listed<'a>(
                     })
                 })
                 .collect();
+            let last = port
+                .last_failure
+                .as_ref()
+                .map(|last| json!({ "journey": last.journey, "reason": last.reason }));
             json!({
                 "node": port.node,
                 "send_port": port.send_port,
                 "count": port.count,
+                "blocked": port.blocked,
                 "next": next,
                 "journeys": journeys,
+                "last_failure": last,
             })
         })
         .collect();
@@ -105,25 +111,21 @@ fn failed(
             continue;
         }
         let ports = step.ports();
+        let figures = step.figures();
         for name in ports
             .into_iter()
             .filter(|name| port.is_empty() || name == port)
         {
             let page = step.failed_journeys(&name, from, most)?;
-            let journeys = page
-                .journeys
-                .iter()
-                .map(|failed| FailedJourney {
-                    journey: failed.journey.to_string(),
-                    sequence: failed.place,
-                    reason: failed.reason.clone(),
-                })
-                .collect();
+            let journeys = page.journeys.iter().map(|one| one.published()).collect();
+            let figures = figures.get(&name);
             let listed = FailedJourneys {
                 node: step.node().to_string(),
-                send_port: name,
                 count: page.count,
+                blocked: figures.is_some_and(|figures| figures.blocked),
                 journeys,
+                last_failure: figures.and_then(PortFigures::last),
+                send_port: name,
             };
             failed.push((listed, page.next));
         }
@@ -258,19 +260,39 @@ mod tests {
             node,
             send_port: "Out".to_string(),
             count: 3,
-            journeys: vec![FailedJourney {
+            blocked: true,
+            journeys: vec![observe::FailedJourney {
                 journey: "j".to_string(),
                 sequence: 2,
                 reason: "refused".to_string(),
             }],
+            last_failure: Some(observe::LastFailure {
+                journey: "k".to_string(),
+                reason: "refused since".to_string(),
+            }),
         };
-        let read: Value =
-            serde_json::from_str(&listed("orders", [(&port, Some(3))].into_iter())).expect("JSON");
+        let none_now = FailedJourneys {
+            send_port: "Quiet".to_string(),
+            ..FailedJourneys::default()
+        };
+        let read: Value = serde_json::from_str(&listed(
+            "orders",
+            [(&port, Some(3)), (&none_now, None)].into_iter(),
+        ))
+        .expect("JSON");
         let first = &read["failed_journeys"][0];
         assert_eq!(first["send_port"], "Out");
         assert_eq!(first["count"], 3);
+        assert_eq!(first["blocked"], true);
         assert_eq!(first["next"], 3);
         assert_eq!(first["journeys"][0]["reason"], "refused");
+        assert_eq!(first["last_failure"]["journey"], "k", "history, apart");
+        let quiet = &read["failed_journeys"][1];
+        assert_eq!(
+            (&quiet["count"], &quiet["blocked"]),
+            (&json!(0), &json!(false))
+        );
+        assert_eq!(quiet["last_failure"], Value::Null);
         assert_eq!(read["orders"], "orders");
     }
 

@@ -7,9 +7,10 @@
 //! move is one hand-on under a claim — its place in the Subscription's
 //! queue let go of, its place at the end of the Send Port's taken — so a
 //! held Journey is in one queue or the other, never both and never
-//! neither. Where this node sends that Port, the claim is kept and the
-//! Journey handed to the Send pool at once; otherwise it waits in the
-//! Port's queue for a node that does.
+//! neither. Where this node sends that Port and its Send pool admits it,
+//! the claim is kept and the Journey handed to the pool at once; otherwise
+//! it waits in the Port's queue, unclaimed, for a node that sends it or for
+//! room — a resume of a long hold never fills memory with it.
 //!
 //! **Everything is read back from the Ledger.** The Journey, its Message
 //! and the Message's Stream were written by the receive; what the hold kept
@@ -101,7 +102,11 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         .clone()
         .map_or_else(|| released.destination.clone(), route::Subscriber::SendPort);
     let queue = step.queue(&to);
-    let sent_here = runtime.sends.serves(&to) && !send_step::sequential(runtime.sends, &to);
+    // Sent here only under a place the Send pool admits; without one it
+    // waits in the Port's queue, unclaimed, for room.
+    let sent_here = runtime.sends.serves(&to)
+        && !send_step::sequential(runtime.sends, &to)
+        && step.admit(1) == 1;
     let moved = HandOn {
         claim: claim.clone(),
         result: send_step::record(&work.journey),
@@ -117,13 +122,17 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         kept_for_nanos: sent_here
             .then(|| u64::try_from(step.lease().as_nanos()).unwrap_or(u64::MAX)),
     };
+    let not_moved = |why: String| {
+        step.withdraw(usize::from(sent_here));
+        Err(why)
+    };
     match storage.hand_on(&moved) {
         Ok(true) => {}
-        Ok(false) => return Err(format!("the claim on the Journey {id} lapsed")),
+        Ok(false) => return not_moved(format!("the claim on the Journey {id} lapsed")),
         Err(error) => {
             // Given back, so reading it again claims it again at once.
             let _ = storage.release(&claim);
-            return Err(error.to_string());
+            return not_moved(error.to_string());
         }
     }
     pickup.moved(released);

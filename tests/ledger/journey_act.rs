@@ -7,7 +7,10 @@
 //!   so its sequence goes on in order from it, and Dismiss ends it
 //!   Dismissed and lets the next of its sequence go;
 //! - an act on a Journey that has not failed, or on none, is refused in
-//!   words, and so is a word that is no act on a Journey.
+//!   words, and so is a word that is no act on a Journey;
+//! - the Port's figures say it is blocked while the failed Journey waits,
+//!   and neither failing nor blocked once it is acted on, its last failure
+//!   kept apart as history.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +26,9 @@ use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::carry;
 
 use super::receive_cycle::{node, on_node};
-use super::sending::{dispatching, journey, memory, onward, order, out, sender, took, waiting};
+use super::sending::{
+    dispatching, journey, memory, onward, order, out, sender, took, until, waiting,
+};
 
 /// A far end refusing `order <refused>` for good until `fixed`.
 fn broken_for(refused: u32, fixed: &Arc<AtomicBool>) -> Answer {
@@ -118,11 +123,21 @@ fn blocked_then(act: Act) -> (Vec<String>, JourneyState, Vec<JourneyId>) {
                     .collect();
                 told.wait_for(ids[2], "failed");
                 assert_eq!(waiting(runtime), ids[2..], "blocked behind it");
+                let now = || {
+                    let figures = &runtime.send.figures()["Out"];
+                    (figures.failing, figures.blocked)
+                };
+                until(|| now() == (1, true), "said blocked");
                 fixed.store(true, Ordering::Release);
                 runtime
                     .send
                     .act(&ids[2].to_string(), act, "ilian")
                     .expect("acted");
+                // A scan that read it Failed just before the act may say so
+                // once more; the next reads it as the act left it.
+                until(|| now() == (0, false), "acted on: none failing now");
+                let last = runtime.send.figures()["Out"].last_failure.clone();
+                assert_eq!(last.map(|(id, _)| id), Some(ids[2].to_string()), "history");
                 for (place, id) in ids.iter().enumerate() {
                     if place != 2 {
                         told.wait_for(*id, "completed");

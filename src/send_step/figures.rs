@@ -2,9 +2,16 @@
 //! failed there with its reason, and every Journey that failed waiting in
 //! its queue for an operator: what its snapshot publishes at the Port's
 //! scope (`crate::running::publication`), so every surface shows it.
+//!
+//! **Now, and what was.** `failing`, `oldest_failing` and `blocked` are the
+//! queue as it stands, from the Journeys a scan of the Ledger read Failed
+//! in it; `sent`, `failed` and `last_failure` are history since the node
+//! started. Until 2026-10-06 `last_failure` was filled from the queue where
+//! the node had seen none fail, so history and now were one figure.
 
 use std::collections::{BTreeMap, HashSet};
 
+use observe::{FailedJourneys, LastFailure};
 use xcore::JourneyId;
 
 use super::SendStep;
@@ -24,12 +31,16 @@ pub struct PortFigures {
     pub failed: u64,
     /// Journeys waiting now for a retry's due time.
     pub waiting: u64,
-    /// The last that failed: its Journey and why, in words.
+    /// The last that failed here since the node started: its Journey and
+    /// why, in words. History: it may since have been retried or dismissed.
     pub last_failure: Option<(String, String)>,
-    /// How many Journeys that failed wait in its queue for an operator, as
-    /// the node's scans of the Ledger found them — those that failed before
-    /// a restart, or on another node, among them.
+    /// How many Journeys that failed wait in its queue for an operator now,
+    /// as the node's scans of the Ledger found them — those that failed
+    /// before a restart, or on another node, among them.
     pub failing: u64,
+    /// Whether one of them blocks its sequence now: a Sequential Send Port
+    /// whose `on_failure` is `block`.
+    pub blocked: bool,
     /// The oldest of them, at most [`PUBLISHED_FAILED`].
     pub oldest_failing: Vec<FailedJourney>,
 }
@@ -53,10 +64,61 @@ impl PortFigures {
             "sent {}, failed {}, waiting {}, failed in its queue {}",
             self.sent, self.failed, self.waiting, self.failing
         );
+        if self.blocked {
+            said.push_str(", its sequence blocked behind them");
+        }
         if let Some((journey, why)) = &self.last_failure {
             said.push_str(&format!("; the Journey {journey} failed: {why}"));
         }
         said
+    }
+
+    /// The last Journey that failed here since the node started, as every
+    /// publication of it says it: history, apart from what fails now.
+    #[must_use]
+    pub fn last(&self) -> Option<LastFailure> {
+        self.last_failure
+            .as_ref()
+            .map(|(journey, reason)| LastFailure {
+                journey: journey.clone(),
+                reason: reason.clone(),
+            })
+    }
+
+    /// The Journeys that failed at the Send Port `port` of the node at
+    /// `node`, as its snapshot publishes them: how many wait in its queue
+    /// now — zero where none, so a surface says *none now* from the record
+    /// rather than from its absence — whether they block its sequence, the
+    /// oldest with why, and apart from them the last that failed there since
+    /// the node started, as history. Until 2026-10-06 only a Port with some
+    /// waiting was published.
+    #[must_use]
+    pub fn published(&self, node: &str, port: &str) -> FailedJourneys {
+        FailedJourneys {
+            node: node.to_string(),
+            send_port: port.to_string(),
+            count: self.failing,
+            blocked: self.blocked,
+            journeys: self
+                .oldest_failing
+                .iter()
+                .map(FailedJourney::published)
+                .collect(),
+            last_failure: self.last(),
+        }
+    }
+}
+
+impl FailedJourney {
+    /// The Journey as a publication, and every list of failed Journeys,
+    /// says it.
+    #[must_use]
+    pub fn published(&self) -> observe::FailedJourney {
+        observe::FailedJourney {
+            journey: self.journey.to_string(),
+            sequence: self.place,
+            reason: self.reason.clone(),
+        }
     }
 }
 
@@ -77,12 +139,7 @@ impl SendStep {
             let figures = figures.entry(port.clone()).or_default();
             figures.failing = failing.len() as u64;
             figures.oldest_failing = failing.values().take(PUBLISHED_FAILED).cloned().collect();
-            if figures.last_failure.is_none()
-                && let Some(newest) = failing.values().next_back()
-            {
-                let id = newest.journey.to_string();
-                figures.last_failure = Some((id, newest.reason.clone()));
-            }
+            figures.blocked = !failing.is_empty() && state.ports.get(port) == Some(&true);
         }
         figures
     }
