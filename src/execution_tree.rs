@@ -15,8 +15,8 @@
 use abi::ExtensionManifest;
 use configure::{
     BoundReceivePort, ConfiguredLocation, Declarations, DesignedSendPort, ModuleConfiguration,
-    SendPortGroup, ServiceConfiguration, XmipApplication, XmipConfigurationDocument,
-    XmipProcessConfiguration,
+    SendPortGroup, ServiceConfiguration, WorkProcessConfiguration, XmipApplication,
+    XmipConfigurationDocument,
 };
 use route::Subscription;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use crate::tuning::Tuning;
 pub struct ExecutionTree {
     pub service: ServiceConfiguration,
     pub modules_to_start: Vec<ModuleConfiguration>,
-    pub xmip_processes_to_start: Vec<XmipProcessConfiguration>,
+    pub work_processes_to_start: Vec<WorkProcessConfiguration>,
     pub receive_locations_to_start: Vec<ConfiguredLocation>,
     /// The Receive Ports of the Applications the node binds that its bound
     /// Receive Locations are at, each Location with the interaction and
@@ -110,22 +110,15 @@ pub fn build_execution_tree(
         .filter(|module| module.start)
         .collect();
 
-    let xmip_processes_to_start = document
-        .xmip_processes
+    let work_processes_to_start = document
+        .work_processes
         .into_iter()
-        .filter(|xmip_process| xmip_process.start)
+        .filter(|work_process| work_process.start)
         .collect::<Vec<_>>();
 
-    let verified_extensions = xmip_processes_to_start
+    let verified_extensions = work_processes_to_start
         .iter()
-        .flat_map(|xmip_process| {
-            xmip_process.extensions.iter().chain(
-                xmip_process
-                    .xmip_subprocesses
-                    .iter()
-                    .flat_map(|xmip_subprocess| xmip_subprocess.extensions.iter()),
-            )
-        })
+        .flat_map(|work_process| work_process.extensions.iter())
         .map(verified_extension)
         .collect();
 
@@ -133,7 +126,7 @@ pub fn build_execution_tree(
         ExecutionTree {
             service: document.service,
             modules_to_start,
-            xmip_processes_to_start,
+            work_processes_to_start,
             receive_locations_to_start: starting(
                 document
                     .receive_locations
@@ -197,13 +190,13 @@ pub fn validate_startup_configuration(
         }
     }
 
-    for xmip_process in &document.xmip_processes {
-        if xmip_process.name.trim().is_empty() {
-            errors.push("configured Xmip Process requires a name".to_string());
+    for work_process in &document.work_processes {
+        if work_process.name.trim().is_empty() {
+            errors.push("configured Work Process requires a name".to_string());
         }
 
-        let owner = format!("Xmip Process '{}'", xmip_process.name);
-        for required_module in &xmip_process.required_modules {
+        let owner = format!("Work Process '{}'", work_process.name);
+        for required_module in &work_process.required_modules {
             validate_required_module(
                 required_module,
                 &configured_modules,
@@ -214,36 +207,8 @@ pub fn validate_startup_configuration(
             );
         }
 
-        for extension in &xmip_process.extensions {
+        for extension in &work_process.extensions {
             verify_extension_manifest(extension, &mut errors, &owner);
-        }
-
-        for xmip_subprocess in &xmip_process.xmip_subprocesses {
-            if xmip_subprocess.name.trim().is_empty() {
-                errors.push(format!(
-                    "Xmip Process '{}' has an Xmip Subprocess without a name",
-                    xmip_process.name
-                ));
-            }
-
-            let owner = format!(
-                "Xmip Subprocess '{}' of Xmip Process '{}'",
-                xmip_subprocess.name, xmip_process.name
-            );
-            for required_module in &xmip_subprocess.required_modules {
-                validate_required_module(
-                    required_module,
-                    &configured_modules,
-                    &started_modules,
-                    &mut errors,
-                    &mut warnings,
-                    &owner,
-                );
-            }
-
-            for extension in &xmip_subprocess.extensions {
-                verify_extension_manifest(extension, &mut errors, &owner);
-            }
         }
     }
 
@@ -389,21 +354,17 @@ trusted_required = true
 library_path = "xmip_handler_file"
 symbol = "xmip_create_module"
 
-[[xmip_processes]]
+[[work_processes]]
 name = "inbound"
 start = true
 required_modules = ["file"]
-extensions = []
 
-[[xmip_processes.xmip_subprocesses]]
-name = "normalize"
-required_modules = ["file"]
-[[xmip_processes.xmip_subprocesses.extensions]]
+[[work_processes.extensions]]
 name = "normalize-text"
 version = "0.1.0"
 execution_host = "native-rust"
 required_capabilities = []
-[xmip_processes.xmip_subprocesses.extensions.entrypoint]
+[work_processes.extensions.entrypoint]
 path = "extensions/normalize_text"
 symbol_or_command = "run"
 
@@ -429,7 +390,7 @@ address = "C:/out"
         assert!(report.is_valid());
         assert_eq!(tree.service, document.service);
         assert_eq!(tree.modules_to_start, document.modules);
-        assert_eq!(tree.xmip_processes_to_start, document.xmip_processes);
+        assert_eq!(tree.work_processes_to_start, document.work_processes);
         assert_eq!(tree.receive_locations_to_start, document.receive_locations);
         assert!(tree.send_locations_to_start.is_empty(), "start = false");
         assert_eq!(tree.verified_extensions.len(), 1);

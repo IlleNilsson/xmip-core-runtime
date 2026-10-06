@@ -234,7 +234,7 @@ impl Pickup {
 
     /// Where the Journeys the Subscription `name` opens lead, one Journey
     /// each: every Send Port it reaches, or, where it reaches none this
-    /// node knows — an Xmip Process, a Send Port Group no Application here
+    /// node knows — a Work Process, a Send Port Group no Application here
     /// declares, a Subscription not configured — `destination` itself.
     #[must_use]
     pub fn reaches(&self, name: &str, destination: &Subscriber) -> Vec<Subscriber> {

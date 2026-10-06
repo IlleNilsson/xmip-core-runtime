@@ -77,7 +77,7 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
 }
 
 /// Startup phase 5: the Host Service this process is, started; any other a
-/// Module needs is refused, since this node starts no Host Process of its own
+/// Module needs is refused, since this node starts no Host Service of its own
 /// yet (ADR-0018 clause 3).
 pub(crate) fn start_host_services(services: &mut [HostService]) -> Result<(), Vec<String>> {
     let mut problems = Vec::new();

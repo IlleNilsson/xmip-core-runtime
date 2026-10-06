@@ -174,7 +174,7 @@ fn written(
 fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
     match to {
         Subscriber::SendPort(port) => runtime.sends.port(port).backoff(),
-        Subscriber::SendGroup(_) | Subscriber::Process(_) => Duration::ZERO,
+        Subscriber::SendGroup(_) | Subscriber::WorkProcess(_) => Duration::ZERO,
     }
 }
 

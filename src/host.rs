@@ -1,10 +1,9 @@
 //! The Xmip Host Services a node's Modules run in, planned at startup phase 4
 //! and started at phase 5 (ADR-0018).
 //!
-//! The System Process a Host Service runs as is the Host Process; this is the
-//! service. Which Host Service a Module needs is decided by one rule,
-//! [`host_type`]: what the Module is *written in*, never what it does or what
-//! it is called.
+//! A Host Service is a process. Which Host Service a Module needs is decided
+//! by one rule, [`host_type`]: what the Module is *written in*, never what it
+//! does or what it is called.
 
 use std::collections::BTreeMap;
 
@@ -127,7 +126,7 @@ pub fn plan(modules: &[ModuleManifest]) -> Vec<HostService> {
 
 /// Which Host Service a Module needs.
 ///
-/// What decides the host process is what a Module is *written in*, never what
+/// What decides the Host Service is what a Module is *written in*, never what
 /// it does (ADR-0012 clause 5 removed the Module's `kind`): a .NET transport
 /// and a .NET content handler share a host; a .NET transport and a Rust
 /// transport do not.
@@ -225,7 +224,7 @@ mod tests {
         assert!(planned[0].in_process() && planned[2].in_process());
         assert!(
             !planned[1].in_process(),
-            "a .NET module needs its own Host Process"
+            "a .NET module needs a Host Service of its own"
         );
         assert!(planned.iter().all(|h| h.state == HostServiceState::Planned));
     }

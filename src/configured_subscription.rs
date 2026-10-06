@@ -27,7 +27,7 @@ pub struct ConfiguredSubscription {
     /// every Port of its Send Port Group in the Group's order
     /// (`runtime-model.md` section 10: *A Send Port Group is only a named
     /// set: routing already made one Journey per Send Port in it*). None
-    /// for an Xmip Process, or a Group no Application it is drawn in
+    /// for a Work Process, or a Group no Application it is drawn in
     /// declares.
     pub ports: Vec<String>,
 }
@@ -69,7 +69,7 @@ impl ConfiguredSubscription {
         Self {
             ports: match &subscription.destination {
                 Subscriber::SendPort(port) => vec![port.clone()],
-                Subscriber::SendGroup(_) | Subscriber::Process(_) => Vec::new(),
+                Subscriber::SendGroup(_) | Subscriber::WorkProcess(_) => Vec::new(),
             },
             subscription,
             application: String::new(),
@@ -102,6 +102,6 @@ fn reached(destination: &Subscriber, application: &XmipApplication) -> Vec<Strin
             .find(|declared| &declared.name == group)
             .map(|declared| declared.send_ports.clone())
             .unwrap_or_default(),
-        Subscriber::Process(_) => Vec::new(),
+        Subscriber::WorkProcess(_) => Vec::new(),
     }
 }

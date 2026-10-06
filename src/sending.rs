@@ -87,7 +87,7 @@ impl Port<'_> {
 pub enum Destination<'a> {
     /// A Send Port, or every Port of a Send Port Group in the group's order.
     Ports(Vec<Port<'a>>),
-    /// An Xmip Process. Running one is not built: a Process is compiled at
+    /// A Work Process. Running one is not built: a Process is compiled at
     /// design time into a module a node loads (ADR-0066 clause 4), and none
     /// is yet.
     Process,
@@ -117,7 +117,7 @@ impl Sends {
                 .map_or(Destination::Nowhere, |group| {
                     Destination::Ports(group.send_ports.iter().map(|p| self.port(p)).collect())
                 }),
-            Subscriber::Process(_) => Destination::Process,
+            Subscriber::WorkProcess(_) => Destination::Process,
         }
     }
 

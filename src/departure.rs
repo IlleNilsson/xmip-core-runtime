@@ -58,7 +58,7 @@ pub enum Departed {
     /// Location: the same class of mistake `never_satisfiable` catches on the
     /// receive side, found here at run time.
     NoSuchDestination { to: Subscriber },
-    /// Routing matched an Xmip Process, and this runtime runs none yet: a
+    /// Routing matched a Work Process, and this runtime runs none yet: a
     /// Process is compiled at design time into a module a node loads
     /// (ADR-0066 clause 4).
     ProcessNotRun { to: Subscriber },
