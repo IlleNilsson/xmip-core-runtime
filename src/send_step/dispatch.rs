@@ -2,22 +2,18 @@
 //! a scan of its queues finds, each sent on the Send pool; the claims of
 //! work in flight renewed; and what a stop gives back.
 
-use std::collections::HashSet;
 use std::thread::Scope;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use route::Subscriber;
 use xcore::JourneyId;
 
 use super::pass::{Ended, abandoned, blocks, send};
+use super::renewal::resume;
 use super::scan::{self, Ready, Unclaimed, scan};
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
 use crate::pool::Pool;
-
-/// How long a renewal Xmip Storage did not answer waits before it is asked
-/// again.
-const AGAIN: Duration = Duration::from_millis(250);
 
 /// The send step of `runtime` dispatching on its Send pool in `scope`,
 /// until it is closed and what was handed to it is sent; `settled` is told
@@ -120,53 +116,6 @@ impl SendStep {
         (state.closed, handed, due, asked)
     }
 
-    /// Renew the claim of every Journey in flight every third of a lease,
-    /// until the step is closed and nothing is in flight: its own thread,
-    /// so a send that takes longer than a lease, or one queued behind a
-    /// long scan, is not taken up by another node meanwhile.
-    fn renewing(&self) {
-        let mut next = Instant::now() + self.lease / 3;
-        let mut state = self.lock();
-        loop {
-            if state.closed && state.owned.is_empty() {
-                return;
-            }
-            let now = Instant::now();
-            if next <= now {
-                drop(state);
-                self.renew();
-                next = Instant::now() + self.lease / 3;
-                state = self.lock();
-                continue;
-            }
-            state = self
-                .wake
-                .wait_timeout(state, next - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-    }
-
-    /// Renew the claim of every Journey in flight.
-    fn renew(&self) {
-        let state = self.lock();
-        let waiting: HashSet<_> = state
-            .due
-            .iter()
-            .map(|(_, departure)| departure.work.journey.journey_id())
-            .collect();
-        let flying: Vec<_> = state
-            .owned
-            .iter()
-            .filter(|(id, _)| !waiting.contains(id))
-            .map(|(_, owned)| owned.claim.clone())
-            .collect();
-        drop(state);
-        for claim in flying {
-            let _ = self.storage.renew(&claim, self.lease);
-        }
-    }
-
     /// Give back the claim of everything waiting for its due time, `due`
     /// among it: a stop drains rather than letting its claims lapse
     /// (ADR-0018 clause 12).
@@ -193,6 +142,10 @@ impl SendStep {
         }
         match ended {
             Ended::Waiting { after, .. } if !state.closed => {
+                drop(state);
+                // Its hand-on confirmed the claim to its due time.
+                self.confirm(&departure);
+                state = self.lock();
                 state.due.push((Instant::now() + after, departure));
                 drop(state);
                 self.wake.notify_all();
@@ -214,7 +167,11 @@ impl SendStep {
                 figures.last_failure = Some((id.to_string(), reason.clone()));
                 self.failed(&format!("the Journey {id} to {}: {reason}", departure.to));
             }
-            Ended::Lost(_) => {}
+            Ended::Lost(_) => {
+                drop(state);
+                self.lost(&departure, "its claim was another's at its hand-on");
+                return;
+            }
             Ended::Unwritten(why) => self.failed(&why),
         }
         state.owned.remove(&id);
@@ -232,7 +189,7 @@ impl SendStep {
 
 /// `departure` sent on `pool`, and its pass settled — also where its send
 /// panics ([`Sending`]).
-fn run<'env>(
+pub(super) fn run<'env>(
     pool: &Pool<'_, 'env>,
     runtime: &'env Runtime<'env>,
     settled: Settled<'env>,
@@ -316,25 +273,5 @@ impl Drop for Sending<'_> {
         let why = "its send thread panicked before its hand-on was written";
         let ended = abandoned(self.runtime, &mut departure, why);
         self.runtime.send.settle(self.settled, departure, ended);
-    }
-}
-
-/// `departure`, due again: its claim renewed and sent; let go of where the
-/// claim is another's now, and due again shortly where Xmip Storage did not
-/// answer.
-fn resume<'env>(
-    pool: &Pool<'_, 'env>,
-    runtime: &'env Runtime<'env>,
-    settled: Settled<'env>,
-    mut departure: Departure,
-) {
-    let step = runtime.send;
-    match step.storage.renew(&departure.claim, step.lease) {
-        Ok(Some(claim)) => {
-            departure.claim = claim;
-            run(pool, runtime, settled, departure);
-        }
-        Ok(None) => step.let_go(departure.work.journey.journey_id()),
-        Err(_) => step.lock().due.push((Instant::now() + AGAIN, departure)),
     }
 }

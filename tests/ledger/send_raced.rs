@@ -8,7 +8,11 @@
 //!   nothing: the Journey stays Completed and is not sent again;
 //! - a scan of a Sequential Send Port that read a Journey waiting, while
 //!   another node sent it and let go of its place before the claim, does
-//!   not send it a second time.
+//!   not send it a second time;
+//! - a Publication whose answer was lost, asked again after its claim
+//!   lapsed and another node sent its Journey, writes nothing back and
+//!   sends nothing from here: the Journey stays Completed, out of its
+//!   queue, delivered once.
 
 use journey::JourneyState;
 use observe::Act;
@@ -19,8 +23,8 @@ use xmip_core_runtime::message_path::carry;
 
 use super::receive_cycle::{node, on_node, on_runtime};
 use super::sending::{
-    dispatching, interleaving, journey, onward, order, out, refusing, sender, sent_elsewhere,
-    taking, took, waiting,
+    Pinned, dispatching, interleaving, journey, onward, order, out, refusing, sender,
+    sent_elsewhere, taking, telling, took, waiting,
 };
 
 #[test]
@@ -99,4 +103,47 @@ fn a_sequential_scan_never_sends_a_journey_another_node_sent_between_its_read_an
         ["order 2"],
         "the first went once, from elsewhere"
     );
+}
+
+#[test]
+fn a_publication_asked_again_after_a_lost_answer_never_resends_what_another_node_sent() {
+    let clock = std::sync::Arc::new(Pinned::default());
+    let failing = xmip_core_runtime::fixture::Failing::over(telling(&clock));
+    let storage: std::sync::Arc<dyn persist::storage::XmipStorage> = failing.clone();
+    let (far, taken) = FarEnd::answering(taking());
+    // No scan of this node's: the lapsed claim is the other node's to take
+    // up, between the clock passing and its claim, never a race with a scan
+    // every 20 ms that took it first under load.
+    let mut sends = sender(node(), far, out(|_| {}));
+    sends.tuning.send_scan = std::time::Duration::from_secs(3600);
+    let id = on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sends,
+        |runtime, pickup, gate| {
+            let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
+            // Between the write and its lost answer the Publication's claim
+            // lapses, and another node sends its Journey.
+            let elsewhere = std::sync::Arc::clone(&storage);
+            let lapsing = std::sync::Arc::clone(&clock);
+            failing.lose_answer(Box::new(move || {
+                lapsing.pass(std::time::Duration::from_secs(60));
+                let read = elsewhere.read_held(queue, 0, 1).expect("read");
+                sent_elsewhere(elsewhere.as_ref(), queue, read.held[0].hold.journey);
+            }));
+            let (id, _) = dispatching(runtime, |_| {
+                let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+                assert!(!runtime.send.holds(id), "not this node's to send");
+                id
+            });
+            assert!(waiting(runtime).is_empty(), "not queued again");
+            id
+        },
+    );
+    assert_eq!(
+        journey(storage.as_ref(), id).state,
+        JourneyState::Completed,
+        "the other node's send stands"
+    );
+    assert!(took(&taken).is_empty(), "never sent from here");
 }

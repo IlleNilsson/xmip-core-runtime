@@ -12,10 +12,40 @@
 //! 2026-10-06 only a scan asked for room: a Publication claimed every
 //! Journey it opened for a Port this node sends and handed it on, and the
 //! pool queued whatever came, however much.
+//!
+//! **What it owns, it owns under a claim** ([`Owned`]): each Journey's
+//! claim, its Send Port, and where the claim stands
+//! ([`super::renewal`]). A Publication's claims are owned only where Xmip
+//! Storage's answer says this node holds them ([`SendStep::confirmed`]).
 
+use persist::storage::Claim;
 use xcore::JourneyId;
 
-use super::{LinedUp, Owned, SendStep, State};
+use super::{Departure, LinedUp, SendStep, State, renewal};
+
+/// A Journey this node holds claimed: in flight on the Send pool, or
+/// waiting for its due time — its Send Port, and where its claim stands.
+#[derive(Clone, Debug)]
+pub(super) struct Owned {
+    pub(super) claim: Claim,
+    pub(super) queue: u128,
+    pub(super) sequence: Option<String>,
+    pub(super) port: String,
+    pub(super) standing: renewal::Standing,
+}
+
+impl Owned {
+    /// `departure`, owned: its claim confirmed until its `until`.
+    pub(super) fn of(departure: &Departure) -> Self {
+        Self {
+            claim: departure.claim.clone(),
+            queue: departure.queue,
+            sequence: departure.sequence.clone(),
+            port: departure.to.name().to_string(),
+            standing: renewal::Standing::confirmed(departure.until),
+        }
+    }
+}
 
 impl SendStep {
     /// Places in the Send pool for up to `wanted` Journeys: as many as it
@@ -46,6 +76,25 @@ impl SendStep {
     /// written, or nothing it claimed is to be sent here.
     pub(crate) fn withdrawn(&self, lined: &LinedUp) {
         self.withdraw(lined.admitted);
+    }
+
+    /// `lined` as its Publication's write answered: only the claims Xmip
+    /// Storage says this node `holds` are sent from here, and the place of
+    /// every other is given back. A Publication asked again after a lost
+    /// answer holds none another node has taken up since, so a Journey sent
+    /// meanwhile is never sent a second time from here.
+    pub(crate) fn confirmed(&self, lined: &mut LinedUp, holds: &[Claim]) {
+        let held = |claim: &Claim| {
+            holds
+                .iter()
+                .any(|kept| kept.journey == claim.journey && kept.token == claim.token)
+        };
+        let before = lined.claimed.len();
+        lined.claimed.retain(|(_, _, _, claim)| held(claim));
+        lined.claims.retain(held);
+        let gone = before - lined.claimed.len();
+        lined.admitted = lined.admitted.saturating_sub(gone);
+        self.withdraw(gone);
     }
 
     /// How many more Journeys the Send pool can take now: its most threads,
@@ -87,15 +136,6 @@ impl SendStep {
         if !state.starved.contains(&queue) {
             state.starved.push(queue);
         }
-    }
-
-    /// The Journey `id` let go of: no longer this node's, its place free.
-    pub(super) fn let_go(&self, id: JourneyId) {
-        let mut state = self.lock();
-        state.owned.remove(&id);
-        state.freed();
-        drop(state);
-        self.wake.notify_all();
     }
 }
 

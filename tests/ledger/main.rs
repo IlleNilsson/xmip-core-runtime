@@ -34,7 +34,9 @@
 //! `send_bounded.rs` a panicking send, a scan and a Publication bounded by
 //! the pool, Journeys another node holds keeping no place, renewal while a
 //! scan is held up, and failure evidence after a restart;
-//! `sending.rs` the test node that sends they run, and its far end;
+//! `send_claim.rs` a claim found another's, or unconfirmed past its lease,
+//! stopping a send's further attempts; `sending.rs` the test node that
+//! sends they run, and its far end;
 //! `untold.rs` a far end that could not be told, audited once per reason.
 
 mod bounded;
@@ -47,6 +49,7 @@ mod panicked;
 mod receive_cycle;
 mod send;
 mod send_bounded;
+mod send_claim;
 mod send_group;
 mod send_killed;
 mod send_raced;

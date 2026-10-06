@@ -10,9 +10,10 @@
 //! the node had seen none fail, so history and now were one figure.
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
 use observe::{FailedJourneys, LastFailure};
-use xcore::JourneyId;
+use xcore::{Clock, JourneyId, SystemClock};
 
 use super::SendStep;
 
@@ -43,6 +44,15 @@ pub struct PortFigures {
     pub blocked: bool,
     /// The oldest of them, at most [`PUBLISHED_FAILED`].
     pub oldest_failing: Vec<FailedJourney>,
+    /// Claims of its Journeys this node holds whose renewal Xmip Storage
+    /// has not answered, now: the Port is Done while any is.
+    pub unconfirmed: u64,
+    /// When the oldest of those renewals was asked, in nanoseconds since
+    /// the Unix epoch: since when Xmip Storage has not answered.
+    pub unanswered_since: Option<i128>,
+    /// Journeys whose claim this node found another's, or presumed lapsed,
+    /// since it started, and let go of without sending them further.
+    pub lost: u64,
 }
 
 /// A Journey that failed, waiting in its Send Port's queue for an
@@ -66,6 +76,18 @@ impl PortFigures {
         );
         if self.blocked {
             said.push_str(", its sequence blocked behind them");
+        }
+        if self.unconfirmed > 0 {
+            said.push_str(&format!(
+                ", Xmip Storage has not answered the renewal of its claims {}",
+                self.unconfirmed
+            ));
+            if let Some(since) = self.unanswered_since {
+                said.push_str(&format!(" since {}", codec::civil::rfc3339_nanos(since)));
+            }
+        }
+        if self.lost > 0 {
+            said.push_str(&format!(", claims lost to another holder {}", self.lost));
         }
         if let Some((journey, why)) = &self.last_failure {
             said.push_str(&format!("; the Journey {journey} failed: {why}"));
@@ -134,6 +156,17 @@ impl SendStep {
         for (_, waiting) in &state.due {
             let port = waiting.to.name().to_string();
             figures.entry(port).or_default().waiting += 1;
+        }
+        let (now, wall) = (Instant::now(), SystemClock.unix_timestamp_nanos());
+        for owned in state.owned.values() {
+            if let Some(asked) = owned.standing.unanswered_since() {
+                let ago = i128::try_from(now.saturating_duration_since(asked).as_nanos());
+                let since = wall - ago.unwrap_or(0);
+                let figures = figures.entry(owned.port.clone()).or_default();
+                figures.unconfirmed += 1;
+                figures.unanswered_since =
+                    Some(figures.unanswered_since.map_or(since, |was| was.min(since)));
+            }
         }
         for (port, failing) in &state.failing {
             let figures = figures.entry(port.clone()).or_default();

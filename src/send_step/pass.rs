@@ -3,7 +3,7 @@
 //! scan finds.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use configure::OnFailure;
 use context::IdentityFacts;
@@ -41,7 +41,8 @@ pub enum Ended {
         departed: Vec<Departed>,
     },
     /// The claim was no longer this node's — it lapsed, and another took
-    /// the Journey up — so nothing was written.
+    /// the Journey up, or a renewal found it another's — so nothing was
+    /// written, and nothing more tried from here.
     Lost(Vec<Departed>),
     /// Xmip Storage did not take the hand-on, in words: the claim lapses,
     /// and the Journey is sent again — at least once, never lost.
@@ -49,11 +50,14 @@ pub enum Ended {
 }
 
 /// One pass of `departure`'s send — its Send Port, unless sent already,
-/// tried once on its active Send Location, failing over as its policy says
-/// — and its hand-on, one write: the outcome on the Journey, with what was
-/// tried in words and its tries, its place let go of where it was sent,
-/// and the claim released or kept to its due time.
+/// tried once on its active Send Location, failing over as its policy says,
+/// each try only while its claim is surely this node's — and its hand-on,
+/// one write: the outcome on the Journey, with what was tried in words and
+/// its tries, its place let go of where it was sent, and the claim released
+/// or kept to its due time. A claim a renewal found another's writes
+/// nothing: the Journey is the other holder's.
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
+    let step = runtime.send;
     let Departure {
         work,
         facts,
@@ -61,7 +65,12 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         progress,
         ..
     } = departure;
-    let departed = depart_to(runtime, work, facts, to, progress);
+    let id = work.journey.journey_id();
+    let owned = || step.holds(id);
+    let departed = depart_to(runtime, work, facts, to, (progress, &owned));
+    if step.is_lost(id) {
+        return Ended::Lost(departed);
+    }
     let (state, kept) = if progress.sent {
         (JourneyState::Completed, None)
     } else if progress.waiting() {
@@ -120,9 +129,10 @@ pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &
 /// `departure`'s hand-on, one write: its Journey in `state` with what was
 /// tried, `outcome`, and its tries; its place let go of where it completed;
 /// its claim ended, or kept to `kept` and a lease past it. `true` where it
-/// was written, and the Journey kept on `departure`; `false` where the
-/// claim was no longer this node's; in words where Xmip Storage did not
-/// take it.
+/// was written, and the Journey kept on `departure` — and, kept, its claim
+/// surely held to `kept` and a lease from when the write was asked; `false`
+/// where the claim was no longer this node's; in words where Xmip Storage
+/// did not take it.
 fn written(
     runtime: &Runtime<'_>,
     departure: &mut Departure,
@@ -156,9 +166,13 @@ fn written(
         requeued: Vec::new(),
         kept_for_nanos: kept.map(|after| nanos(after + lease)),
     };
+    let asked = Instant::now();
     match runtime.storage.hand_on(&hand_on) {
         Ok(true) => {
             departure.work.journey = journey;
+            if let Some(after) = kept {
+                departure.until = asked + after + lease;
+            }
             Ok(true)
         }
         Ok(false) => Ok(false),
