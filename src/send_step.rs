@@ -186,8 +186,9 @@ struct State {
     /// Read at their place in a queue and found not to be sent —
     /// unreadable, failed and set aside, or finished though still in a
     /// queue — passed over by every scan after. A Retry moves a Journey to
-    /// a new place, where it is read again.
-    passed: HashSet<(JourneyId, u64)>,
+    /// a new place, where it is read again. By queue, so a whole read of
+    /// one forgets what has left it.
+    passed: HashMap<u128, HashSet<(JourneyId, u64)>>,
     /// The Send Ports this node sends, each with whether a Journey of it
     /// that failed blocks its sequence: what an operator's act on one of
     /// its Journeys is decided by.
@@ -199,7 +200,7 @@ struct State {
     /// its Send Port and its place: what a scan of the Ledger read Failed,
     /// so the evidence outlives a restart and covers what another node
     /// failed.
-    failing: BTreeMap<String, BTreeMap<u64, FailedJourney>>,
+    failing: BTreeMap<String, figures::Failing>,
     closed: bool,
 }
 

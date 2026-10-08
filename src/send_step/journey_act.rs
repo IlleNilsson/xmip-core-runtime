@@ -164,7 +164,10 @@ impl SendStep {
     /// An operator's act on `journey`, of `port`, written: it is read again
     /// at its place, and no longer failing.
     fn acted_on(&self, journey: JourneyId, port: &str) {
-        self.lock().passed.retain(|(passed, _)| *passed != journey);
+        let queue = self.queue(&Subscriber::SendPort(port.to_string()));
+        if let Some(passed) = self.lock().passed.get_mut(&queue) {
+            passed.retain(|(passed, _)| *passed != journey);
+        }
         self.not_failing(port, journey);
     }
 

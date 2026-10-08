@@ -273,3 +273,31 @@ fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on()
         },
     );
 }
+
+#[test]
+fn a_queue_storage_does_not_read_is_shown_at_its_port_until_it_is_read_again() {
+    let (interleaved, storage) = interleaving();
+    let (far, _) = FarEnd::answering(taking());
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, out(|_| {})),
+        |runtime, _, _| {
+            dispatching(runtime, |_| {
+                interleaved.fail(Operation::ReadHeld, u32::MAX);
+                let unread = || {
+                    runtime
+                        .send
+                        .figures()
+                        .get("Out")
+                        .and_then(|out| out.unread.clone())
+                };
+                until(|| unread().is_some(), "the unread queue shown at its Port");
+                let evidence = runtime.send.figures()["Out"].evidence();
+                assert!(evidence.contains("a read of its queue since"), "{evidence}");
+                interleaved.heal();
+                until(|| unread().is_none(), "read again, shown no more");
+            });
+        },
+    );
+}

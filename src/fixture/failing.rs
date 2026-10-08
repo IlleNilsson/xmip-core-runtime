@@ -200,9 +200,9 @@ impl XmipStorage for Failing {
         self.beneath.claim(journey, holder, token, lease)
     }
 
-    fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
+    fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
         self.asked(Operation::Renew)?;
-        self.beneath.renew(claim, lease)
+        self.beneath.renew(claims, lease)
     }
 
     fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
