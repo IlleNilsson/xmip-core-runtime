@@ -92,8 +92,8 @@ impl XmipStorage for HaltsAtPublication {
         self.0.claim(journey, holder, token, lease)
     }
 
-    fn renew(&self, claim: &Claim, lease: Duration) -> Result<Option<Claim>, PersistError> {
-        self.0.renew(claim, lease)
+    fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
+        self.0.renew(claims, lease)
     }
 
     fn release(&self, claim: &Claim) -> Result<bool, PersistError> {

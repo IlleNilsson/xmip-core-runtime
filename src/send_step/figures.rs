@@ -9,7 +9,7 @@
 //! started. Until 2026-10-06 `last_failure` was filled from the queue where
 //! the node had seen none fail, so history and now were one figure.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use observe::{FailedJourneys, LastFailure};
@@ -53,6 +53,11 @@ pub struct PortFigures {
     /// Journeys whose claim this node found another's, or presumed lapsed,
     /// since it started, and let go of without sending them further.
     pub lost: u64,
+    /// Since when, in nanoseconds since the Unix epoch, Xmip Storage has
+    /// not answered a read of its queue, and its last answer, in words: the
+    /// Port is Done while it has not, since what waits in its queue cannot
+    /// be found. Gone at the first read answered.
+    pub unread: Option<(i128, String)>,
 }
 
 /// A Journey that failed, waiting in its Send Port's queue for an
@@ -85,6 +90,12 @@ impl PortFigures {
             if let Some(since) = self.unanswered_since {
                 said.push_str(&format!(" since {}", codec::civil::rfc3339_nanos(since)));
             }
+        }
+        if let Some((since, why)) = &self.unread {
+            said.push_str(&format!(
+                ", Xmip Storage has not answered a read of its queue since {} ({why})",
+                codec::civil::rfc3339_nanos(*since)
+            ));
         }
         if self.lost > 0 {
             said.push_str(&format!(", claims lost to another holder {}", self.lost));
@@ -171,8 +182,13 @@ impl SendStep {
         for (port, failing) in &state.failing {
             let figures = figures.entry(port.clone()).or_default();
             figures.failing = failing.len() as u64;
-            figures.oldest_failing = failing.values().take(PUBLISHED_FAILED).cloned().collect();
-            figures.blocked = !failing.is_empty() && state.ports.get(port) == Some(&true);
+            figures.oldest_failing = failing
+                .by_place
+                .values()
+                .take(PUBLISHED_FAILED)
+                .cloned()
+                .collect();
+            figures.blocked = failing.len() > 0 && state.ports.get(port) == Some(&true);
         }
         figures
     }
@@ -181,8 +197,9 @@ impl SendStep {
     pub(crate) fn found_failing(&self, port: &str, place: u64, journey: JourneyId, reason: String) {
         let mut state = self.lock();
         let failing = state.failing.entry(port.to_string()).or_default();
-        failing.retain(|_, failed| failed.journey != journey);
-        failing.insert(
+        failing.forget(journey);
+        failing.place_of.insert(journey, place);
+        failing.by_place.insert(
             place,
             FailedJourney {
                 journey,
@@ -196,16 +213,72 @@ impl SendStep {
     /// sent again, finished, or not readable.
     pub(crate) fn not_failing(&self, port: &str, journey: JourneyId) {
         if let Some(failing) = self.lock().failing.get_mut(port) {
-            failing.retain(|_, failed| failed.journey != journey);
+            failing.forget(journey);
         }
     }
 
-    /// A whole read of `port`'s queue found only `present`, by Journey and
-    /// place: what failed there and is gone — dismissed, or sent again, by
-    /// another node — forgotten.
-    pub(crate) fn read_whole(&self, port: &str, present: &HashSet<(JourneyId, u64)>) {
-        if let Some(failing) = self.lock().failing.get_mut(port) {
-            failing.retain(|place, failed| present.contains(&(failed.journey, *place)));
+    /// A whole read of `port`'s queue, `queue`, found only `present`, by
+    /// Journey and place: what failed there and is gone — dismissed, or sent
+    /// again, by another node — forgotten, and every place passed over that
+    /// is gone with it.
+    pub(crate) fn read_whole(&self, (port, queue): (&str, u128), present: &Present) {
+        let mut state = self.lock();
+        if let Some(failing) = state.failing.get_mut(port) {
+            failing
+                .by_place
+                .retain(|place, failed| present.contains(&(failed.journey, *place)));
+            failing
+                .place_of
+                .retain(|journey, place| present.contains(&(*journey, *place)));
+        }
+        if let Some(passed) = state.passed.get_mut(&queue) {
+            passed.retain(|place| present.contains(place));
+        }
+    }
+
+    /// `port`'s queue read, or, with why in words, not answered: kept as
+    /// since when Xmip Storage has not answered, and audited the first time.
+    pub(crate) fn queue_read(&self, port: &str, unanswered: Option<String>) {
+        let mut state = self.lock();
+        let figures = state.figures.entry(port.to_string()).or_default();
+        let began = figures.unread.is_none();
+        let since = figures.unread.as_ref().map(|(since, _)| *since);
+        figures.unread = unanswered.map(|why| {
+            let since = since.unwrap_or_else(|| SystemClock.unix_timestamp_nanos());
+            (since, why)
+        });
+        let said = figures.unread.clone().filter(|_| began);
+        drop(state);
+        if let Some((_, why)) = said {
+            self.failed(&format!(
+                "Xmip Storage did not answer a read of the queue of {port}, so what waits \
+                 in it is not found: {why}"
+            ));
+        }
+    }
+}
+
+/// Journeys by their place in a queue.
+pub(super) type Present = HashSet<(JourneyId, u64)>;
+
+/// Every Journey that failed waiting in one Send Port's queue: by its place,
+/// oldest first, and the place of each by its Journey, so a Journey read
+/// again is found at once however long the backlog.
+#[derive(Debug, Default)]
+pub(super) struct Failing {
+    by_place: BTreeMap<u64, FailedJourney>,
+    place_of: HashMap<JourneyId, u64>,
+}
+
+impl Failing {
+    /// How many wait.
+    pub(super) fn len(&self) -> usize {
+        self.by_place.len()
+    }
+
+    fn forget(&mut self, journey: JourneyId) {
+        if let Some(place) = self.place_of.remove(&journey) {
+            self.by_place.remove(&place);
         }
     }
 }

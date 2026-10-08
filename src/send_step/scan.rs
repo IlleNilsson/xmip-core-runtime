@@ -53,9 +53,14 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
     let mut found = Vec::new();
     let mut from = 0;
     loop {
-        let Ok(page) = step.storage.read_held(queue, from, PAGE) else {
-            return found;
+        let page = match step.storage.read_held(queue, from, PAGE) {
+            Ok(page) => page,
+            Err(why) => {
+                step.queue_read(to.name(), Some(why.to_string()));
+                return found;
+            }
         };
+        step.queue_read(to.name(), None);
         let read_all = page.held.len() < PAGE as usize;
         for held in page.held {
             from = held.sequence + 1;
@@ -66,7 +71,10 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
                 let state = step.lock();
                 state.owned.contains_key(&id)
                     || state.taking.contains(&id)
-                    || state.passed.contains(&place)
+                    || state
+                        .passed
+                        .get(&queue)
+                        .is_some_and(|set| set.contains(&place))
             };
             if known {
                 continue;
@@ -110,7 +118,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
             }
         }
         if read_all {
-            step.read_whole(to.name(), &present);
+            step.read_whole((to.name(), queue), &present);
             return found;
         }
     }
@@ -151,7 +159,7 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
         place,
         body,
     } = unclaimed;
-    match claimed_first(runtime, to, *place, body) {
+    match claimed_first(runtime, (to, *queue), *place, body) {
         Taken::One(one) => Some(owned(runtime.send, to, *queue, *one)),
         Taken::Passed | Taken::Unanswered => None,
     }
@@ -180,6 +188,13 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
 /// with, the claim, its sequence on a Sequential Send Port, and when the
 /// claim was asked.
 type Took = (ReceivedWork, IdentityFacts, Claim, Option<String>, Instant);
+
+impl super::SendStep {
+    /// The Journey at `place` in `queue` passed over by every scan after.
+    fn passed(&self, queue: u128, place: (JourneyId, u64)) {
+        self.lock().passed.entry(queue).or_default().insert(place);
+    }
+}
 
 /// What a scan made of one entry.
 enum Taken {
@@ -214,7 +229,7 @@ fn noted(runtime: &Runtime<'_>, to: &Subscriber, place: (JourneyId, u64), found:
 /// read.
 fn claimed_first(
     runtime: &Runtime<'_>,
-    to: &Subscriber,
+    (to, queue): (&Subscriber, u128),
     place: (JourneyId, u64),
     body: &[u8],
 ) -> Taken {
@@ -238,12 +253,12 @@ fn claimed_first(
         }
         Ok(Found::Failed(_) | Found::Finished) => {
             let _ = step.storage.release(&claim);
-            step.lock().passed.insert(place);
+            step.passed(queue, place);
             Taken::Passed
         }
         Ok(Found::Unreadable(why)) => {
             let _ = step.storage.release(&claim);
-            step.lock().passed.insert(place);
+            step.passed(queue, place);
             step.failed(&format!("the Journey {id} is not sent: {why}"));
             Taken::Passed
         }
@@ -283,11 +298,11 @@ fn in_sequence(
             return Taken::Passed;
         }
         Ok(Found::Failed(_) | Found::Finished) => {
-            step.lock().passed.insert(place);
+            step.passed(queue, place);
             return Taken::Passed;
         }
         Ok(Found::Unreadable(why)) => {
-            step.lock().passed.insert(place);
+            step.passed(queue, place);
             step.failed(&format!("the Journey {id} is not sent: {why}"));
             return Taken::Passed;
         }

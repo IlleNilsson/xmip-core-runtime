@@ -267,6 +267,10 @@ impl Running {
 /// go on only while each claim surely holds, a lease from its last
 /// confirmation, and stop once it may not (`crate::send_step`); that window
 /// bounds attempts and softens nothing. Until 2026-10-06 it was Stressed.
+/// **A Port whose queue Xmip Storage does not answer a read of is Done**
+/// too, its evidence saying since when and Xmip Storage's answer: what
+/// waits in it cannot be found, so nothing says it is empty. Until
+/// 2026-10-08 a failed read left such a Port Fine.
 fn stage_records(
     node: &str,
     locations: &[(&'static str, configure::ConfiguredLocation)],
@@ -290,8 +294,9 @@ fn stage_records(
         .collect();
     for (port, sent) in figures {
         let scope = format!("{node}/{}/{port}", Stage::Send.name());
+        let unread = sent.unread.is_some();
         let mood = match (sent.failing, sent.blocked, sent.unconfirmed) {
-            (0, _, 0) => fine,
+            (0, _, 0) if !unread => fine,
             (0, _, _) | (_, false, _) => (Health::Done, severity(Health::Done)),
             (_, true, _) => (Health::Done, BLOCKED_SEVERITY),
         };
@@ -431,6 +436,21 @@ mod tests {
             .find(|(scope, _, _)| *scope == port)
             .map(|(_, standing, evidence)| (standing, evidence))
             .expect("the Port's own record")
+    }
+
+    #[test]
+    fn a_send_port_whose_queue_storage_does_not_read_is_done_with_since_and_why() {
+        let unread = PortFigures {
+            unread: Some((1_000_000_000, "not reached".to_string())),
+            ..PortFigures::default()
+        };
+        let (standing, evidence) = out_standing(unread);
+        assert_eq!(standing, (Health::Done, 90), "{evidence}");
+        assert!(
+            evidence.contains("has not answered a read of its queue since 1970-01-01T00:00:01"),
+            "{evidence}"
+        );
+        assert!(evidence.contains("not reached"), "{evidence}");
     }
 
     #[test]

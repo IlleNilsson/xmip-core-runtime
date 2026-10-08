@@ -102,9 +102,12 @@ impl SendStep {
     }
 
     /// Renew the claim of every Journey in flight every third of a lease,
-    /// until the step is closed and nothing is in flight: its own thread,
-    /// so a send that takes longer than a lease, or one queued behind a
-    /// long scan, is not taken up by another node meanwhile.
+    /// counted from when the last round began, until the step is closed and
+    /// nothing is in flight: its own thread, so a send that takes longer
+    /// than a lease, or one queued behind a long scan, is not taken up by
+    /// another node meanwhile. A round is one request for every claim, so
+    /// an answer Xmip Storage is slow to give costs the round one wait, never
+    /// one per claim, and a round always ends well inside a lease.
     pub(super) fn renewing(&self) {
         let mut next = Instant::now() + self.lease / 3;
         let mut state = self.lock();
@@ -116,7 +119,7 @@ impl SendStep {
             if next <= now {
                 drop(state);
                 self.renew();
-                next = Instant::now() + self.lease / 3;
+                next = now + self.lease / 3;
                 state = self.lock();
                 continue;
             }
@@ -129,7 +132,7 @@ impl SendStep {
     }
 
     /// Renew the claim of every Journey in flight that is not found lost,
-    /// and keep where each stands.
+    /// in one request, and keep where each stands.
     fn renew(&self) {
         let state = self.lock();
         let waiting: HashSet<_> = state
@@ -141,35 +144,48 @@ impl SendStep {
             .owned
             .iter()
             .filter(|(id, owned)| !waiting.contains(id) && !owned.standing.lost)
-            .map(|(id, owned)| (*id, owned.claim.clone()))
+            .map(|(_, owned)| owned.claim.clone())
             .collect();
         drop(state);
-        for (id, claim) in flying {
-            let asked = Instant::now();
-            let renewed = match self.storage.renew(&claim, self.lease) {
-                Ok(Some(claim)) => Renewed::Held(claim),
-                Ok(None) => Renewed::Lost,
+        if flying.is_empty() {
+            return;
+        }
+        let asked = Instant::now();
+        let answered = self.storage.renew(&flying, self.lease);
+        for claim in flying {
+            let renewed = match &answered {
+                Ok(held) => held
+                    .iter()
+                    .find(|held| held.journey == claim.journey && held.token == claim.token)
+                    .map_or(Renewed::Lost, |held| Renewed::Held(held.clone())),
                 Err(why) => Renewed::Unanswered(why.to_string()),
             };
-            self.renewed(id, asked, renewed);
+            self.renewed(&claim, asked, renewed);
         }
     }
 
-    /// Where the claim on `id`, renewed as asked at `asked`, stands now;
-    /// a loss and a prolonged uncertainty each audited once.
-    fn renewed(&self, id: JourneyId, asked: Instant, renewed: Renewed) {
+    /// Where `claim`, renewed as asked at `asked`, stands now; a loss and a
+    /// prolonged uncertainty each audited once. An answer for a claim this
+    /// node no longer holds the Journey by — the send ended and an operator's
+    /// Retry claimed it again under a new token — says nothing of the new
+    /// claim, and is dropped.
+    fn renewed(&self, claim: &persist::storage::Claim, asked: Instant, renewed: Renewed) {
+        let id = claim.journey;
         let mut state = self.lock();
         let Some(owned) = state.owned.get_mut(&id) else {
             return;
         };
+        if owned.claim.token != claim.token {
+            return;
+        }
         let standing = &mut owned.standing;
         let said = match renewed {
-            Renewed::Held(claim) if claim.token == owned.claim.token => {
+            Renewed::Held(claim) => {
                 owned.claim = claim;
-                *standing = Standing::confirmed(asked + self.lease);
+                let until = standing.until.max(asked + self.lease);
+                *standing = Standing::confirmed(until);
                 None
             }
-            Renewed::Held(_) => None,
             Renewed::Lost if standing.lost => None,
             Renewed::Lost => {
                 standing.lost = true;
@@ -244,7 +260,14 @@ pub(super) fn resume<'env>(
 ) {
     let step = runtime.send;
     let asked = Instant::now();
-    match step.storage.renew(&departure.claim, step.lease) {
+    let renewed = step
+        .storage
+        .renew(std::slice::from_ref(&departure.claim), step.lease)
+        .map(|held| {
+            held.into_iter()
+                .find(|held| held.token == departure.claim.token)
+        });
+    match renewed {
         Ok(Some(claim)) => {
             departure.claim = claim;
             departure.until = asked + step.lease;
@@ -267,5 +290,86 @@ pub(super) fn resume<'env>(
                  is presumed lost and left to lapse ({why})"
             ),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use persist::fixture::Memory;
+    use persist::storage::{Claim, Embedded, XmipStorage};
+    use secret::{Held, KekName};
+
+    use super::*;
+    use crate::send_step::admission::Owned;
+    use crate::tuning::Tuning;
+
+    fn step() -> SendStep {
+        let keys = Held::new(secret::fixture::Memory::default());
+        let kek = KekName::new("storage").expect("a name");
+        let storage: Arc<dyn XmipStorage> = Arc::new(
+            Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened"),
+        );
+        let cluster = configure::fixture::test_cluster();
+        let node = cluster.node_scope(0);
+        SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), None)
+    }
+
+    fn claim(token: u128) -> Claim {
+        Claim {
+            journey: JourneyId::new(7),
+            holder: configure::fixture::test_cluster().node_scope(0),
+            token,
+            until_unix_nanos: 0,
+        }
+    }
+
+    /// The Journey owned under `claim`, confirmed a lease from now.
+    fn owning(step: &SendStep, claim: Claim) {
+        let owned = Owned {
+            claim,
+            queue: 1,
+            sequence: None,
+            port: "Out".to_string(),
+            standing: Standing::confirmed(Instant::now() + step.lease),
+        };
+        step.lock().owned.insert(JourneyId::new(7), owned);
+    }
+
+    #[test]
+    fn a_late_answer_for_an_earlier_claim_says_nothing_of_the_claim_held_now() {
+        let step = step();
+        let (old, new) = (claim(1), claim(2));
+        // The renewal of `old` asked, then the send ended and an operator's
+        // Retry claimed the Journey again under `new`, before it answered.
+        owning(&step, new.clone());
+        let asked = Instant::now() - step.lease * 2;
+
+        step.renewed(&old, asked, Renewed::Lost);
+        step.renewed(&old, asked, Renewed::Unanswered("late".to_string()));
+
+        let id = JourneyId::new(7);
+        assert!(!step.is_lost(id), "the new claim is not marked lost");
+        assert!(step.holds(id), "the new claim still holds");
+        let owned = step.lock().owned[&id].clone();
+        assert_eq!(owned.standing.unanswered_since(), None, "nor unconfirmed");
+
+        step.renewed(&new, Instant::now(), Renewed::Lost);
+        assert!(step.is_lost(id), "an answer for the claim held now counts");
+    }
+
+    #[test]
+    fn a_renewal_keeps_a_later_deadline_it_knew() {
+        let step = step();
+        let id = JourneyId::new(7);
+        let kept = Instant::now() + step.lease * 10;
+        owning(&step, claim(1));
+        step.lock().owned.get_mut(&id).expect("owned").standing = Standing::confirmed(kept);
+
+        step.renewed(&claim(1), Instant::now(), Renewed::Held(claim(1)));
+
+        let owned = step.lock().owned[&id].clone();
+        assert!(owned.standing.until >= kept, "not shortened to a lease");
     }
 }
