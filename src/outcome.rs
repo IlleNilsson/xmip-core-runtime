@@ -27,6 +27,7 @@ use crate::message_path::Carried;
 use authenticate::Refusal;
 use authorize::Decision;
 use context::IdentityFacts;
+use identify::Presented;
 use route::{Promoted, Routing, SourceError};
 
 /// Why a Stream never became a Journey.
@@ -38,8 +39,12 @@ pub enum Refused {
     /// Distinct from carrying nothing, which is ordinary and reaches the
     /// circumstance instead.
     Identification(String),
-    /// The credential was not accepted, or not accepted here.
-    Authentication(Refusal),
+    /// The credential was not accepted, or not accepted here: why, and the
+    /// claim the gate was handed, with its layer and how it was established
+    /// (ADR-0019 clauses 5 and 8), so the refused attempt is audited as the
+    /// transport event ADR-0013 clause 1 makes it. Its proof never leaves
+    /// the gate: what is kept of it is its mechanism, value and provenance.
+    Authentication(Refusal, Box<Presented>),
     /// Verified, and not permitted to post here.
     Authorization(Decision),
     /// Verified and permitted, and a property a Subscription's filter names
@@ -52,7 +57,7 @@ impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Identification(detail) => write!(f, "{detail}"),
-            Self::Authentication(refusal) => write!(f, "{refusal}"),
+            Self::Authentication(refusal, _) => write!(f, "{refusal}"),
             Self::Authorization(decision) => write!(f, "{decision}"),
             Self::Promotion(error) => write!(f, "{error}"),
         }

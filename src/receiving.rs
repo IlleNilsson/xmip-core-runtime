@@ -11,17 +11,20 @@ use std::thread::Scope;
 
 use authenticate::{Acceptance, Authenticator};
 use configure::ConfiguredLocation;
-use receive::{IdentityPolicy, ReceivedStream};
-use transport::{Acknowledgement, Refusal, Transport, Verdict};
+use receive::IdentityPolicy;
+use transport::{Acknowledgement, Transport, Verdict};
 use xaudit::program_audit::ProgramAudit;
 
-use crate::message_path::{Carried, ReceiveCycle, Runtime, carry};
+use crate::message_path::{Carried, Runtime, carry};
 
+mod received;
+mod refusal;
 mod turn;
 
-use crate::outcome::{Arrived, Refused};
+use crate::outcome::Arrived;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
+use refusal::verdict;
 use turn::{Ticket, Turn};
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
@@ -276,14 +279,15 @@ impl Receiving {
             });
             let tell = tell.clone();
             pool.run(Box::new(move || {
-                let (origin_uri, body, acknowledgement) = arrived.into_parts();
+                let (received, acknowledgement) = received::received(arrived);
                 let telling = Telling {
                     tell: Some(tell),
                     ticket,
                     acknowledgement: Some(acknowledgement),
                 };
-                let received = ReceivedStream::new(body, origin_uri);
-                telling.told(carry(runtime, pickup, &self.gate, received));
+                let carried = carry(runtime, pickup, &self.gate, received);
+                self.audit_refused(&carried);
+                telling.told(carried);
             }));
         }
     }
@@ -355,31 +359,5 @@ impl Drop for Telling {
             journeys: Vec::new(),
         };
         let _ = tell.send((carried, told));
-    }
-}
-
-/// What the far end is told of a receive cycle, one to one: a completed
-/// cycle is accepted; a refused one is refused for good, with why — an
-/// unknown sender, one not permitted, content refused — for a protocol
-/// whose rejection differs by cause; a failed one failed, so the far end
-/// sends it again.
-const fn verdict(carried: &Carried) -> Verdict {
-    match carried.cycle() {
-        ReceiveCycle::Completed => Verdict::Accepted,
-        ReceiveCycle::Refused => Verdict::Refused(refusal(&carried.arrived)),
-        ReceiveCycle::Failed => Verdict::Failed,
-    }
-}
-
-/// Why a refused arrival was refused, as its far end is told.
-const fn refusal(arrived: &Arrived) -> Refusal {
-    match arrived {
-        Arrived::Refused {
-            reason: Refused::Identification(_) | Refused::Authentication(_),
-        } => Refusal::Unidentified,
-        Arrived::Refused {
-            reason: Refused::Authorization(_),
-        } => Refusal::Forbidden,
-        _ => Refusal::Unacceptable,
     }
 }

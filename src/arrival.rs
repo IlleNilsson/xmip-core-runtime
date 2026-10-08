@@ -36,20 +36,23 @@
 
 use authenticate::authenticate;
 use authorize::{Action, Attempt, authorize};
-use context::property::PARTY;
-use context::{IdentityFacts, MessageContext};
+use context::IdentityFacts;
 use identify::{IdentifyError, Presented, StreamArrival, identify_message, identify_transport};
 use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
 use receive::ReceivedStream;
 use route::{Dispatch, Promoted, publish};
-use xcore::{Arriving, JourneyId, Layer, MessageId, SectionId, StreamId, mechanism};
+use xcore::{JourneyId, Layer, MessageId, SectionId, StreamId, mechanism};
 
 use crate::generation::ReceivedWork;
 use crate::ledger::write_stream;
 use crate::message_path::Runtime;
 use crate::outcome::{Arrived, Refused};
 use crate::receiving::ReceiveGate;
+
+mod identity_context;
+
+use identity_context::promote_identity;
 
 /// Drive one arrival from bytes to a dispatch.
 ///
@@ -80,12 +83,10 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     // -- Transport identification ------------------------------------------
     //
     // Reading a claim off the connection belongs to a module rather than to
-    // whatever transport happened to accept it.
-    let arrival = StreamArrival::new(
-        received.arriving,
-        &received.source_uri,
-        &received.transport_properties,
-    );
+    // whatever transport happened to accept it. It reads everything the
+    // transport observed and every text header, under the names it wrote.
+    let observed = received.observed();
+    let arrival = StreamArrival::new(received.arriving, &received.source_uri, &observed);
 
     let claims = match identify_transport(runtime.transport_identifiers, &arrival) {
         Ok(claims) => claims,
@@ -121,7 +122,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
         Ok(identity) => identity.at(now),
         Err(refusal) => {
             return Arrived::Refused {
-                reason: Refused::Authentication(refusal),
+                reason: Refused::Authentication(refusal, Box::new(presented.without_proof())),
             };
         }
     };
@@ -171,7 +172,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     let message = Message::received(
         message_id,
         vec![section],
-        promote_identity(&transport_facts, received.arriving),
+        promote_identity(&transport_facts, &received),
         runtime.treatment,
     );
 
@@ -183,17 +184,11 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     // fact rather than an omission — and the degenerate case in ADR-0019
     // clause 7 then makes the transport identity authoritative for both
     // questions.
-    let (facts, message) = match settle_message_identity(
-        runtime,
-        gate,
-        transport_facts,
-        message,
-        received.arriving,
-        now,
-    ) {
-        Ok(settled) => settled,
-        Err(reason) => return Arrived::Refused { reason },
-    };
+    let (facts, message) =
+        match settle_message_identity(runtime, gate, transport_facts, message, &received, now) {
+            Ok(settled) => settled,
+            Err(reason) => return Arrived::Refused { reason },
+        };
 
     // Before the Journey, where ADR-0013 puts default promotion: a filter that
     // cannot be read refuses the Message rather than declining it.
@@ -258,7 +253,7 @@ fn settle_message_identity(
     gate: &ReceiveGate,
     transport_facts: IdentityFacts,
     message: Message,
-    arriving: Arriving,
+    received: &ReceivedStream,
     now: i128,
 ) -> Result<(IdentityFacts, Message), Refused> {
     // Rebuilt under the same identifiers, and those identifiers are on the
@@ -287,7 +282,7 @@ fn settle_message_identity(
         &claimed,
     )
     .map(|identity| identity.at(now))
-    .map_err(Refused::Authentication)?;
+    .map_err(|refusal| Refused::Authentication(refusal, Box::new(claimed.without_proof())))?;
 
     // Alignment becomes a real question only now. ADR-0019 clause 7 settles a
     // disagreement between the layers here, at authorization, and never by
@@ -318,84 +313,12 @@ fn settle_message_identity(
         contract: None,
     };
 
-    let context = promote_identity(&facts, arriving);
+    let context = promote_identity(&facts, received);
 
     Ok((
         facts,
         Message::received(message_id, vec![section], context, runtime.treatment),
     ))
-}
-
-/// Put what the gates concluded where a Subscription can read it.
-///
-/// Routing reads the promoted set and nothing else, so an identity that stays
-/// inside `IdentityFacts` cannot be routed on. These names are the contract
-/// between the two, and they are prefixed so a Contract promoting `Party`
-/// cannot collide with Xmip promoting one.
-fn promote_identity(facts: &IdentityFacts, arriving: Arriving) -> MessageContext {
-    use xcore::ScalarValue;
-
-    let mut context = MessageContext::new()
-        .with_value("xmip.arriving", ScalarValue::Text(arriving.to_string()))
-        .with_value(
-            "xmip.transport.mechanism",
-            ScalarValue::Text(facts.transport.mechanism.name().to_string()),
-        )
-        .with_value(
-            "xmip.transport.identity",
-            ScalarValue::Text(facts.transport.value.clone()),
-        )
-        .with_value(
-            "xmip.transport.class",
-            ScalarValue::Text(facts.transport.class().to_string()),
-        )
-        .with_value(
-            "xmip.transport.proven",
-            ScalarValue::Bool(facts.transport.mechanism.authenticates()),
-        )
-        .with_value(
-            "xmip.transport.established",
-            ScalarValue::Text(facts.transport.established.to_string()),
-        );
-
-    // Promoted under its own names rather than overwriting the transport's. The
-    // two layers are separate facts and a Subscription may route on either;
-    // collapsing them would make "who sent it" unanswerable for exactly the
-    // relayed integrations where the question matters.
-    if let Some(message) = &facts.message {
-        context = context
-            .with_value(
-                "xmip.message.mechanism",
-                ScalarValue::Text(message.mechanism.name().to_string()),
-            )
-            .with_value(
-                "xmip.message.identity",
-                ScalarValue::Text(message.value.clone()),
-            )
-            .with_value(
-                "xmip.message.class",
-                ScalarValue::Text(message.class().to_string()),
-            )
-            .with_value(
-                "xmip.message.proven",
-                ScalarValue::Bool(message.mechanism.authenticates()),
-            )
-            .with_value(
-                "xmip.message.established",
-                ScalarValue::Text(message.established.to_string()),
-            );
-    }
-
-    context = context.with_value(
-        "xmip.identity.misaligned",
-        ScalarValue::Bool(facts.alignment.is_misaligned()),
-    );
-
-    if let Some(party) = facts.accountable().party_id {
-        context = context.with_value(PARTY, ScalarValue::Text(party.to_string()));
-    }
-
-    context
 }
 
 #[cfg(test)]
@@ -663,6 +586,44 @@ mod tests {
     }
 
     #[test]
+    fn the_headers_a_transport_handed_over_are_in_the_message_context() {
+        // ADR-0046, amendment 2026-09-25, later: written once, at arrival,
+        // under the name each travels by.
+        let ids = Counter::default();
+        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
+        let authenticators: [&dyn Authenticator; 1] = [&proves];
+        let parties = registry();
+        let allow = Open;
+        let open: [&dyn Authorizer; 1] = [&allow];
+        let clock = Fixed(NOW);
+        let subscriptions = subscribed_to_party_x();
+        let sends = sends(Recording::ok());
+        let channel = xcore::ScalarValue::Text("web".into());
+
+        let arrived = arrive(
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &sends,
+                &open,
+                &clock,
+            ),
+            &location(),
+            arriving().with_header("http", "X-Channel", channel.clone()),
+        );
+
+        let Arrived::Routed { work, .. } = arrived else {
+            panic!("expected a route, got {arrived:?}");
+        };
+        assert_eq!(
+            work.message.context().get("http.header.x-channel"),
+            Some(&channel)
+        );
+    }
+
+    #[test]
     fn a_file_arrives_and_reaches_a_send_port() {
         let ids = Counter::default();
         let proves = Always(mechanism::mutual_tls(), Verified::Proven);
@@ -819,7 +780,7 @@ filter = "xmip.party = '{party}'"
         );
 
         let Arrived::Refused {
-            reason: Refused::Authentication(refusal),
+            reason: Refused::Authentication(refusal, presented),
         } = arrived
         else {
             panic!("expected an authentication refusal, got {arrived:?}");
@@ -831,6 +792,13 @@ filter = "xmip.party = '{party}'"
                 presented: "api-key".to_string()
             }
         );
+        // The refused claim is kept as the attempt is audited: its layer
+        // and how it was established, never its proof.
+        assert_eq!(
+            (presented.value.as_str(), presented.layer()),
+            ("k-123", Layer::Transport)
+        );
+        assert_eq!(presented.established, Established::Passed);
     }
 
     #[test]
@@ -1287,7 +1255,7 @@ filter = "xmip.party = '{party}'"
         );
 
         let Arrived::Refused {
-            reason: Refused::Authentication(refusal),
+            reason: Refused::Authentication(refusal, presented),
         } = arrived
         else {
             panic!("expected an authentication refusal, got {arrived:?}");
@@ -1299,6 +1267,11 @@ filter = "xmip.party = '{party}'"
                 presented: "edi-x12-interchange".to_string()
             }
         );
+        // The message identity reached the gate, on the message layer and
+        // detected in what arrived (ADR-0019 clauses 5 and 8).
+        assert_eq!(presented.layer(), Layer::Message);
+        assert_eq!(presented.established, Established::Detected);
+        assert!(presented.value.contains("PARTYX"), "{presented:?}");
     }
 
     #[test]
