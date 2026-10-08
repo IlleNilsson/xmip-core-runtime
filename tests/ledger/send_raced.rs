@@ -111,15 +111,10 @@ fn a_publication_asked_again_after_a_lost_answer_never_resends_what_another_node
     let failing = xmip_core_runtime::fixture::Failing::over(telling(&clock));
     let storage: std::sync::Arc<dyn persist::storage::XmipStorage> = failing.clone();
     let (far, taken) = FarEnd::answering(taking());
-    // No scan of this node's: the lapsed claim is the other node's to take
-    // up, between the clock passing and its claim, never a race with a scan
-    // every 20 ms that took it first under load.
-    let mut sends = sender(node(), far, out(|_| {}));
-    sends.tuning.send_scan = std::time::Duration::from_secs(3600);
     let id = on_node(
         &storage,
         (CHUNK, &onward()),
-        sends,
+        sender(node(), far, out(|_| {})),
         |runtime, pickup, gate| {
             let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
             // Between the write and its lost answer the Publication's claim
@@ -131,11 +126,15 @@ fn a_publication_asked_again_after_a_lost_answer_never_resends_what_another_node
                 let read = elsewhere.read_held(queue, 0, 1).expect("read");
                 sent_elsewhere(elsewhere.as_ref(), queue, read.held[0].hold.journey);
             }));
-            let (id, _) = dispatching(runtime, |_| {
-                let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
-                assert!(!runtime.send.holds(id), "not this node's to send");
-                id
-            });
+            // The send step dispatches only once the Publication has
+            // answered: it scans as it starts, and a scan of this node's
+            // between the clock passing and the other node's claim takes
+            // the lapsed claim first, as one started beside the
+            // Publication did under load.
+            let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+            assert!(!runtime.send.holds(id), "not this node's to send");
+            // Whatever the Publication handed on is sent now.
+            dispatching(runtime, |_| {});
             assert!(waiting(runtime).is_empty(), "not queued again");
             id
         },
