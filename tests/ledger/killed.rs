@@ -1,11 +1,8 @@
 //! The two kills: a receive killed before its Publication leaves no
 //! Message, and every Message acknowledged before a kill is there after it.
 
-use std::sync::Arc;
-
 use journey::Journey;
 use message::Message;
-use stream::Content;
 use xcore::{JourneyId, MessageId, StreamId};
 
 use xmip_core_runtime::ledger::Chunks;
@@ -57,10 +54,8 @@ fn a_message_acknowledged_before_the_kill_is_in_the_ledger_after_it() {
             .read_message(one.message)
             .expect("read")
             .unwrap_or_else(|| panic!("acknowledged Message {} lost", one.number));
-        let message = Message::from_record(&record.body, |stream, length| {
-            Ok(Arc::new(Chunks::of(Arc::clone(&node), stream, length)) as Arc<dyn Content>)
-        })
-        .expect("the Message reads back");
+        let message = Message::from_record(&record.body, |stream| Chunks::referred(&node, stream))
+            .expect("the Message reads back");
         let expected = format!("order {}", one.number);
         assert_eq!(message.sections()[0].stream.bytes(), expected.as_bytes());
         assert_eq!(one.journeys.len(), 1, "one per matched Subscription");

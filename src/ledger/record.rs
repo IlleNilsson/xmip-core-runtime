@@ -24,7 +24,7 @@ pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
         journey: journey.journey_id(),
         body: journey.record(),
         facts: JourneyFacts {
-            state: journey.state.number(),
+            state: journey.state.word().to_string(),
             previous_journey: journey.previous_journey_id().map(|id| id.value()),
             subscription: cause.map(|cause| cause.subscription_id.clone()),
             cause_work_process: cause.and_then(|cause| cause.work_process.clone()),
@@ -56,10 +56,10 @@ pub(crate) fn message_record(message: &Message) -> MessageRecord {
         facts: MessageFacts {
             previous_message: message.previous_message_id().map(|id| id.value()),
             generation: message.generation(),
-            created_by: message.created_by().number(),
-            priority: treatment.priority.number(),
-            execution_profile: treatment.execution_profile.number(),
-            durability: treatment.durability.number(),
+            created_by: message.created_by().word().to_string(),
+            priority: treatment.priority.word().to_string(),
+            execution_profile: treatment.execution_profile.word().to_string(),
+            durability: treatment.durability.word().to_string(),
             size_bytes: message
                 .sections()
                 .iter()
@@ -143,7 +143,7 @@ mod tests {
         journey.send_port = Some("Billing".to_string());
         journey.attempts.tries = 3;
         let facts = journey_record(&journey).facts;
-        assert_eq!(facts.state, JourneyState::Failed.number());
+        assert_eq!(facts.state, "Failed");
         assert_eq!((facts.attempts, facts.depth), (3, 1));
         assert_eq!(facts.send_port.as_deref(), Some("Billing"));
         assert_eq!((facts.previous_journey, facts.message), (Some(1), Some(7)));
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(facts.party.as_deref(), Some("Contoso"));
         assert_eq!(facts.contract.as_deref(), Some("Order"));
         assert_eq!((facts.size_bytes, facts.stream), (8, Some(9)));
-        assert_eq!(facts.created_by, message.created_by().number());
+        assert_eq!(facts.created_by, "Receive");
     }
 
     #[test]

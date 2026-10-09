@@ -43,7 +43,7 @@ fn a_published_journey_is_found_by_its_send_port_and_its_message_by_when() {
 
     let bound = Ask::JourneysAtSendPort {
         send_port: "Out".to_string(),
-        state: JourneyState::Active.number(),
+        state: JourneyState::Active.word().to_string(),
     };
     assert_eq!(storage.query(&query(bound)).expect("asked"), [journey]);
     let holding = Ask::JourneysHolding { message };

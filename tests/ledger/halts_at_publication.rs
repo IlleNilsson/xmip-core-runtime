@@ -8,7 +8,7 @@ use persist::PersistError;
 use persist::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, HandOn,
     HeldQueue, JourneyRecord, MessageRecord, Publication, Query, Replay, Replayed, StreamChunk,
-    XmipStorage,
+    StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -37,6 +37,16 @@ impl XmipStorage for HaltsAtPublication {
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
         self.0.read_chunk(stream, index)
+    }
+
+    fn write_stream(&self, last: &StreamChunk, stream: &StreamRecord) -> Result<(), PersistError> {
+        self.0.write_stream(last, stream)?;
+        say(&format!("chunk {} {}", last.stream.value(), last.index));
+        Ok(())
+    }
+
+    fn read_stream(&self, stream: StreamId) -> Result<Option<StreamRecord>, PersistError> {
+        self.0.read_stream(stream)
     }
 
     fn write_message(&self, message: &MessageRecord) -> Result<(), PersistError> {
