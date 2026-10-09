@@ -203,6 +203,7 @@ impl Pickup {
             kind: AdministrationKind::Operator,
             id: entry.queue,
             body: standing.record(),
+            updated_unix_nanos: 0,
         };
         if let Err(error) = self.storage.write_administration(&record) {
             self.failed("subscription.standing", &error.to_string());
@@ -287,7 +288,7 @@ pub(crate) mod tests {
 
     use journey::{Journey, JourneyMessageRef};
     use path::expression::Expression;
-    use persist::storage::{AuditEntry, JourneyRecord, MessageRecord, Publication};
+    use persist::storage::{AuditEntry, AuditFacts, MessageFacts, MessageRecord, Publication};
     use route::{Promoted, Subscriber, publish};
     use xcore::{AuditId, IdGenerator, MessageId, StreamId, UuidV7Generator};
 
@@ -340,19 +341,15 @@ pub(crate) mod tests {
             message: MessageRecord {
                 message,
                 body: Vec::new(),
+                facts: MessageFacts::default(),
             },
-            journeys: journeys
-                .iter()
-                .map(|journey| JourneyRecord {
-                    journey: journey.journey_id(),
-                    body: journey.record(),
-                })
-                .collect(),
+            journeys: journeys.iter().map(crate::ledger::journey_record).collect(),
             held: holding.holds().to_vec(),
             dead: None,
             audit: AuditEntry {
                 id: AuditId::new(ids.next_u128()),
                 body: Vec::new(),
+                facts: AuditFacts::default(),
             },
             claims: Vec::new(),
             lease_nanos: 0,

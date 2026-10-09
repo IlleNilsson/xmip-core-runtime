@@ -625,6 +625,7 @@ address = "{far}"
         let record = persist::storage::JourneyRecord {
             journey: xcore::JourneyId::new(u128::MAX - u128::from(round)),
             body: vec![0; 512],
+            facts: persist::storage::JourneyFacts::default(),
         };
         let started = Instant::now();
         running

@@ -40,9 +40,11 @@ use stream::{Content, Stream};
 use xcore::StreamId;
 
 mod publication;
+mod record;
 
 pub(crate) use publication::opened;
 pub use publication::{Opened, Published, Publisher, publish};
+pub(crate) use record::{audit_entry, journey_record, message_record};
 
 /// The TCP segments one chunk holds: 44 of them, 64,240 bytes, just under
 /// TCP's classic 64 KiB window, so a Stream in flight holds about 128 KiB —

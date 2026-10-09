@@ -9,7 +9,7 @@ use std::time::Duration;
 use persist::PersistError;
 use persist::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, HandOn,
-    HeldQueue, JourneyRecord, MessageRecord, Publication, Replay, Replayed, StreamChunk,
+    HeldQueue, JourneyRecord, MessageRecord, Publication, Query, Replay, Replayed, StreamChunk,
     XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
@@ -245,5 +245,9 @@ impl XmipStorage for Failing {
         id: u128,
     ) -> Result<(), PersistError> {
         self.beneath.remove_administration(kind, id)
+    }
+
+    fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
+        self.beneath.query(query)
     }
 }

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use journey::{ChainCause, Journey, JourneyMessageRef};
 use message::Message;
-use persist::storage::{AuditEntry, Hold, JourneyRecord, MessageRecord, Publication, XmipStorage};
+use persist::storage::{AuditEntry, Hold, Publication, XmipStorage};
 use route::{Routing, Subscriber};
 use xaudit::audit_record::AuditRecord;
 use xaudit::origin::Origin;
@@ -147,17 +147,8 @@ pub fn publish(
         .cloned()
         .collect();
     let publication = Publication {
-        message: MessageRecord {
-            message: message.message_id(),
-            body: message.record(),
-        },
-        journeys: journeys
-            .iter()
-            .map(|journey| JourneyRecord {
-                journey: journey.journey_id(),
-                body: journey.record(),
-            })
-            .collect(),
+        message: super::message_record(message),
+        journeys: journeys.iter().map(super::journey_record).collect(),
         held,
         audit: audited(publisher, location, message, &journeys),
         dead,
@@ -244,8 +235,5 @@ fn audited(
         message: None,
         properties,
     };
-    AuditEntry {
-        id: record.audit_id,
-        body: record.toml().into_bytes(),
-    }
+    super::audit_entry(&record)
 }
