@@ -349,6 +349,7 @@ pub(crate) mod tests {
             audit: AuditEntry {
                 id: AuditId::new(ids.next_u128()),
                 body: Vec::new(),
+                audited: None,
                 facts: AuditFacts::default(),
             },
             claims: Vec::new(),

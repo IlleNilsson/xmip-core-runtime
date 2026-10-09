@@ -234,6 +234,14 @@ impl XmipStorage for Failing {
         self.beneath.read_kept_audit(id)
     }
 
+    fn read_kept_audit_chunk(
+        &self,
+        id: AuditId,
+        index: u32,
+    ) -> Result<Option<StreamChunk>, PersistError> {
+        self.beneath.read_kept_audit_chunk(id, index)
+    }
+
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
         self.asked(Operation::WriteAdministration)?;
         self.beneath.write_administration(record)

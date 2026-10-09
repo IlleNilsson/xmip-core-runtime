@@ -109,13 +109,28 @@ impl Pickup {
                 }
             ));
         }
+        // The Message spelled out in the Replay's audit record, as the
+        // Ledger keeps it, and its Stream's bytes beside it (ADR-0070).
+        let record = match self.storage.read_message(id) {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                let problem = format!("the Ledger holds no record of the Message {id} to audit");
+                self.failed("dead-message.replay", &problem);
+                return Err(format!(
+                    "FAILED: the Message {id} is not replayed: {problem}"
+                ));
+            }
+            Err(error) => return Err(self.not_replayed(id, &error.to_string())),
+        };
+        let mut audit = self.replayed_record(id, &journeys, who, &ids);
+        audit.audited = crate::ledger::audited(&record);
         let holding = self.held(&opened, || entry.body.clone(), true);
         let replay = Replay {
             queue,
             message: id,
             journeys: journeys.iter().map(crate::ledger::journey_record).collect(),
             held: holding.holds().to_vec(),
-            audit: self.replayed_record(id, &journeys, who, &ids),
+            audit,
         };
         match self.storage.replay(&replay) {
             Ok(Replayed::Now) => {

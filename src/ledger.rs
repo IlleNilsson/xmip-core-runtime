@@ -36,7 +36,9 @@ use std::io::{self, Read};
 use std::sync::Arc;
 
 use codec::CodecError;
-use persist::storage::{StreamChunk, StreamRecord, XmipStorage};
+use persist::storage::{
+    ChunkReader, Chunked, StreamChunk, StreamDigest, StreamRecord, XmipStorage,
+};
 use stream::{Content, Stream};
 use xcore::StreamId;
 
@@ -45,7 +47,7 @@ mod record;
 
 pub(crate) use publication::opened;
 pub use publication::{Opened, Published, Publisher, publish};
-pub(crate) use record::{audit_entry, journey_record, message_record};
+pub(crate) use record::{audit_entry, audited, journey_record, message_record};
 
 /// The TCP segments one chunk holds: 44 of them, 64,240 bytes, just under
 /// TCP's classic 64 KiB window, so a Stream in flight holds about 128 KiB —
@@ -86,7 +88,8 @@ impl Kept {
 /// Stream ends (the owner, 2026-10-09) — and held to the length its own
 /// record keeps (`XmipStorage::read_stream`): a chunk lost after
 /// Publication, damaged or deleted, is refused in words, never read as a
-/// shorter Stream.
+/// shorter Stream. The reading is Xmip Storage's one chunk reader
+/// (`persist::storage::ChunkReader`).
 pub struct Chunks {
     storage: Arc<dyn XmipStorage>,
     stream: StreamId,
@@ -126,62 +129,12 @@ impl Chunks {
 
 impl Content for Chunks {
     fn reader(&self) -> io::Result<Box<dyn Read + Send + '_>> {
-        Ok(Box::new(ChunkReader {
-            chunks: self,
-            next: 0,
-            held: Vec::new(),
-            at: 0,
-            read: 0,
-            ended: false,
-        }))
-    }
-}
-
-/// Reading a Stream's chunks in order: one held at a time.
-struct ChunkReader<'a> {
-    chunks: &'a Chunks,
-    next: u32,
-    held: Vec<u8>,
-    at: usize,
-    /// How many bytes the chunks taken so far hold.
-    read: u64,
-    ended: bool,
-}
-
-impl Read for ChunkReader<'_> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        while self.at == self.held.len() {
-            if self.ended {
-                return Ok(0);
-            }
-            let (stream, index, length) = (self.chunks.stream, self.next, self.chunks.length);
-            let chunk = self
-                .chunks
-                .storage
-                .read_chunk(stream, index)
-                .map_err(io::Error::other)?;
-            let Some(chunk) = chunk else {
-                // The Stream ends at its first missing chunk: what was read
-                // before it is the whole Stream, or a chunk was lost.
-                if self.read != length {
-                    return Err(io::Error::other(format!(
-                        "the Stream {stream} holds {} bytes in {index} chunk(s) in the \
-                         Ledger, and its record says {length}: a chunk was lost or damaged \
-                         after it was published",
-                        self.read
-                    )));
-                }
-                self.ended = true;
-                return Ok(0);
-            };
-            self.read += chunk.bytes.len() as u64;
-            (self.held, self.at) = (chunk.bytes, 0);
-            self.next += 1;
-        }
-        let taken = out.len().min(self.held.len() - self.at);
-        out[..taken].copy_from_slice(&self.held[self.at..self.at + taken]);
-        self.at += taken;
-        Ok(taken)
+        let from = Chunked::Ledger(self.stream);
+        Ok(Box::new(ChunkReader::new(
+            self.storage.as_ref(),
+            from,
+            self.length,
+        )))
     }
 }
 
@@ -190,8 +143,9 @@ impl Read for ChunkReader<'_> {
 /// the Publication that follows ([`publish`]): never more of it in memory
 /// than the chunk being written and the one read ahead to know whether
 /// there is more. The Stream ends where it has no further chunk; its last
-/// chunk goes with its own record, the one home of its length and its
-/// chunks, which every Message referring to it refers to
+/// chunk goes with its own record, the one home of its length, its chunks
+/// and the SHA-256 of its bytes — taken here as they pass, once (ADR-0070)
+/// — which every Message referring to it refers to
 /// (`XmipStorage::write_stream`). An empty Stream is one empty chunk.
 ///
 /// # Errors
@@ -211,6 +165,7 @@ pub fn write_stream(
         length: 0,
         chunks: 0,
     };
+    let mut digest = StreamDigest::default();
     let mut pending = fill(content, chunk)?;
     loop {
         let next = if pending.len() < chunk {
@@ -219,6 +174,7 @@ pub fn write_stream(
             Some(fill(content, chunk)?).filter(|next| !next.is_empty())
         };
         kept.length += pending.len() as u64;
+        digest.update(&pending);
         let written = StreamChunk {
             stream,
             index: kept.chunks,
@@ -228,11 +184,13 @@ pub fn write_stream(
         kept.chunks += 1;
         let Some(next) = next else {
             // The last chunk, and the Stream's own record with it: the one
-            // home of its length (`persist::storage::StreamRecord`).
+            // home of its length and its digest
+            // (`persist::storage::StreamRecord`).
             let ended = StreamRecord {
                 stream,
                 length: kept.length,
                 chunks: kept.chunks,
+                digest: digest.finish(),
                 written_unix_nanos: 0,
             };
             storage.write_stream(&written, &ended).map_err(refused)?;
@@ -340,6 +298,19 @@ mod tests {
         }
         .stream(storage, None);
         assert!(missing.load().is_err(), "a Stream the Ledger does not hold");
+    }
+
+    #[test]
+    fn a_stream_s_record_keeps_the_sha_256_of_its_bytes_taken_as_they_passed() {
+        let storage = storage();
+        let stream = StreamId::new(40);
+        write_stream(storage, stream, &mut b"abc".as_slice(), 1).expect("written");
+        let kept = storage.read_stream(stream).expect("read").expect("there");
+        assert_eq!(kept.chunks, 3, "a chunk a byte");
+        assert_eq!(
+            codec::hex::encode(&kept.digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

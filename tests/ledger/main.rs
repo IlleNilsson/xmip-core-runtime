@@ -38,8 +38,11 @@
 //! `send_claim.rs` a claim found another's, or unconfirmed past its lease,
 //! stopping a send's further attempts; `sending.rs` the test node that
 //! sends they run, and its far end;
-//! `untold.rs` a far end that could not be told, audited once per reason.
+//! `untold.rs` a far end that could not be told, audited once per reason;
+//! `audited.rs` a Publication's audit record carrying its Message and its
+//! Stream's bytes, verified when read (ADR-0070).
 
+mod audited;
 mod bounded;
 mod dead_message_queue;
 mod halts_at_publication;

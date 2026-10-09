@@ -11,9 +11,10 @@ use journey::Journey;
 use message::Message;
 use observe::Scope;
 use persist::storage::{
-    AuditEntry, AuditFacts, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
+    AuditEntry, AuditFacts, Audited, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
 use xaudit::audit_record::AuditRecord;
+use xcore::StreamId;
 
 /// A Journey as Xmip Storage keeps it: its form, and its state, the Journey
 /// it came from and what caused it, its depth, the Work Process it is in,
@@ -74,6 +75,18 @@ pub(crate) fn message_record(message: &Message) -> MessageRecord {
     }
 }
 
+/// What an audit record of an act on the Message `record` keeps carries
+/// of it (ADR-0070): the Message in full, in its one binary form as the
+/// record keeps it, and the Stream its first Section is over, whose bytes
+/// the audit keeper keeps beside the audit record; none where it has no
+/// Section.
+pub(crate) fn audited(record: &MessageRecord) -> Option<Audited> {
+    record.facts.stream.map(|stream| Audited {
+        message: record.body.clone(),
+        stream: StreamId::new(stream),
+    })
+}
+
 /// An audit record as Xmip Storage keeps it: its form, and when it
 /// happened, what, in which phase and how severe, whether it failed, what
 /// it says, its origin — and the cluster and the node by name, as its
@@ -88,6 +101,7 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
     AuditEntry {
         id: record.audit_id,
         body: record.toml().into_bytes(),
+        audited: None,
         facts: AuditFacts {
             occurred_unix_nanos: u64::try_from(record.timestamp_unix_nanos.max(0))
                 .unwrap_or(u64::MAX),

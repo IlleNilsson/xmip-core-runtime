@@ -146,11 +146,16 @@ pub fn publish(
         .chain(&lined.holds)
         .cloned()
         .collect();
+    let record = super::message_record(message);
+    let mut audit = audited(publisher, location, message, &journeys);
+    // The Message spelled out in its audit record, and its Stream's bytes
+    // kept beside it by the audit keeper (ADR-0070).
+    audit.audited = super::audited(&record);
     let publication = Publication {
-        message: super::message_record(message),
+        message: record,
         journeys: journeys.iter().map(super::journey_record).collect(),
         held,
-        audit: audited(publisher, location, message, &journeys),
+        audit,
         dead,
         claims: lined.claims.clone(),
         lease_nanos: u64::try_from(publisher.send.lease().as_nanos()).unwrap_or(u64::MAX),
