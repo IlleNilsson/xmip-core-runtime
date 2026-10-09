@@ -129,9 +129,10 @@ impl XmipStorage for HaltsAtPublication {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
+        stream: StreamId,
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
-        self.0.read_kept_audit_chunk(id, index)
+        self.0.read_kept_audit_chunk(id, stream, index)
     }
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {

@@ -75,16 +75,23 @@ pub(crate) fn message_record(message: &Message) -> MessageRecord {
     }
 }
 
-/// What an audit record of an act on the Message `record` keeps carries
-/// of it (ADR-0070): the Message in full, in its one binary form as the
-/// record keeps it, and the Stream its first Section is over, whose bytes
-/// the audit keeper keeps beside the audit record; none where it has no
-/// Section.
-pub(crate) fn audited(record: &MessageRecord) -> Option<Audited> {
-    record.facts.stream.map(|stream| Audited {
-        message: record.body.clone(),
-        stream: StreamId::new(stream),
-    })
+/// What an audit record of an act on `message` carries of it (ADR-0070):
+/// the Message in full, `body` — its one binary form, as the Ledger keeps
+/// it — and every Stream its Sections are over, in their order, each once,
+/// whose bytes the audit keeper keeps beside the audit record.
+pub(crate) fn audited(message: &Message, body: &[u8]) -> Audited {
+    let mut streams: Vec<StreamId> = Vec::new();
+    for section in message.sections() {
+        let stream = section.stream.id();
+        if !streams.contains(&stream) {
+            streams.push(stream);
+        }
+    }
+    Audited {
+        message: body.to_vec(),
+        streams,
+        kept: Vec::new(),
+    }
 }
 
 /// An audit record as Xmip Storage keeps it: its form, and when it
@@ -227,5 +234,72 @@ mod tests {
         );
         assert_eq!(facts.cluster.as_deref(), Some(cluster.name.as_str()));
         assert_eq!(facts.journey, None, "a program's own act");
+    }
+
+    #[test]
+    fn an_audit_of_a_message_of_two_sections_keeps_both_streams_each_verified() {
+        use persist::storage::ChunkReader;
+        use std::io::Read;
+        let storage = crate::ledger::in_memory();
+        let contents = [b"<Order/>".repeat(900), b"<Invoice/>".repeat(700)];
+        let mut sections = Vec::new();
+        for (at, content) in (0..).zip(&contents) {
+            let id = StreamId::new(70 + at);
+            let mut bytes = content.as_slice();
+            let kept = crate::ledger::write_stream(storage.as_ref(), id, &mut bytes, 1024)
+                .expect("written");
+            sections.push(MessageSection {
+                section_id: SectionId::new(at + 1),
+                name: None,
+                stream: kept.stream(storage, None),
+                contract: None,
+            });
+        }
+        // A third Section over the first Stream: it is copied once.
+        let shared = sections[0].stream.clone();
+        sections.push(MessageSection {
+            section_id: SectionId::new(3),
+            name: None,
+            stream: shared,
+            contract: None,
+        });
+        let message = Message::received(
+            MessageId::new(71),
+            sections,
+            MessageContext::new(),
+            MessageTreatment::default(),
+        );
+        let record = AuditRecord {
+            audit_id: AuditId::new(72),
+            origin: Origin::here("xmip-service"),
+            scope: None,
+            action: "publish".to_string(),
+            phase: ExecutionPhase::Finished,
+            severity: Severity::Information,
+            timestamp_unix_nanos: 42,
+            message: None,
+            properties: std::collections::BTreeMap::new(),
+        };
+        let mut entry = audit_entry(&record);
+        entry.audited = Some(audited(&message, &message.record()));
+        storage.write_audit(&entry).expect("written");
+        storage.keep_audit(10).expect("kept");
+        let kept = storage
+            .read_kept_audit(entry.id)
+            .expect("read")
+            .expect("kept");
+
+        let carried = kept.audited.as_ref().expect("carried");
+        assert_eq!(carried.message, message.record(), "the Message in full");
+        assert_eq!(carried.streams, [StreamId::new(70), StreamId::new(71)]);
+        assert_eq!(carried.kept.len(), 2, "the shared Stream once");
+        for (at, content) in (0..).zip(&contents) {
+            let mut read = Vec::new();
+            ChunkReader::audited(storage.as_ref(), &kept, StreamId::new(70 + at))
+                .expect("it carries the Stream")
+                .read_to_end(&mut read)
+                .expect("verified");
+            assert!(read == *content, "Stream {at}");
+        }
     }
 }

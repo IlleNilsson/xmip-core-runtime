@@ -123,7 +123,12 @@ impl Pickup {
             Err(error) => return Err(self.not_replayed(id, &error.to_string())),
         };
         let mut audit = self.replayed_record(id, &journeys, who, &ids);
-        audit.audited = crate::ledger::audited(&record);
+        let referred = |stream| crate::ledger::Chunks::referred(&self.storage, stream);
+        let message = match message::Message::from_record(&record.body, referred) {
+            Ok(message) => message,
+            Err(error) => return Err(self.not_replayed(id, &error.to_string())),
+        };
+        audit.audited = Some(crate::ledger::audited(&message, &record.body));
         let holding = self.held(&opened, || entry.body.clone(), true);
         let replay = Replay {
             queue,
