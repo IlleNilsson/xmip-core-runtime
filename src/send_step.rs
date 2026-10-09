@@ -93,7 +93,6 @@ use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
 pub use figures::{FailedJourney, PUBLISHED_FAILED, PortFigures};
-pub(crate) use pass::record;
 pub use pass::{Ended, Found, read, send, sequence};
 
 /// The Send pool's threads for each of the machine's hardware threads,

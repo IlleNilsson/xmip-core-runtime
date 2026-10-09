@@ -109,7 +109,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         && step.admit(1) == 1;
     let moved = HandOn {
         claim: claim.clone(),
-        result: send_step::record(&work.journey),
+        result: crate::ledger::journey_record(&work.journey),
         messages: Vec::new(),
         next: Vec::new(),
         leaves: vec![released.held.hold.queue],

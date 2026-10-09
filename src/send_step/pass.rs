@@ -9,7 +9,7 @@ use configure::OnFailure;
 use context::IdentityFacts;
 use journey::{Journey, JourneyEntry, JourneyState};
 use message::Message;
-use persist::storage::{HandOn, JourneyRecord};
+use persist::storage::HandOn;
 use route::Subscriber;
 use stream::Content;
 use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
@@ -154,7 +154,7 @@ fn written(
     let lease = runtime.send.lease();
     let hand_on = HandOn {
         claim: departure.claim.clone(),
-        result: record(&journey),
+        result: crate::ledger::journey_record(&journey),
         messages: Vec::new(),
         next: Vec::new(),
         leaves: if state == JourneyState::Completed {
@@ -293,14 +293,6 @@ fn carried(runtime: &Runtime<'_>, name: &str) -> Option<Mechanism> {
         .map(|authenticator| authenticator.mechanism())
         .chain([mechanism::circumstance()])
         .find(|mechanism| mechanism.name() == name)
-}
-
-/// A Journey as Xmip Storage keeps it.
-pub(crate) fn record(journey: &Journey) -> JourneyRecord {
-    JourneyRecord {
-        journey: journey.journey_id(),
-        body: journey.record(),
-    }
 }
 
 /// A duration in nanoseconds, the most a `u64` holds at most.

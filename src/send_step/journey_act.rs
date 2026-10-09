@@ -36,7 +36,7 @@ use xcore::{
 };
 
 use super::SendStep;
-use super::pass::record;
+use crate::ledger::journey_record;
 
 impl SendStep {
     /// Retry or dismiss the Journey `journey` (its identifier), by `who`,
@@ -80,7 +80,7 @@ impl SendStep {
         let retry = act == Act::Retry;
         let hand_on = HandOn {
             claim: claim.clone(),
-            result: record(&acted(kept, act, &said)),
+            result: journey_record(&acted(kept, act, &said)),
             messages: Vec::new(),
             next: Vec::new(),
             leaves: if retry { Vec::new() } else { vec![queue] },

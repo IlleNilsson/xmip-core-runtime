@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use journey::Journey;
-use persist::storage::{HandOn, Held, JourneyRecord};
+use persist::storage::{HandOn, Held};
 use route::Subscriber;
 use xcore::IdGenerator;
 
@@ -114,10 +114,7 @@ impl Pickup {
             .ok_or_else(|| format!("the Journey {id} is claimed by another"))?;
         let let_go = HandOn {
             claim,
-            result: JourneyRecord {
-                journey: id,
-                body: journey.record(),
-            },
+            result: crate::ledger::journey_record(journey),
             messages: Vec::new(),
             next: Vec::new(),
             leaves: vec![released.held.hold.queue],
@@ -143,10 +140,7 @@ impl Pickup {
     /// In words, where Xmip Storage did not take it: the holder reads it
     /// again ([`Pickup::again`]).
     pub fn kept(&self, released: &Released, journey: &Journey) -> Result<(), String> {
-        let record = JourneyRecord {
-            journey: released.held.hold.journey,
-            body: journey.record(),
-        };
+        let record = crate::ledger::journey_record(journey);
         self.storage
             .write_journey(&record)
             .map_err(|error| error.to_string())?;

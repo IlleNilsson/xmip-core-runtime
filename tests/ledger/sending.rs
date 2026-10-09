@@ -11,7 +11,7 @@ use configure::{DesignedSendPort, SendPortGroup};
 use journey::{Journey, JourneyEntry, JourneyState};
 use persist::EncryptedStore;
 use persist::fixture::Memory;
-use persist::storage::{Embedded, HandOn, JourneyRecord, XmipStorage};
+use persist::storage::{Embedded, HandOn, JourneyFacts, JourneyRecord, XmipStorage};
 use receive::ReceivedStream;
 use route::Subscriber;
 use secret::{Held, KekName};
@@ -93,6 +93,7 @@ pub fn sent_elsewhere(storage: &dyn XmipStorage, queue: u128, id: JourneyId) {
         result: JourneyRecord {
             journey: id,
             body: sent.record(),
+            facts: JourneyFacts::default(),
         },
         messages: Vec::new(),
         next: Vec::new(),

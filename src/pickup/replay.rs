@@ -18,9 +18,7 @@ use std::str::FromStr;
 
 use journey::{Journey, JourneyMessageRef};
 use observe::{Act, Noun};
-use persist::storage::{
-    AuditEntry, DeadEntry, JourneyRecord, Replay, Replayed, dead_message_queue,
-};
+use persist::storage::{AuditEntry, DeadEntry, Replay, Replayed, dead_message_queue};
 use route::{Promoted, publish};
 use xaudit::audit_record::AuditRecord;
 use xcore::{
@@ -115,13 +113,7 @@ impl Pickup {
         let replay = Replay {
             queue,
             message: id,
-            journeys: journeys
-                .iter()
-                .map(|journey| JourneyRecord {
-                    journey: journey.journey_id(),
-                    body: journey.record(),
-                })
-                .collect(),
+            journeys: journeys.iter().map(crate::ledger::journey_record).collect(),
             held: holding.holds().to_vec(),
             audit: self.replayed_record(id, &journeys, who, &ids),
         };
@@ -172,10 +164,7 @@ impl Pickup {
             message: None,
             properties,
         };
-        AuditEntry {
-            id: record.audit_id,
-            body: record.toml().into_bytes(),
-        }
+        crate::ledger::audit_entry(&record)
     }
 
     fn audited_replay(&self, id: MessageId, who: &str, opened: usize, said: &str) {
