@@ -150,7 +150,7 @@ pub fn publish(
     let mut audit = audited(publisher, location, message, &journeys);
     // The Message spelled out in its audit record, and its Stream's bytes
     // kept beside it by the audit keeper (ADR-0070).
-    audit.audited = super::audited(&record);
+    audit.audited = Some(super::audited(message, &record.body));
     let publication = Publication {
         message: record,
         journeys: journeys.iter().map(super::journey_record).collect(),

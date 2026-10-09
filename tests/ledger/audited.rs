@@ -73,19 +73,21 @@ fn an_audited_publish_carries_its_message_and_its_stream_s_bytes() {
         .expect("read")
         .expect("in the Ledger");
     assert_eq!(audited.message, ledger.body, "the Message as published");
-    assert_eq!(Some(audited.stream.value()), ledger.facts.stream);
-    assert_eq!(kept.facts.stream_digest, Some(digest(&content)));
-    assert_eq!(kept.facts.stream_length, Some(content.len() as u64));
-    let record = storage.read_stream(audited.stream).expect("read");
+    let stream = message.sections()[0].stream.id();
+    assert_eq!(audited.streams, [stream], "its one Section's");
+    let kept_stream = audited.kept(stream).expect("kept beside it");
+    assert_eq!(kept_stream.digest, digest(&content));
+    assert_eq!(kept_stream.length, content.len() as u64);
+    let record = storage.read_stream(stream).expect("read");
     assert_eq!(
-        kept.facts.stream_digest,
-        record.map(|record| record.digest),
+        Some(kept_stream),
+        record.as_ref(),
         "taken from the Stream's own record"
     );
 
     let mut read = Vec::new();
-    ChunkReader::audited(storage.as_ref(), &kept)
-        .expect("it carries a Stream")
+    ChunkReader::audited(storage.as_ref(), &kept, stream)
+        .expect("it carries the Stream")
         .read_to_end(&mut read)
         .expect("verified");
     assert_eq!(read, content);
@@ -99,14 +101,18 @@ fn a_stream_larger_than_a_chunk_is_audited_in_chunks_of_its_own() {
         .collect();
     let kept = published(&storage, &content, CHUNK);
     let id = kept.id;
+    let audited = kept.audited.as_ref().expect("an act on a Message");
+    let stream = audited.streams[0];
 
-    let last = storage.read_kept_audit_chunk(id, 3).expect("read");
+    let last = storage.read_kept_audit_chunk(id, stream, 3).expect("read");
     assert_eq!(last.expect("a fourth chunk").bytes.len(), 5);
-    assert_eq!(storage.read_kept_audit_chunk(id, 4).expect("read"), None);
-    assert_eq!(kept.facts.stream_digest, Some(digest(&content)));
+    let past = storage.read_kept_audit_chunk(id, stream, 4).expect("read");
+    assert_eq!(past, None);
+    let kept_stream = audited.kept(stream).expect("kept beside it");
+    assert_eq!(kept_stream.digest, digest(&content));
     let mut read = Vec::new();
-    ChunkReader::audited(storage.as_ref(), &kept)
-        .expect("it carries a Stream")
+    ChunkReader::audited(storage.as_ref(), &kept, stream)
+        .expect("it carries the Stream")
         .read_to_end(&mut read)
         .expect("verified");
     assert_eq!(read.len(), content.len());
