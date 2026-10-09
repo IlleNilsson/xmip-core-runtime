@@ -90,7 +90,6 @@ pub(crate) fn audited(message: &Message, body: &[u8]) -> Audited {
     Audited {
         message: body.to_vec(),
         streams,
-        kept: Vec::new(),
     }
 }
 
@@ -292,10 +291,17 @@ mod tests {
         let carried = kept.audited.as_ref().expect("carried");
         assert_eq!(carried.message, message.record(), "the Message in full");
         assert_eq!(carried.streams, [StreamId::new(70), StreamId::new(71)]);
-        assert_eq!(carried.kept.len(), 2, "the shared Stream once");
+        let carrying = persist::storage::Query {
+            ask: persist::storage::Ask::AuditOfStream { stream: 70 },
+            most: 10,
+            newest_first: false,
+        };
+        let found = storage.query(&carrying).expect("asked");
+        assert_eq!(found, [72], "the shared Stream once, found by its row");
         for (at, content) in (0..).zip(&contents) {
             let mut read = Vec::new();
-            ChunkReader::audited(storage.as_ref(), &kept, StreamId::new(70 + at))
+            ChunkReader::audited(storage.as_ref(), kept.id, StreamId::new(70 + at))
+                .expect("read")
                 .expect("it carries the Stream")
                 .read_to_end(&mut read)
                 .expect("verified");

@@ -126,6 +126,14 @@ impl XmipStorage for HaltsAtPublication {
         self.0.read_kept_audit(id)
     }
 
+    fn read_kept_audit_stream(
+        &self,
+        id: AuditId,
+        stream: StreamId,
+    ) -> Result<Option<StreamRecord>, PersistError> {
+        self.0.read_kept_audit_stream(id, stream)
+    }
+
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
