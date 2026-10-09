@@ -1,32 +1,38 @@
 //! The Ledger's records of a Journey, a Message and an audit record, each
-//! with the facts Xmip Storage keeps searchable beside its sealed body
-//! (`persist::storage::JourneyFacts` and its siblings; proposed
+//! with every single value of it laid out beside its sealed body, in the
+//! clear (`persist::storage::JourneyFacts` and its siblings; proposed
 //! 2026-10-09): made here, once, from the object the body is the
-//! serialization of, so every write of one carries the same facts.
+//! serialization of, so every write of one carries the same values. A list
+//! — a Journey's entries and Message references, a Message's Sections and
+//! context, an audit record's properties — is in the body alone.
 
 use context::property::PARTY;
 use journey::Journey;
 use message::Message;
-use observe::Scope;
 use persist::storage::{
     AuditEntry, AuditFacts, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
 use xaudit::audit_record::{AuditRecord, phase_word, severity_word};
 
-/// A Journey as Xmip Storage keeps it: its form, its state, its tries and
-/// its depth, the Send Port and the Work Process it is at, the Journey it
-/// came from and the Message it holds last. Its times are Xmip Storage's.
+/// A Journey as Xmip Storage keeps it: its form, and its state, the Journey
+/// it came from and what caused it, its depth, the Work Process it is in,
+/// its Send Port, the Send Location it is at and its tries there, and the
+/// Message it holds last. Its times are Xmip Storage's.
 pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
+    let cause = journey.cause();
     JourneyRecord {
         journey: journey.journey_id(),
         body: journey.record(),
         facts: JourneyFacts {
             state: journey.state.number(),
-            attempts: journey.attempts.tries,
-            depth: journey.depth(),
-            send_port: journey.send_port.clone(),
-            work_process: journey.current_work_process.clone(),
             previous_journey: journey.previous_journey_id().map(|id| id.value()),
+            subscription: cause.map(|cause| cause.subscription_id.clone()),
+            cause_work_process: cause.and_then(|cause| cause.work_process.clone()),
+            depth: journey.depth(),
+            work_process: journey.current_work_process.clone(),
+            send_port: journey.send_port.clone(),
+            send_location: journey.attempts.location,
+            attempts: journey.attempts.tries,
             message: journey
                 .messages()
                 .last()
@@ -36,24 +42,29 @@ pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
     }
 }
 
-/// A Message as Xmip Storage keeps it: its form, its generation, how it was
-/// made, its length, the Message it came from, the Party its context says
-/// it came from, and its first Section's contract and Stream.
+/// A Message as Xmip Storage keeps it: its form, the Message it came from,
+/// its generation, how it was made and its treatment, and — read from its
+/// Sections and its context — its length, the Party its context says it
+/// came from, and its first Section's contract and Stream.
 pub(crate) fn message_record(message: &Message) -> MessageRecord {
     let first = message.sections().first();
     let party = message.context().get(PARTY).and_then(|value| value.text());
+    let treatment = message.treatment();
     MessageRecord {
         message: message.message_id(),
         body: message.record(),
         facts: MessageFacts {
+            previous_message: message.previous_message_id().map(|id| id.value()),
             generation: message.generation(),
             created_by: message.created_by().number(),
+            priority: treatment.priority.number(),
+            execution_profile: treatment.execution_profile.number(),
+            durability: treatment.durability.number(),
             size_bytes: message
                 .sections()
                 .iter()
                 .map(|section| section.stream.length())
                 .sum(),
-            previous_message: message.previous_message_id().map(|id| id.value()),
             party: party.map(|party| party.into_owned()),
             contract: first.and_then(|section| section.contract.clone()),
             stream: first.map(|section| section.stream.id().value()),
@@ -63,12 +74,13 @@ pub(crate) fn message_record(message: &Message) -> MessageRecord {
 }
 
 /// An audit record as Xmip Storage keeps it: its form, and when it
-/// happened, what, in which phase and how severe, whether it failed, the
-/// program that wrote it, the cluster and the node it was written on, and
-/// the artifact, Journey, Message and execution it is about.
+/// happened, what, in which phase and how severe, whether it failed, what
+/// it says, its origin, and the execution it belongs to — its Journey, its
+/// Message, its artifact, its node and its cluster.
 pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
     let scope = record.scope.as_ref();
-    let location = record.origin.location.as_deref().map(Scope::new);
+    let artifact = scope.map(|scope| &scope.artifact);
+    let origin = &record.origin;
     AuditEntry {
         id: record.audit_id,
         body: record.toml().into_bytes(),
@@ -79,20 +91,23 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
             phase: phase_word(record.phase).to_string(),
             severity: severity_word(record.severity).to_string(),
             failed: record.is_failure(),
-            program: record.origin.program.clone(),
-            artifact_kind: scope.map(|scope| scope.artifact.artifact_type.to_string()),
-            cluster: location
-                .as_ref()
-                .and_then(|scope| scope.segments().next())
-                .map(str::to_string),
-            node: location
-                .as_ref()
-                .and_then(|scope| scope.node())
-                .map(str::to_string),
-            artifact: scope.map(|scope| scope.artifact.name.clone()),
+            text: record.message.clone(),
+            program: origin.program.clone(),
+            host: origin.host.clone(),
+            process: origin.process,
+            location: origin.location.clone(),
+            hidden: origin.hidden,
+            execution: scope.map(|scope| scope.execution_id.value()),
             journey: scope.map(|scope| scope.journey_id.value()),
             message: scope.map(|scope| scope.message_id.value()),
-            execution: scope.map(|scope| scope.execution_id.value()),
+            artifact: artifact.map(|artifact| artifact.artifact_id.value()),
+            artifact_kind: artifact.map(|artifact| artifact.artifact_type.to_string()),
+            artifact_name: artifact.map(|artifact| artifact.name.clone()),
+            artifact_version: artifact.and_then(|artifact| artifact.version.clone()),
+            node: scope.and_then(|scope| scope.node_id).map(|id| id.value()),
+            cluster: scope
+                .and_then(|scope| scope.cluster_id)
+                .map(|id| id.value()),
             ..AuditFacts::default()
         },
     }
@@ -132,6 +147,7 @@ mod tests {
         assert_eq!((facts.attempts, facts.depth), (3, 1));
         assert_eq!(facts.send_port.as_deref(), Some("Billing"));
         assert_eq!((facts.previous_journey, facts.message), (Some(1), Some(7)));
+        assert_eq!(facts.subscription.as_deref(), Some("billing"));
     }
 
     #[test]
@@ -158,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn an_audit_record_s_facts_are_its_own_and_its_node_its_location_s() {
+    fn an_audit_record_s_values_are_its_own_its_origin_s_among_them() {
         let cluster = configure::fixture::test_cluster();
         let mut origin = Origin::here("xmip-service");
         origin.location = Some(cluster.node_scope(0));
@@ -170,7 +186,7 @@ mod tests {
             phase: ExecutionPhase::Failure,
             severity: Severity::Error,
             timestamp_unix_nanos: 42,
-            message: None,
+            message: Some("refused".to_string()),
             properties: std::collections::BTreeMap::new(),
         };
         let facts = audit_entry(&record).facts;
@@ -179,8 +195,10 @@ mod tests {
             (facts.phase.as_str(), facts.occurred_unix_nanos),
             ("failure", 42)
         );
-        let node = cluster.nodes[0].name.clone();
-        assert_eq!(facts.node, Some(node));
+        assert_eq!(facts.location, Some(cluster.node_scope(0)));
+        assert_eq!(facts.text.as_deref(), Some("refused"));
+        assert_eq!(facts.program, "xmip-service");
+        assert_eq!(facts.node, None, "no execution scope");
         assert_eq!(facts.journey, None, "a program's own act");
     }
 }
