@@ -61,7 +61,8 @@ pub struct Kept {
     pub stream: StreamId,
     /// Its length, in bytes.
     pub length: u64,
-    /// How many chunks it was written in; one at least, the last saying so.
+    /// How many chunks it was written in; one at least, an empty Stream one
+    /// empty chunk.
     pub chunks: u32,
 }
 
@@ -74,23 +75,31 @@ impl Kept {
             self.stream,
             self.length,
             media_type,
-            Arc::new(Chunks::of(Arc::clone(storage), self.stream)),
+            Arc::new(Chunks::of(Arc::clone(storage), self.stream, self.length)),
         )
     }
 }
 
 /// A Stream's content as the Ledger keeps it: its chunks, read back one at
-/// a time through Xmip Storage.
+/// a time through Xmip Storage, up to the first it has not — where the
+/// Stream ends (the owner, 2026-10-09) — and held to the length its
+/// Message keeps: a chunk lost after Publication, damaged or deleted, is
+/// refused in words, never read as a shorter Stream.
 pub struct Chunks {
     storage: Arc<dyn XmipStorage>,
     stream: StreamId,
+    length: u64,
 }
 
 impl Chunks {
-    /// The chunks of `stream` behind `storage`.
+    /// The chunks of `stream` behind `storage`, `length` bytes together.
     #[must_use]
-    pub fn of(storage: Arc<dyn XmipStorage>, stream: StreamId) -> Self {
-        Self { storage, stream }
+    pub fn of(storage: Arc<dyn XmipStorage>, stream: StreamId, length: u64) -> Self {
+        Self {
+            storage,
+            stream,
+            length,
+        }
     }
 }
 
@@ -101,6 +110,7 @@ impl Content for Chunks {
             next: 0,
             held: Vec::new(),
             at: 0,
+            read: 0,
             ended: false,
         }))
     }
@@ -112,6 +122,8 @@ struct ChunkReader<'a> {
     next: u32,
     held: Vec<u8>,
     at: usize,
+    /// How many bytes the chunks taken so far hold.
+    read: u64,
     ended: bool,
 }
 
@@ -121,16 +133,28 @@ impl Read for ChunkReader<'_> {
             if self.ended {
                 return Ok(0);
             }
-            let (stream, index) = (self.chunks.stream, self.next);
+            let (stream, index, length) = (self.chunks.stream, self.next, self.chunks.length);
             let chunk = self
                 .chunks
                 .storage
                 .read_chunk(stream, index)
-                .map_err(io::Error::other)?
-                .ok_or_else(|| {
-                    io::Error::other(format!("the Stream {stream} has no chunk {index}"))
-                })?;
-            (self.held, self.at, self.ended) = (chunk.bytes, 0, chunk.last);
+                .map_err(io::Error::other)?;
+            let Some(chunk) = chunk else {
+                // The Stream ends at its first missing chunk: what was read
+                // before it is the whole Stream, or a chunk was lost.
+                if self.read != length {
+                    return Err(io::Error::other(format!(
+                        "the Stream {stream} holds {} bytes in {index} chunk(s) in the \
+                         Ledger, and its Message says {length}: a chunk was lost or damaged \
+                         after it was published",
+                        self.read
+                    )));
+                }
+                self.ended = true;
+                return Ok(0);
+            };
+            self.read += chunk.bytes.len() as u64;
+            (self.held, self.at) = (chunk.bytes, 0);
             self.next += 1;
         }
         let taken = out.len().min(self.held.len() - self.at);
@@ -143,8 +167,10 @@ impl Read for ChunkReader<'_> {
 /// Write the Stream `content` gives into the Ledger as `stream`, in chunks
 /// of `chunk` bytes, each written before the next is read and durable with
 /// the Publication that follows ([`publish`]): never more of it in memory
-/// than the chunk being written and the one read ahead to
-/// know whether it is the last. An empty Stream is one empty last chunk.
+/// than the chunk being written and the one read ahead to know whether
+/// there is more. The Stream ends where it has no further chunk, and its
+/// length is its Message's to keep ([`Kept::length`]); an empty Stream is
+/// one empty chunk.
 ///
 /// # Errors
 ///
@@ -174,7 +200,6 @@ pub fn write_stream(
         let written = StreamChunk {
             stream,
             index: kept.chunks,
-            last: next.is_none(),
             bytes: pending,
         };
         storage
@@ -229,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_is_written_in_chunks_the_last_saying_so() {
+    fn a_stream_is_written_in_chunks_and_ends_where_none_follows() {
         let storage = storage();
         let content: Vec<u8> = (0..10_000u32).map(|n| (n % 251) as u8).collect();
         for (chunk, chunks) in [(4096, 3), (5000, 2), (10_000, 1), (20_000, 1)] {
@@ -250,7 +275,6 @@ mod tests {
                     .read_chunk(stream, index)
                     .expect("read")
                     .expect("there");
-                assert_eq!(written.last, index + 1 == chunks, "{chunk}: {index}");
                 read.extend(written.bytes);
             }
             assert_eq!(read, content, "{chunk}");
@@ -289,13 +313,52 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_stream_is_one_empty_last_chunk() {
-        let storage = storage();
+    fn an_empty_stream_is_one_empty_chunk() {
+        let kept_in = in_memory();
+        let storage = kept_in.as_ref();
         let stream = StreamId::new(1);
         let kept = write_stream(storage, stream, &mut [].as_slice(), 4096).expect("written");
         assert_eq!((kept.length, kept.chunks), (0, 1));
         let only = storage.read_chunk(stream, 0).expect("read").expect("there");
-        assert!(only.last && only.bytes.is_empty());
+        assert!(only.bytes.is_empty());
+        assert!(storage.read_chunk(stream, 1).expect("read").is_none());
+        let kept = kept.stream(kept_in, None);
+        assert_eq!(kept.load().expect("read back"), b"");
+    }
+
+    #[test]
+    fn a_chunk_lost_after_publication_is_refused_in_words() {
+        let storage = in_memory();
+        let content: Vec<u8> = (0..10_000u32).map(|n| (n % 251) as u8).collect();
+        let whole = StreamId::new(20);
+        let kept =
+            write_stream(storage.as_ref(), whole, &mut content.as_slice(), 4096).expect("written");
+        assert_eq!(kept.chunks, 3);
+        // The same Stream kept again without one of its chunks: the middle
+        // one, and the last.
+        for (lost, at) in [(1u32, 21u128), (2, 22)] {
+            let stream = StreamId::new(at);
+            for index in (0..kept.chunks).filter(|index| *index != lost) {
+                let mut chunk = storage
+                    .read_chunk(whole, index)
+                    .expect("read")
+                    .expect("there");
+                chunk.stream = stream;
+                storage.write_chunk(&chunk).expect("copied");
+            }
+            let short = Kept { stream, ..kept }.stream(storage, None);
+            let refused = short.load().expect_err("a chunk is gone");
+            let mut read = Vec::new();
+            let streamed = short
+                .reader()
+                .expect("a reader")
+                .read_to_end(&mut read)
+                .expect_err("a chunk is gone, read in pieces");
+            for why in [refused.to_string(), streamed.to_string()] {
+                assert!(why.contains("a chunk was lost or damaged"), "{why}");
+            }
+        }
+        assert_eq!(kept.stream(storage, None).load().expect("whole"), content);
     }
 
     #[test]
