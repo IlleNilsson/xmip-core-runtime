@@ -9,6 +9,7 @@
 use context::property::PARTY;
 use journey::Journey;
 use message::Message;
+use observe::Scope;
 use persist::storage::{
     AuditEntry, AuditFacts, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
@@ -75,12 +76,15 @@ pub(crate) fn message_record(message: &Message) -> MessageRecord {
 
 /// An audit record as Xmip Storage keeps it: its form, and when it
 /// happened, what, in which phase and how severe, whether it failed, what
-/// it says, its origin, and the execution it belongs to — its Journey, its
-/// Message, its artifact, its node and its cluster.
+/// it says, its origin — and the cluster and the node by name, as its
+/// location says them, by the one rule (`observe::Scope`) the audit reader
+/// reads them by — and the execution it belongs to: its Journey, its
+/// Message and its artifact, spelled out.
 pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
     let scope = record.scope.as_ref();
     let artifact = scope.map(|scope| &scope.artifact);
     let origin = &record.origin;
+    let location = origin.location.as_deref().map(Scope::new);
     AuditEntry {
         id: record.audit_id,
         body: record.toml().into_bytes(),
@@ -100,14 +104,17 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
             execution: scope.map(|scope| scope.execution_id.value()),
             journey: scope.map(|scope| scope.journey_id.value()),
             message: scope.map(|scope| scope.message_id.value()),
-            artifact: artifact.map(|artifact| artifact.artifact_id.value()),
             artifact_kind: artifact.map(|artifact| artifact.artifact_type.to_string()),
             artifact_name: artifact.map(|artifact| artifact.name.clone()),
             artifact_version: artifact.and_then(|artifact| artifact.version.clone()),
-            node: scope.and_then(|scope| scope.node_id).map(|id| id.value()),
-            cluster: scope
-                .and_then(|scope| scope.cluster_id)
-                .map(|id| id.value()),
+            node: location
+                .as_ref()
+                .and_then(|scope| scope.node())
+                .map(str::to_string),
+            cluster: location
+                .as_ref()
+                .and_then(|scope| scope.segments().next())
+                .map(str::to_string),
             ..AuditFacts::default()
         },
     }
@@ -198,7 +205,13 @@ mod tests {
         assert_eq!(facts.location, Some(cluster.node_scope(0)));
         assert_eq!(facts.text.as_deref(), Some("refused"));
         assert_eq!(facts.program, "xmip-service");
-        assert_eq!(facts.node, None, "no execution scope");
+        let node = &cluster.nodes[0].name;
+        assert_eq!(
+            facts.node.as_ref(),
+            Some(node),
+            "by name, from its location"
+        );
+        assert_eq!(facts.cluster.as_deref(), Some(cluster.name.as_str()));
         assert_eq!(facts.journey, None, "a program's own act");
     }
 }
