@@ -2,7 +2,6 @@
 //! from the Ledger to be sent: what the Send pool's threads run, and what a
 //! scan finds.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use configure::OnFailure;
@@ -11,7 +10,6 @@ use journey::{Journey, JourneyEntry, JourneyState};
 use message::Message;
 use persist::storage::HandOn;
 use route::Subscriber;
-use stream::Content;
 use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
 
 use super::Departure;
@@ -257,9 +255,8 @@ pub fn read(runtime: &Runtime<'_>, journey: JourneyId, body: &[u8]) -> Result<Fo
             "its Message is not in the Ledger".to_string(),
         ));
     };
-    let message = match Message::from_record(&kept.body, |stream, length| {
-        Ok(Arc::new(Chunks::of(Arc::clone(storage), stream, length)) as Arc<dyn Content>)
-    }) {
+    let message = match Message::from_record(&kept.body, |stream| Chunks::referred(storage, stream))
+    {
         Ok(message) => message,
         Err(why) => return Ok(Found::Unreadable(why.to_string())),
     };

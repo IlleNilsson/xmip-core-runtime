@@ -35,7 +35,8 @@
 use std::io::{self, Read};
 use std::sync::Arc;
 
-use persist::storage::{StreamChunk, XmipStorage};
+use codec::CodecError;
+use persist::storage::{StreamChunk, StreamRecord, XmipStorage};
 use stream::{Content, Stream};
 use xcore::StreamId;
 
@@ -82,9 +83,10 @@ impl Kept {
 
 /// A Stream's content as the Ledger keeps it: its chunks, read back one at
 /// a time through Xmip Storage, up to the first it has not — where the
-/// Stream ends (the owner, 2026-10-09) — and held to the length its
-/// Message keeps: a chunk lost after Publication, damaged or deleted, is
-/// refused in words, never read as a shorter Stream.
+/// Stream ends (the owner, 2026-10-09) — and held to the length its own
+/// record keeps (`XmipStorage::read_stream`): a chunk lost after
+/// Publication, damaged or deleted, is refused in words, never read as a
+/// shorter Stream.
 pub struct Chunks {
     storage: Arc<dyn XmipStorage>,
     stream: StreamId,
@@ -100,6 +102,25 @@ impl Chunks {
             stream,
             length,
         }
+    }
+
+    /// The Stream `stream` as a Message record read back refers to it
+    /// (`message::Message::from_record`): its length, from its own record
+    /// — the one home of it — and its chunks behind `storage`.
+    ///
+    /// # Errors
+    ///
+    /// In words, where its record cannot be read or the Ledger holds none.
+    pub fn referred(
+        storage: &Arc<dyn XmipStorage>,
+        stream: StreamId,
+    ) -> Result<(u64, Arc<dyn Content>), CodecError> {
+        let record = storage
+            .read_stream(stream)
+            .map_err(|failed| CodecError::new(format!("the Stream {stream}: {failed}")))?
+            .ok_or_else(|| CodecError::new(format!("the Ledger holds no Stream {stream}")))?;
+        let chunks = Self::of(Arc::clone(storage), stream, record.length);
+        Ok((record.length, Arc::new(chunks)))
     }
 }
 
@@ -145,7 +166,7 @@ impl Read for ChunkReader<'_> {
                 if self.read != length {
                     return Err(io::Error::other(format!(
                         "the Stream {stream} holds {} bytes in {index} chunk(s) in the \
-                         Ledger, and its Message says {length}: a chunk was lost or damaged \
+                         Ledger, and its record says {length}: a chunk was lost or damaged \
                          after it was published",
                         self.read
                     )));
@@ -168,9 +189,10 @@ impl Read for ChunkReader<'_> {
 /// of `chunk` bytes, each written before the next is read and durable with
 /// the Publication that follows ([`publish`]): never more of it in memory
 /// than the chunk being written and the one read ahead to know whether
-/// there is more. The Stream ends where it has no further chunk, and its
-/// length is its Message's to keep ([`Kept::length`]); an empty Stream is
-/// one empty chunk.
+/// there is more. The Stream ends where it has no further chunk; its last
+/// chunk goes with its own record, the one home of its length and its
+/// chunks, which every Message referring to it refers to
+/// (`XmipStorage::write_stream`). An empty Stream is one empty chunk.
 ///
 /// # Errors
 ///
@@ -202,14 +224,22 @@ pub fn write_stream(
             index: kept.chunks,
             bytes: pending,
         };
-        storage
-            .write_chunk(&written)
-            .map_err(|failed| format!("Xmip Storage did not take the Stream {stream}: {failed}"))?;
+        let refused = |failed| format!("Xmip Storage did not take the Stream {stream}: {failed}");
         kept.chunks += 1;
-        match next {
-            Some(next) => pending = next,
-            None => return Ok(kept),
-        }
+        let Some(next) = next else {
+            // The last chunk, and the Stream's own record with it: the one
+            // home of its length (`persist::storage::StreamRecord`).
+            let ended = StreamRecord {
+                stream,
+                length: kept.length,
+                chunks: kept.chunks,
+                written_unix_nanos: 0,
+            };
+            storage.write_stream(&written, &ended).map_err(refused)?;
+            return Ok(kept);
+        };
+        storage.write_chunk(&written).map_err(refused)?;
+        pending = next;
     }
 }
 
@@ -361,6 +391,53 @@ mod tests {
         assert_eq!(kept.stream(storage, None).load().expect("whole"), content);
     }
 
+    #[test]
+    fn two_messages_refer_to_one_stream_written_once_and_both_read_it_whole() {
+        use message::{Message, MessageSection, MessageTreatment};
+        use xcore::{MessageId, SectionId};
+        let storage = in_memory();
+        let content: Vec<u8> = (0..10_000u32).map(|n| (n % 251) as u8).collect();
+        let stream = StreamId::new(30);
+        let kept =
+            write_stream(storage.as_ref(), stream, &mut content.as_slice(), 4096).expect("written");
+        let written = storage
+            .read_stream(stream)
+            .expect("read")
+            .expect("its record");
+        assert_eq!((written.length, written.chunks), (10_000, 3));
+        let section = MessageSection {
+            section_id: SectionId::new(1),
+            name: None,
+            stream: kept.stream(storage, None),
+            contract: None,
+        };
+        let received = Message::received(
+            MessageId::new(31),
+            vec![section],
+            context::MessageContext::new(),
+            MessageTreatment::default(),
+        );
+        // A Message assigned from it refers to the same Stream.
+        let assigned = received.assigned(MessageId::new(32), context::MessageContext::new());
+        for message in [&received, &assigned] {
+            storage
+                .write_message(&record::message_record(message))
+                .expect("written");
+        }
+        let again = storage.read_stream(stream).expect("read");
+        assert_eq!(again, Some(written), "one record, written once");
+        for id in [31, 32] {
+            let kept = storage
+                .read_message(MessageId::new(id))
+                .expect("read")
+                .expect("there");
+            let read = Message::from_record(&kept.body, |stream| Chunks::referred(storage, stream))
+                .expect("read back");
+            let section = &read.sections()[0].stream;
+            assert_eq!(section.id(), stream);
+            assert_eq!(section.load().expect("whole"), content.as_slice());
+        }
+    }
     #[test]
     fn a_stream_that_cannot_be_read_is_said_in_words() {
         struct Broken;
