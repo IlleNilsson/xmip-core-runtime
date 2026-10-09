@@ -22,12 +22,13 @@ use std::path::Path;
 use abi::ffi::{Str, status};
 use abi::operate::audit::kept;
 use serde_json::{Map, Value, json};
-use xaudit::audit_column::{Column, SEVERITIES};
+use xaudit::audit_column::Column;
 use xaudit::audit_entry::AuditEntry;
 use xaudit::audit_query::{AuditGroup, AuditQuery};
 use xaudit::audit_store;
 use xaudit::emit::AuditOutcome;
 use xaudit::program_audit::ProgramAudit;
+use xcore::Severity;
 
 use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
@@ -165,7 +166,7 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
     let Some(file) = audit_store::stated(stated) else {
         let none = json!({"file": "", "read": 0, "matched": 0, "offset": asked.offset,
             "limit": asked.limit, "records": [], "groups": [], "actions": [],
-            "columns": Column::ALL.map(Column::word), "severities": SEVERITIES});
+            "columns": Column::ALL.map(Column::word), "severities": Severity::ALL.map(Severity::word)});
         return (status::OK, none.to_string());
     };
     let entries = match audit_store::read(&file) {
@@ -183,7 +184,7 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
         "groups": page.groups.iter().map(group).collect::<Vec<_>>(),
         "actions": page.actions,
         "columns": Column::ALL.map(Column::word),
-        "severities": SEVERITIES,
+        "severities": Severity::ALL.map(Severity::word),
     });
 
     (status::OK, answer.to_string())
@@ -320,7 +321,7 @@ mod tests {
         let pair = [borrow("url"), borrow("http://127.0.0.1:5087")];
         assert_eq!(call(&place, phase::FAILURE, &pair).0, status::OK);
 
-        let (code, text) = read(&place, &["severity", "information", "sort", "program"]);
+        let (code, text) = read(&place, &["severity", "Information", "sort", "program"]);
 
         assert_eq!(code, status::OK, "{text}");
         let answer: Value = serde_json::from_str(&text).expect("JSON");
@@ -328,13 +329,13 @@ mod tests {
         assert_eq!(answer["matched"], 1);
         let record = &answer["records"][0];
         assert_eq!(record["program"], "xmip-core-runtime tests");
-        assert_eq!(record["phase"], "failure");
+        assert_eq!(record["phase"], "Failure");
         assert_eq!(record["properties"]["url"], "http://127.0.0.1:5087");
         assert!(record.get("location").is_none(), "declared none: {record}");
         assert_eq!(answer["groups"][0]["kind"], "host");
         assert_eq!(answer["actions"][0], "probe");
         assert_eq!(answer["columns"][0], "at");
-        assert_eq!(answer["severities"][2], "error");
+        assert_eq!(answer["severities"][2], "Error");
         let _ = fs::remove_dir_all(&directory);
     }
 
