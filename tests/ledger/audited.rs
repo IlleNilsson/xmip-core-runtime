@@ -75,18 +75,18 @@ fn an_audited_publish_carries_its_message_and_its_stream_s_bytes() {
     assert_eq!(audited.message, ledger.body, "the Message as published");
     let stream = message.sections()[0].stream.id();
     assert_eq!(audited.streams, [stream], "its one Section's");
-    let kept_stream = audited.kept(stream).expect("kept beside it");
-    assert_eq!(kept_stream.digest, digest(&content));
-    assert_eq!(kept_stream.length, content.len() as u64);
+    let row = storage
+        .read_kept_audit_stream(kept.id, stream)
+        .expect("read");
+    let row = row.expect("its audit_stream row");
+    assert_eq!(row.digest, digest(&content));
+    assert_eq!(row.length, content.len() as u64);
     let record = storage.read_stream(stream).expect("read");
-    assert_eq!(
-        Some(kept_stream),
-        record.as_ref(),
-        "taken from the Stream's own record"
-    );
+    assert_eq!(Some(row), record, "taken from the Stream's own record");
 
     let mut read = Vec::new();
-    ChunkReader::audited(storage.as_ref(), &kept, stream)
+    ChunkReader::audited(storage.as_ref(), kept.id, stream)
+        .expect("read")
         .expect("it carries the Stream")
         .read_to_end(&mut read)
         .expect("verified");
@@ -108,10 +108,11 @@ fn a_stream_larger_than_a_chunk_is_audited_in_chunks_of_its_own() {
     assert_eq!(last.expect("a fourth chunk").bytes.len(), 5);
     let past = storage.read_kept_audit_chunk(id, stream, 4).expect("read");
     assert_eq!(past, None);
-    let kept_stream = audited.kept(stream).expect("kept beside it");
-    assert_eq!(kept_stream.digest, digest(&content));
+    let row = storage.read_kept_audit_stream(id, stream).expect("read");
+    assert_eq!(row.expect("its audit_stream row").digest, digest(&content));
     let mut read = Vec::new();
-    ChunkReader::audited(storage.as_ref(), &kept, stream)
+    ChunkReader::audited(storage.as_ref(), kept.id, stream)
+        .expect("read")
         .expect("it carries the Stream")
         .read_to_end(&mut read)
         .expect("verified");

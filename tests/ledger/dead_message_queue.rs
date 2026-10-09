@@ -195,7 +195,11 @@ fn a_replay_once_a_subscription_matches_opens_its_journeys_and_takes_the_entry_o
     let replayed = storage.read_message(messages[0]).expect("read");
     let carried = kept.audited.expect("an act on a Message");
     assert_eq!(Some(carried.message), replayed.map(|record| record.body));
-    assert_eq!(carried.kept.len(), 1, "its Stream beside it");
+    let stream = carried.streams[0];
+    let row = storage
+        .read_kept_audit_stream(kept.id, stream)
+        .expect("read");
+    assert!(row.is_some(), "its Stream beside it");
 
     let again = after.replay(&first, WHO).expect("asked again");
     assert!(again.contains("replayed already"), "{again}");
