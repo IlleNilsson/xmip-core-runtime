@@ -257,8 +257,8 @@ pub fn read(runtime: &Runtime<'_>, journey: JourneyId, body: &[u8]) -> Result<Fo
             "its Message is not in the Ledger".to_string(),
         ));
     };
-    let message = match Message::from_record(&kept.body, |stream| {
-        Ok(Arc::new(Chunks::of(Arc::clone(storage), stream)) as Arc<dyn Content>)
+    let message = match Message::from_record(&kept.body, |stream, length| {
+        Ok(Arc::new(Chunks::of(Arc::clone(storage), stream, length)) as Arc<dyn Content>)
     }) {
         Ok(message) => message,
         Err(why) => return Ok(Found::Unreadable(why.to_string())),
