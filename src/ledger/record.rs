@@ -12,7 +12,7 @@ use message::Message;
 use persist::storage::{
     AuditEntry, AuditFacts, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
-use xaudit::audit_record::{AuditRecord, phase_word, severity_word};
+use xaudit::audit_record::AuditRecord;
 
 /// A Journey as Xmip Storage keeps it: its form, and its state, the Journey
 /// it came from and what caused it, its depth, the Work Process it is in,
@@ -88,8 +88,8 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
             occurred_unix_nanos: u64::try_from(record.timestamp_unix_nanos.max(0))
                 .unwrap_or(u64::MAX),
             action: record.action.clone(),
-            phase: phase_word(record.phase).to_string(),
-            severity: severity_word(record.severity).to_string(),
+            phase: record.phase.word().to_string(),
+            severity: record.severity.word().to_string(),
             failed: record.is_failure(),
             text: record.message.clone(),
             program: origin.program.clone(),
@@ -193,7 +193,7 @@ mod tests {
         assert!(facts.failed);
         assert_eq!(
             (facts.phase.as_str(), facts.occurred_unix_nanos),
-            ("failure", 42)
+            ("Failure", 42)
         );
         assert_eq!(facts.location, Some(cluster.node_scope(0)));
         assert_eq!(facts.text.as_deref(), Some("refused"));
