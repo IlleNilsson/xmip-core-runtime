@@ -18,11 +18,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use persist::fixture::Memory;
-use persist::storage::{Embedded, XmipStorage, dead_message_queue, named};
+use persist::storage::{Ask, Embedded, Query, Span, XmipStorage, dead_message_queue, named};
 use receive::ReceivedStream;
 use route::Subscription;
 use secret::{Held, KekName};
-use xcore::MessageId;
+use xcore::{AuditId, MessageId};
 use xmip_core_runtime::configured_subscription::ConfiguredSubscription;
 use xmip_core_runtime::fixture::{Failing, Operation};
 use xmip_core_runtime::ledger::CHUNK;
@@ -179,6 +179,23 @@ fn a_replay_once_a_subscription_matches_opens_its_journeys_and_takes_the_entry_o
         .find(|one| one.name == "onward")
         .expect("onward");
     assert_eq!(onward.held, 1);
+    // The Replay's audit record, the last written, carries the Message it
+    // replayed in full and its Stream's bytes beside it (ADR-0070).
+    storage.keep_audit(16).expect("kept");
+    let last = Query {
+        ask: Ask::AuditOccurred {
+            occurred: Span::ALL,
+        },
+        most: 1,
+        newest_first: true,
+    };
+    let last = storage.query(&last).expect("asked")[0];
+    let kept = storage.read_kept_audit(AuditId::new(last)).expect("read");
+    let kept = kept.expect("kept");
+    let replayed = storage.read_message(messages[0]).expect("read");
+    let carried = kept.audited.expect("an act on a Message").message;
+    assert_eq!(Some(carried), replayed.map(|record| record.body));
+    assert!(kept.facts.stream_length.is_some(), "its Stream beside it");
 
     let again = after.replay(&first, WHO).expect("asked again");
     assert!(again.contains("replayed already"), "{again}");
