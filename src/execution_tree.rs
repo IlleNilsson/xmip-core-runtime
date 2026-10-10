@@ -253,9 +253,13 @@ pub fn validate_startup_configuration(
     // is in front of, read by Xmip Storage (`deployment-model.md` section 7).
     errors.extend(document.storage.problems());
     if let Some(database) = &document.storage.database {
+        let connections = persist::storage::database::Connections {
+            runtime: &database.runtime,
+            administration: &database.administration,
+            audit: &database.audit,
+        };
         errors.extend(persist::storage::database::problems(
-            &database.runtime,
-            &database.administration,
+            connections,
             &database.password,
         ));
     }

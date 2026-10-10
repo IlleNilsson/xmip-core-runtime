@@ -222,9 +222,14 @@ pub(crate) fn in_memory() -> &'static Arc<dyn XmipStorage> {
     use persist::fixture::Memory;
     let keys = secret::Held::new(secret::fixture::Memory::default());
     let kek = secret::KekName::new(crate::storage::KEK).expect("a name");
-    let storage =
-        persist::storage::Embedded::open(Memory::default(), Memory::default(), &keys, &kek)
-            .expect("opened");
+    let storage = persist::storage::Embedded::open(
+        Memory::default(),
+        Memory::default(),
+        Memory::default(),
+        &keys,
+        &kek,
+    )
+    .expect("opened");
     let storage: Arc<dyn XmipStorage> = Arc::new(storage);
     Box::leak(Box::new(storage))
 }

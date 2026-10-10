@@ -183,8 +183,9 @@ pub struct Linked {
     /// amendments 2026-09-30 and 2026-10-01).
     pub engine: Option<LinkedEngine>,
     /// The administration database's engine, where the program was built
-    /// with it: with [`Linked::engine`], what a node that is its own
-    /// Storage node opens Xmip Storage over (`crate::storage`).
+    /// with it, and the audit database's, a store of its own: with
+    /// [`Linked::engine`], what a node that is its own Storage node opens
+    /// Xmip Storage over (`crate::storage`).
     pub administration: Option<LinkedEngine>,
     /// The key stores the program was built with, one of which wraps an
     /// embedded Storage node's data keys.

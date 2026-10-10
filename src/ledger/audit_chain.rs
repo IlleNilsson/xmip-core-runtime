@@ -82,7 +82,7 @@ mod tests {
 
     type Node = Embedded<Memory, Memory>;
 
-    /// Where the administration database keeps a kept record and a kept
+    /// Where the audit database keeps a kept record and a kept
     /// Stream's row, as Xmip Storage names them.
     const KEPT: &str = "audit";
     const KEPT_STREAM: &str = "audit_stream";
@@ -94,8 +94,14 @@ mod tests {
     fn kept() -> (Node, [String; 2], Vec<AuditId>) {
         let keys = Held::new(secret::fixture::Memory::default());
         let kek = KekName::new(crate::storage::KEK).expect("a name");
-        let node =
-            Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened");
+        let node = Embedded::open(
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+            &keys,
+            &kek,
+        )
+        .expect("opened");
         let cluster = configure::fixture::test_cluster();
         let writers = [cluster.node_scope(0), cluster.node_scope(1)];
         let content = b"<Order/>".repeat(300);
@@ -140,10 +146,7 @@ mod tests {
 
     fn raw(node: &Node, id: AuditId) -> Vec<u8> {
         let key = id.value().to_be_bytes();
-        node.administration()
-            .get(KEPT, &key)
-            .expect("read")
-            .expect("there")
+        node.audit().get(KEPT, &key).expect("read").expect("there")
     }
 
     #[test]
@@ -162,7 +165,7 @@ mod tests {
     fn a_deleted_record_is_found_before_the_next_and_the_other_writer_is_whole() {
         let (node, writers, first) = kept();
         let key = first[1].value().to_be_bytes();
-        node.administration().remove(KEPT, &key).expect("removed");
+        node.audit().remove(KEPT, &key).expect("removed");
 
         let deleted = Break::Deleted {
             record: first[2].to_string(),
@@ -181,9 +184,7 @@ mod tests {
             persist::storage::KeptAudit::from_bytes(&raw(&node, first[2])).expect("a record");
         changed.facts.severity = "Warning".to_string();
         let key = first[2].value().to_be_bytes();
-        node.administration()
-            .put(KEPT, &key, &changed.bytes())
-            .expect("put");
+        node.audit().put(KEPT, &key, &changed.bytes()).expect("put");
         let at_three = Break::Changed {
             record: first[2].to_string(),
             position: 3,
@@ -200,7 +201,7 @@ mod tests {
             stream: *row,
         };
         let key = [first[1].value().to_be_bytes(), stream.value().to_be_bytes()].concat();
-        node.administration()
+        node.audit()
             .put(KEPT_STREAM, &key, &changed.bytes())
             .expect("put");
         let at_two = Break::Changed {
@@ -222,9 +223,7 @@ mod tests {
         let mut chunk = node.read_kept_audit_chunk(first[1], None, 0).expect("read");
         let chunk = chunk.as_mut().expect("its body's first chunk");
         chunk[0] ^= 1;
-        node.administration()
-            .put(KEPT_BODY, &key, chunk)
-            .expect("put");
+        node.audit().put(KEPT_BODY, &key, chunk).expect("put");
         let at_two = Break::Changed {
             record: first[1].to_string(),
             position: 2,
@@ -241,10 +240,8 @@ mod tests {
         let (node, writers, first) = kept();
         let (second, third) = (raw(&node, first[1]), raw(&node, first[2]));
         let key = |id: AuditId| id.value().to_be_bytes();
-        node.administration()
-            .put(KEPT, &key(first[1]), &third)
-            .expect("put");
-        node.administration()
+        node.audit().put(KEPT, &key(first[1]), &third).expect("put");
+        node.audit()
             .put(KEPT, &key(first[2]), &second)
             .expect("put");
 
