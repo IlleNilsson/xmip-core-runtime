@@ -42,9 +42,11 @@ use persist::storage::{
 use stream::{Content, Stream};
 use xcore::StreamId;
 
+mod audit_chain;
 mod publication;
 mod record;
 
+pub use audit_chain::verify_audit_chain;
 pub(crate) use publication::opened;
 pub use publication::{Opened, Published, Publisher, publish};
 pub(crate) use record::{audit_entry, audited, journey_record, message_record};

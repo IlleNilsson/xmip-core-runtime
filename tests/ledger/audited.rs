@@ -35,7 +35,11 @@ fn published(storage: &Arc<dyn XmipStorage>, content: &[u8], chunk: usize) -> Au
         "routed: {:?}",
         carried.arrived
     );
-    assert_eq!(storage.keep_audit(10).expect("kept"), 1, "its audit record");
+    assert_eq!(
+        storage.keep_audit(10, CHUNK).expect("kept"),
+        1,
+        "its audit record"
+    );
     let occurred = Query {
         ask: Ask::AuditOccurred {
             occurred: Span::ALL,
@@ -44,10 +48,7 @@ fn published(storage: &Arc<dyn XmipStorage>, content: &[u8], chunk: usize) -> Au
         newest_first: false,
     };
     let found = storage.query(&occurred).expect("asked");
-    storage
-        .read_kept_audit(AuditId::new(found[0]))
-        .expect("read")
-        .expect("kept")
+    persist::fixture::kept_as_written(storage.as_ref(), AuditId::new(found[0])).expect("kept")
 }
 
 fn digest(content: &[u8]) -> [u8; 32] {
@@ -104,9 +105,11 @@ fn a_stream_larger_than_a_chunk_is_audited_in_chunks_of_its_own() {
     let audited = kept.audited.as_ref().expect("an act on a Message");
     let stream = audited.streams[0];
 
-    let last = storage.read_kept_audit_chunk(id, stream, 3).expect("read");
-    assert_eq!(last.expect("a fourth chunk").bytes.len(), 5);
-    let past = storage.read_kept_audit_chunk(id, stream, 4).expect("read");
+    let last = storage.read_kept_audit_chunk(id, Some(stream), 3);
+    assert_eq!(last.expect("read").expect("a fourth chunk").len(), 5);
+    let past = storage
+        .read_kept_audit_chunk(id, Some(stream), 4)
+        .expect("read");
     assert_eq!(past, None);
     let row = storage.read_kept_audit_stream(id, stream).expect("read");
     assert_eq!(row.expect("its audit_stream row").digest, digest(&content));

@@ -7,8 +7,8 @@ use std::time::Duration;
 use persist::PersistError;
 use persist::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, HandOn,
-    HeldQueue, JourneyRecord, MessageRecord, Publication, Query, Replay, Replayed, StreamChunk,
-    StreamRecord, XmipStorage,
+    HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay, Replayed,
+    StreamChunk, StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -118,11 +118,11 @@ impl XmipStorage for HaltsAtPublication {
         self.0.write_audit(entry)
     }
 
-    fn keep_audit(&self, most: u32) -> Result<u32, PersistError> {
-        self.0.keep_audit(most)
+    fn keep_audit(&self, most: u32, chunk: usize) -> Result<u32, PersistError> {
+        self.0.keep_audit(most, chunk)
     }
 
-    fn read_kept_audit(&self, id: AuditId) -> Result<Option<AuditEntry>, PersistError> {
+    fn read_kept_audit(&self, id: AuditId) -> Result<Option<KeptAudit>, PersistError> {
         self.0.read_kept_audit(id)
     }
 
@@ -137,9 +137,9 @@ impl XmipStorage for HaltsAtPublication {
     fn read_kept_audit_chunk(
         &self,
         id: AuditId,
-        stream: StreamId,
+        stream: Option<StreamId>,
         index: u32,
-    ) -> Result<Option<StreamChunk>, PersistError> {
+    ) -> Result<Option<Vec<u8>>, PersistError> {
         self.0.read_kept_audit_chunk(id, stream, index)
     }
 
