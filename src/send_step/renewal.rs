@@ -309,7 +309,14 @@ mod tests {
         let keys = Held::new(secret::fixture::Memory::default());
         let kek = KekName::new("storage").expect("a name");
         let storage: Arc<dyn XmipStorage> = Arc::new(
-            Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened"),
+            Embedded::open(
+                Memory::default(),
+                Memory::default(),
+                Memory::default(),
+                &keys,
+                &kek,
+            )
+            .expect("opened"),
         );
         let cluster = configure::fixture::test_cluster();
         let node = cluster.node_scope(0);

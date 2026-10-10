@@ -105,11 +105,13 @@ fn test_node(place: &Path) -> Arc<dyn XmipStorage> {
     std::fs::create_dir_all(place.join("key")).expect("its directory");
     let runtime = RocksDb::open(&place.join("runtime")).expect("the runtime database");
     let administration = Sqlite::in_memory().expect("the administration database");
+    let audit = Sqlite::in_memory().expect("the audit database");
     let kek = KekName::new("storage").expect("a name");
     Arc::new(
         Embedded::open(
             runtime,
             administration,
+            audit,
             keys(&place.join("key")).as_ref(),
             &kek,
         )

@@ -32,7 +32,16 @@ const PATIENCE: Duration = Duration::from_secs(10);
 pub fn memory() -> Arc<dyn XmipStorage> {
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");
-    Arc::new(Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened"))
+    Arc::new(
+        Embedded::open(
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+            &keys,
+            &kek,
+        )
+        .expect("opened"),
+    )
 }
 
 /// A clock a test moves by hand: the Storage node's, so a claim lapses
@@ -59,7 +68,7 @@ pub fn telling(clock: &Arc<Pinned>) -> Arc<dyn XmipStorage> {
     let kek = KekName::new("storage").expect("a name");
     let open = || EncryptedStore::open(Memory::default(), &keys, &kek).expect("opened");
     let clock = Arc::clone(clock) as Arc<dyn Clock>;
-    Arc::new(Embedded::over(open(), open(), clock).expect("a Storage node"))
+    Arc::new(Embedded::over(open(), open(), open(), clock).expect("a Storage node"))
 }
 
 /// A test Storage node in memory, and Xmip Storage over it that fails, or

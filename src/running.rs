@@ -367,7 +367,8 @@ mod tests {
 
     /// What the tests' program links, and the test Storage node it opened
     /// beside the configuration at `file`: `RocksDB` on disk for the runtime
-    /// database, `SQLite` in memory for the administration database.
+    /// database, `SQLite` in memory for the administration and the audit
+    /// databases.
     fn linked(file: &Path) -> Linked {
         static PLACES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let place = file.parent().expect("its directory").join(format!(
@@ -467,6 +468,7 @@ address = "{far}"
         persist::storage::Embedded::open(
             rocksdb::RocksDb::open(place).expect("the runtime database"),
             sqlite::Sqlite::in_memory().expect("the administration database"),
+            sqlite::Sqlite::in_memory().expect("the audit database"),
             &keys,
             &secret::KekName::new(crate::storage::KEK).expect("a name"),
         )

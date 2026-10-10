@@ -38,7 +38,14 @@ const WHO: &str = "an operator";
 fn failing() -> (Arc<Failing>, Arc<dyn XmipStorage>) {
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");
-    let node = Embedded::open(Memory::default(), Memory::default(), &keys, &kek).expect("opened");
+    let node = Embedded::open(
+        Memory::default(),
+        Memory::default(),
+        Memory::default(),
+        &keys,
+        &kek,
+    )
+    .expect("opened");
     let failing = Failing::over(Arc::new(node));
     let storage: Arc<dyn XmipStorage> = failing.clone();
     (failing, storage)
