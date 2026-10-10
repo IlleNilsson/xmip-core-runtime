@@ -10,7 +10,9 @@
 //!
 //! `xmip_audit_read_v1` reads the records back for every surface through the
 //! capability's one reader and one query (`audit_store`, `audit_query`) and
-//! answers the header's JSON (ADR-0062, amendment 2026-09-29).
+//! answers the header's JSON (ADR-0062, amendment 2026-09-29) — with each
+//! writer's audit chain walked and said where the query asks `verify`
+//! (ADR-0070 clause 5).
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
@@ -22,6 +24,7 @@ use std::path::Path;
 use abi::ffi::{Str, status};
 use abi::operate::audit::kept;
 use serde_json::{Map, Value, json};
+use xaudit::audit_chain::Verdict;
 use xaudit::audit_column::Column;
 use xaudit::audit_entry::AuditEntry;
 use xaudit::audit_query::{AuditGroup, AuditQuery};
@@ -165,11 +168,18 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
     let stated = (!directory.is_empty()).then(|| Path::new(directory));
     let Some(file) = audit_store::stated(stated) else {
         let none = json!({"file": "", "read": 0, "matched": 0, "offset": asked.offset,
-            "limit": asked.limit, "records": [], "groups": [], "actions": [],
-            "columns": Column::ALL.map(Column::word), "severities": Severity::ALL.map(Severity::word)});
+            "limit": asked.limit, "records": [], "groups": [], "actions": [], "chains": [],
+            "columns": Column::ALL.map(Column::word),
+            "severities": Severity::ALL.map(Severity::word)});
         return (status::OK, none.to_string());
     };
-    let entries = match audit_store::read(&file) {
+    // A verification walks the file's bytes as they are now (ADR-0070 clause 5).
+    let read = if asked.verify {
+        audit_store::read_whole(&file)
+    } else {
+        audit_store::read(&file)
+    };
+    let entries = match read {
         Ok(entries) => entries,
         Err(error) => return (status::IO, error.to_string()),
     };
@@ -183,6 +193,7 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
         "records": page.records.iter().map(record).collect::<Vec<_>>(),
         "groups": page.groups.iter().map(group).collect::<Vec<_>>(),
         "actions": page.actions,
+        "chains": page.chains.iter().map(chain).collect::<Vec<_>>(),
         "columns": Column::ALL.map(Column::word),
         "severities": Severity::ALL.map(Severity::word),
     });
@@ -214,6 +225,15 @@ fn record(entry: &AuditEntry) -> Value {
         }
     }
     said
+}
+
+/// A writer's audit chain as a verification found it (ADR-0070 clause 5):
+/// whose, how many records, whether whole, and the verdict in words.
+fn chain(verdict: &Verdict) -> Value {
+    json!({
+        "writer": verdict.writer, "records": verdict.records, "whole": verdict.whole(),
+        "said": verdict.said(),
+    })
 }
 
 fn group(group: &AuditGroup) -> Value {
@@ -336,6 +356,18 @@ mod tests {
         assert_eq!(answer["actions"][0], "probe");
         assert_eq!(answer["columns"][0], "at");
         assert_eq!(answer["severities"][2], "Error");
+        assert_eq!(answer["chains"], json!([]), "verify was not asked");
+
+        let (code, text) = read(&place, &["verify", "yes"]);
+        assert_eq!(code, status::OK, "{text}");
+        let answer: Value = serde_json::from_str(&text).expect("JSON");
+        let chain = &answer["chains"][0];
+        assert_eq!(chain["writer"], "xmip-core-runtime tests", "{text}");
+        assert_eq!(
+            (chain["records"].clone(), chain["whole"].clone()),
+            (json!(1), json!(true))
+        );
+        assert!(chain["said"].as_str().expect("words").starts_with("OK: "));
         let _ = fs::remove_dir_all(&directory);
     }
 

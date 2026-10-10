@@ -181,7 +181,7 @@ fn a_replay_once_a_subscription_matches_opens_its_journeys_and_takes_the_entry_o
     assert_eq!(onward.held, 1);
     // The Replay's audit record, the last written, carries the Message it
     // replayed in full and its Stream's bytes beside it (ADR-0070).
-    storage.keep_audit(16).expect("kept");
+    storage.keep_audit(16, CHUNK).expect("kept");
     let last = Query {
         ask: Ask::AuditOccurred {
             occurred: Span::ALL,
@@ -190,7 +190,7 @@ fn a_replay_once_a_subscription_matches_opens_its_journeys_and_takes_the_entry_o
         newest_first: true,
     };
     let last = storage.query(&last).expect("asked")[0];
-    let kept = storage.read_kept_audit(AuditId::new(last)).expect("read");
+    let kept = persist::fixture::kept_as_written(storage.as_ref(), AuditId::new(last));
     let kept = kept.expect("kept");
     let replayed = storage.read_message(messages[0]).expect("read");
     let carried = kept.audited.expect("an act on a Message");

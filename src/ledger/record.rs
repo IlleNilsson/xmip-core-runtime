@@ -98,7 +98,8 @@ pub(crate) fn audited(message: &Message, body: &[u8]) -> Audited {
 /// it says, its origin — and the cluster and the node by name, as its
 /// location says them, by the one rule (`observe::Scope`) the audit reader
 /// reads them by — and the execution it belongs to: its Journey, its
-/// Message and its artifact, spelled out.
+/// Message and its artifact, spelled out; and whose audit chain it is in,
+/// by the one rule (`Origin::writer`; ADR-0070 clause 5).
 pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
     let scope = record.scope.as_ref();
     let artifact = scope.map(|scope| &scope.artifact);
@@ -135,6 +136,7 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
                 .as_ref()
                 .and_then(|scope| scope.segments().next())
                 .map(str::to_string),
+            writer: origin.writer(),
             ..AuditFacts::default()
         },
     }
@@ -233,6 +235,7 @@ mod tests {
         );
         assert_eq!(facts.cluster.as_deref(), Some(cluster.name.as_str()));
         assert_eq!(facts.journey, None, "a program's own act");
+        assert_eq!(facts.writer, cluster.node_scope(0), "the node's chain");
     }
 
     #[test]
@@ -282,11 +285,8 @@ mod tests {
         let mut entry = audit_entry(&record);
         entry.audited = Some(audited(&message, &message.record()));
         storage.write_audit(&entry).expect("written");
-        storage.keep_audit(10).expect("kept");
-        let kept = storage
-            .read_kept_audit(entry.id)
-            .expect("read")
-            .expect("kept");
+        storage.keep_audit(10, crate::ledger::CHUNK).expect("kept");
+        let kept = persist::fixture::kept_as_written(storage.as_ref(), entry.id).expect("kept");
 
         let carried = kept.audited.as_ref().expect("carried");
         assert_eq!(carried.message, message.record(), "the Message in full");

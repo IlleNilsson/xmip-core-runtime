@@ -51,7 +51,9 @@ fn a_published_journey_is_found_by_its_send_port_and_its_message_by_when() {
     let created = Ask::MessagesCreated { created: Span::ALL };
     assert_eq!(storage.query(&query(created)).expect("asked"), [message]);
 
-    let kept = storage.keep_audit(10).expect("kept");
+    let kept = storage
+        .keep_audit(10, xmip_core_runtime::ledger::CHUNK)
+        .expect("kept");
     assert_eq!(kept, 1, "the Publication's audit record");
     let occurred = Ask::AuditOccurred {
         occurred: Span::ALL,
