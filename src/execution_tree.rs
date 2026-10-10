@@ -249,20 +249,18 @@ pub fn validate_startup_configuration(
     if let Err(problems) = Tuning::read(&document.tuning) {
         errors.extend(problems);
     }
-    // The Storage nodes it reaches, and the database server a Storage node
-    // is in front of, read by Xmip Storage (`deployment-model.md` section 7).
+    // The Storage nodes it reaches, and what each data domain is kept on,
+    // read by Xmip Storage (`deployment-model.md` section 7).
     errors.extend(document.storage.problems());
-    if let Some(database) = &document.storage.database {
-        let connections = persist::storage::database::Connections {
-            runtime: &database.runtime,
-            administration: &database.administration,
-            audit: &database.audit,
-        };
-        errors.extend(persist::storage::database::problems(
-            connections,
-            &database.password,
-        ));
-    }
+    let password = document
+        .storage
+        .database
+        .as_ref()
+        .map(|d| d.password.as_str());
+    errors.extend(persist::storage::database::problems(
+        &crate::storage::domains(document),
+        password,
+    ));
 
     StartupValidationReport { errors, warnings }
 }
