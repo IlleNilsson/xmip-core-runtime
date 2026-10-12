@@ -455,6 +455,10 @@ mod tests {
             transport::Arrivals::Unordered("it receives nothing")
         }
 
+        fn waiting(&self) -> transport::Waiting {
+            transport::Waiting::Polled("it looks and finds nothing")
+        }
+
         fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
             match self.fail {
                 Some((retryable, message)) => Err(TransportError {

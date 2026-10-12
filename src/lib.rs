@@ -40,6 +40,7 @@ pub mod service;
 pub mod service_control;
 pub mod start;
 mod startup;
+pub mod stopping;
 pub mod storage;
 pub mod tuning;
 mod wire;

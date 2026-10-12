@@ -3,7 +3,6 @@
 //! serving, the pickup, and the send step dispatching until they stop.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 
 use authenticate::Authenticator;
@@ -22,6 +21,7 @@ use crate::pickup::Pickup;
 use crate::receiving::Receiving;
 use crate::send_step::{self, SendStep};
 use crate::sending::Sends;
+use crate::stopping::Stopping;
 
 /// What the serving thread owns for the node's life.
 pub(super) struct Served {
@@ -41,11 +41,7 @@ pub(super) struct Served {
 /// Location serving on a thread of its own until `stopping` is raised. What
 /// the thread owns is let go when the last Location has stopped — listeners
 /// closed, sessions ended.
-pub(super) fn serve(
-    served: Served,
-    stopping: Arc<AtomicBool>,
-    tally: Arc<Tally>,
-) -> JoinHandle<()> {
+pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let Served {
             storage,

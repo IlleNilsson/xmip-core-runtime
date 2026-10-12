@@ -47,6 +47,10 @@ impl Transport for Once {
         Arrivals::Ordered("one arrival, told before the next receive")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("it hands back what it holds at once")
+    }
+
     fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
         if self.given.swap(true, Ordering::AcqRel) {
             return Ok(Vec::new());
@@ -96,14 +100,15 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                     told: far_end,
                 }),
                 limits: xmip_core_runtime::tuning::Tuning::default().receive(),
+                pace: xmip_core_runtime::tuning::Tuning::default().pace(),
                 audit: None,
             };
-            let stopping = AtomicBool::new(false);
+            let stopping = xmip_core_runtime::stopping::Stopping::default();
             let mut cycles = Vec::new();
             let ended = std::thread::scope(|scope| {
                 location.serve(scope, runtime, pickup, &stopping, |carried| {
                     cycles.push(carried.cycle());
-                    stopping.store(true, Ordering::Release);
+                    stopping.raise();
                 })
             });
             (ended, cycles)

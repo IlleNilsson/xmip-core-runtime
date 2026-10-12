@@ -41,6 +41,10 @@ impl Transport for Untold {
         Arrivals::Ordered("three arrivals, told before the next receive")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("it hands back what it holds at once")
+    }
+
     fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
         if self.given.swap(true, Ordering::AcqRel) {
             return Ok(Vec::new());
@@ -92,17 +96,18 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
                 given: AtomicBool::new(false),
             }),
             limits: xmip_core_runtime::tuning::Tuning::default().receive(),
+            pace: xmip_core_runtime::tuning::Tuning::default().pace(),
             audit: Some(ProgramAudit::new(
                 "xmip-runtime untold tests",
                 Some(&audited),
             )),
         };
-        let stopping = AtomicBool::new(false);
+        let stopping = xmip_core_runtime::stopping::Stopping::default();
         let carried = AtomicUsize::new(0);
         std::thread::scope(|scope| {
             location.serve(scope, runtime, pickup, &stopping, |_| {
                 if carried.fetch_add(1, Ordering::AcqRel) + 1 == WHY.len() {
-                    stopping.store(true, Ordering::Release);
+                    stopping.raise();
                 }
             })
         })

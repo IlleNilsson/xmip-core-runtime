@@ -129,6 +129,10 @@ impl transport::Transport for FarEnd {
         transport::Arrivals::Unordered("it receives nothing")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("it looks and finds nothing")
+    }
+
     fn send(&self, target: &str, bytes: &[u8]) -> transport::Result<()> {
         self.send_keyed(target, bytes, "")
     }

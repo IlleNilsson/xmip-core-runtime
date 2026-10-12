@@ -17,6 +17,8 @@
 //! segments = 44                               # ledger::SEGMENTS
 //! receive_threads_per_hardware_thread = 2     # pool::RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_idle = "1m"                         # pool::RECEIVE_IDLE
+//! receive_poll = "1s"                         # receiving::RECEIVE_POLL
+//! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
 //! send_threads_per_hardware_thread = 2        # send_step::SEND_THREADS_PER_HARDWARE_THREAD
 //! send_idle = "1m"                            # send_step::SEND_IDLE
 //! send_lease = "30s"                          # send_step::SEND_LEASE
@@ -34,6 +36,7 @@ use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
 use crate::ledger::SEGMENTS;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
+use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
 use crate::send_step::{SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD};
 
 /// The longest any `[tuning]` duration may be: an hour.
@@ -80,6 +83,20 @@ pub const TUNING: &Settings = &Settings {
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(RECEIVE_IDLE)),
             meaning: "How long a receive thread with nothing to do waits before it ends.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_poll",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(RECEIVE_POLL)),
+            meaning: "How long a polled Receive Location that found nothing rests.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_backoff",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(RECEIVE_BACKOFF)),
+            meaning: "How long a polled Receive Location rests after a failure that may mend.",
             applies: Applies::Both,
         },
         Setting {
@@ -145,6 +162,8 @@ pub struct Tuning {
     pub segments: usize,
     pub receive_threads_per_hardware_thread: usize,
     pub receive_idle: Duration,
+    pub receive_poll: Duration,
+    pub receive_backoff: Duration,
     pub send_threads_per_hardware_thread: usize,
     pub send_idle: Duration,
     pub send_lease: Duration,
@@ -195,6 +214,8 @@ impl Tuning {
             segments: count("segments"),
             receive_threads_per_hardware_thread: count("receive_threads_per_hardware_thread"),
             receive_idle: duration("receive_idle"),
+            receive_poll: duration("receive_poll"),
+            receive_backoff: duration("receive_backoff"),
             send_threads_per_hardware_thread: count("send_threads_per_hardware_thread"),
             send_idle: duration("send_idle"),
             send_lease: duration("send_lease"),
@@ -222,6 +243,16 @@ impl Tuning {
         Limits::per_hardware_thread(self.receive_threads_per_hardware_thread, self.receive_idle)
     }
 
+    /// How a Receive Location rests before it asks a polled transport
+    /// again.
+    #[must_use]
+    pub const fn pace(&self) -> Pace {
+        Pace {
+            poll: self.receive_poll,
+            backoff: self.receive_backoff,
+        }
+    }
+
     /// The node's Send pool on this machine.
     #[must_use]
     pub fn send(&self) -> Limits {
@@ -243,6 +274,7 @@ mod tests {
         let tuning = Tuning::default();
         assert_eq!(tuning.chunk(), crate::ledger::CHUNK);
         assert_eq!(tuning.receive_idle, RECEIVE_IDLE);
+        assert_eq!(tuning.pace(), Pace::default());
         assert_eq!(tuning.storage_timeout, client::TIMEOUT);
         assert_eq!(tuning.storage_pass_over, client::PASS_OVER);
         assert_eq!(
@@ -265,12 +297,19 @@ mod tests {
             "tcp_segment = 1440\nsegments = 8\nreceive_threads_per_hardware_thread = 4\n\
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
-             send_scan = \"200ms\"\n",
+             send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n",
         )
         .expect("reads");
         assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
         assert_eq!(tuning.send_lease, Duration::from_secs(5));
         assert_eq!(tuning.send_scan, Duration::from_millis(200));
+        assert_eq!(
+            tuning.pace(),
+            Pace {
+                poll: Duration::from_millis(100),
+                backoff: Duration::from_secs(2),
+            }
+        );
         assert_eq!(tuning.chunk(), 8 * 1440);
         assert_eq!(tuning.receive_idle, Duration::from_secs(30));
         assert_eq!(tuning.storage_timeout, Duration::from_millis(250));

@@ -29,7 +29,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use configure::{ConfiguredLocation, Declarations};
@@ -47,6 +46,7 @@ use crate::send_step::SendStep;
 use crate::service::StartupPhase;
 use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
+use crate::stopping::Stopping;
 use crate::storage::Reached;
 
 pub mod publication;
@@ -84,7 +84,7 @@ pub struct Running {
     capabilities: CapabilityRegistry,
     host_services: Vec<HostService>,
     locations: Vec<(&'static str, ConfiguredLocation)>,
-    stopping: Arc<AtomicBool>,
+    stopping: Arc<Stopping>,
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
     pickup: Arc<Pickup>,
@@ -186,7 +186,7 @@ impl Running {
             linked.audit.clone(),
         ));
         SendStep::register(&send);
-        let stopping = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(Stopping::default());
         let tally = Arc::new(Tally::default());
         let origin = origin(linked.audit.as_ref(), &scope);
         let serving = serve(
@@ -294,7 +294,7 @@ impl Running {
     }
 
     fn halt(&mut self) {
-        self.stopping.store(true, Ordering::Release);
+        self.stopping.raise();
         if let Some(serving) = self.serving.take()
             && serving.join().is_err()
         {
