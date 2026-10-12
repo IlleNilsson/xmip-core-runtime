@@ -22,7 +22,8 @@ use xcore::AuditId;
 ///
 /// # Errors
 ///
-/// Xmip Storage could not be asked or read.
+/// Xmip Storage could not be asked or read, a body's chunks included: an
+/// outage is no verdict, and never reads as a record changed.
 pub fn verify_audit_chain(
     storage: &dyn XmipStorage,
     writer: &str,
@@ -48,7 +49,13 @@ pub fn verify_audit_chain(
         // Its body as this row says it, read under the record's own identifier.
         let from = Chunked::AuditBody(kept.id, kept.facts.body_digest);
         let mut body = ChunkReader::new(storage, from, kept.facts.body_length);
-        let whole = io::copy(&mut body, &mut io::sink()).is_ok();
+        let whole = match io::copy(&mut body, &mut io::sink()) {
+            Ok(_) => true,
+            // Not the bytes kept: evidence, and the chain breaks here.
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => false,
+            // Xmip Storage did not answer: no verdict, never "changed".
+            Err(error) => return Err(unanswered(error)),
+        };
         links.push(Link {
             record: kept.id.to_string(),
             position: kept.facts.position,
@@ -62,6 +69,15 @@ pub fn verify_audit_chain(
         });
     }
     Ok(walk(writer, links))
+}
+
+/// The Storage failure a body's read carries, as Xmip Storage said it.
+fn unanswered(error: io::Error) -> PersistError {
+    let reason = error.to_string();
+    error
+        .into_inner()
+        .and_then(|inner| inner.downcast::<PersistError>().ok())
+        .map_or(PersistError::Failed { reason }, |inner| *inner)
 }
 
 #[cfg(test)]
@@ -147,6 +163,17 @@ mod tests {
     fn raw(node: &Node, id: AuditId) -> Vec<u8> {
         let key = id.value().to_be_bytes();
         node.audit().get(KEPT, &key).expect("read").expect("there")
+    }
+
+    #[test]
+    fn storage_not_answering_is_said_as_itself_and_never_as_a_change() {
+        let outage = PersistError::Unreachable {
+            reason: "no Storage node answered".to_string(),
+        };
+        let read = io::Error::other(outage);
+        assert!(matches!(unanswered(read), PersistError::Unreachable { .. }));
+        let bare = unanswered(io::Error::other("a pipe broke"));
+        assert!(matches!(bare, PersistError::Failed { .. }), "{bare}");
     }
 
     #[test]
