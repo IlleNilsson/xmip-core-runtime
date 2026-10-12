@@ -248,6 +248,7 @@ pub(crate) fn open(
                 gate,
                 transport,
                 limits: tree.tuning.receive(),
+                pace: tree.tuning.pace(),
                 audit: linked.audit.clone(),
             })
         })

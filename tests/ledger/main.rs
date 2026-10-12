@@ -49,6 +49,7 @@ mod halts_at_publication;
 mod held;
 mod journey_act;
 mod killed;
+mod paced;
 mod panicked;
 mod receive_cycle;
 mod searched;

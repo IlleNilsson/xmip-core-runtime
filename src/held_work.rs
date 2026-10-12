@@ -22,7 +22,6 @@
 //! queue, to be read again from its place, so nothing is passed over that
 //! was not read.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use persist::storage::{HandOn, Hold};
@@ -31,6 +30,7 @@ use crate::departure::Progress;
 use crate::message_path::Runtime;
 use crate::pickup::{Pickup, Released};
 use crate::send_step::{self, Departure, read};
+use crate::stopping::Stopping;
 
 /// How long the node waits for something to pick up before it looks
 /// whether it is stopping: a resume or a hold wakes it at once.
@@ -42,8 +42,8 @@ const MOST: usize = 64;
 /// What the node picks up, as it is let go of, until it stops. A
 /// Subscription whose held Journey is to be read again has the rest of
 /// what it let go of this time read again too, so its order holds.
-pub(crate) fn pick_up_released(runtime: &Runtime<'_>, pickup: &Pickup, stopping: &AtomicBool) {
-    while !stopping.load(Ordering::Acquire) {
+pub(crate) fn pick_up_released(runtime: &Runtime<'_>, pickup: &Pickup, stopping: &Stopping) {
+    while !stopping.raised() {
         let mut stalled: Vec<String> = Vec::new();
         for released in pickup.released(WAIT, MOST) {
             if stalled.contains(&released.subscription) {

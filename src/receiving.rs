@@ -5,9 +5,9 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::Scope;
+use std::time::Instant;
 
 use authenticate::{Acceptance, Authenticator};
 use configure::ConfiguredLocation;
@@ -17,13 +17,18 @@ use xaudit::program_audit::ProgramAudit;
 
 use crate::message_path::{Carried, Runtime, carry};
 
+mod pace;
 mod received;
 mod refusal;
 mod turn;
 
+pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
+
 use crate::outcome::Arrived;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
+use crate::stopping::Stopping;
+use pace::Ended;
 use refusal::verdict;
 use turn::{Ticket, Turn};
 
@@ -102,6 +107,9 @@ pub struct Receiving {
     /// Its pool's bounds, from the node's `[tuning]`
     /// (`crate::tuning::Tuning::receive`).
     pub limits: Limits,
+    /// How long it rests before it asks a polled transport again, from the
+    /// node's `[tuning]` (`crate::tuning::Tuning::pace`).
+    pub pace: Pace,
     /// Where it audits what its far end could not be told
     /// ([`Receiving::serve`]).
     pub audit: Option<ProgramAudit>,
@@ -116,6 +124,16 @@ impl Receiving {
     /// out is one), and looks at `stopping` between receives: a node stops
     /// once each Location's current receive returns, which the technology's
     /// own wait bounds. What arrived before that is carried whole.
+    ///
+    /// **What the transport declares decides how soon it is asked again**
+    /// (`transport::Waiting`, [`Pace`]). One whose receive waits for what
+    /// arrives is asked again at once, so an arrival is taken the moment it
+    /// lands. One whose receive looks and returns at once — a directory
+    /// listed, a query run — rests its poll interval after a receive that
+    /// found nothing, and its backoff after one that failed in a way asking
+    /// again may mend, each measured from when that receive began, so an
+    /// idle Location never spins. The rest is waited on `stopping`, which
+    /// ends it the moment the node stops.
     ///
     /// **Each arrival is carried on a thread of the Location's pool**
     /// (`runtime-model.md` section 3, *Threads, pools and chunks*; section
@@ -150,7 +168,7 @@ impl Receiving {
         scope: &'scope Scope<'scope, 'env>,
         runtime: &'env Runtime<'env>,
         pickup: &'env Pickup,
-        stopping: &AtomicBool,
+        stopping: &Stopping,
         mut each: impl FnMut(&Carried),
     ) -> Result<(), String> {
         let limits = self.limits;
@@ -163,6 +181,7 @@ impl Receiving {
         } else {
             limits.most.max(1) - 1
         };
+        let polled = self.transport.waiting().polled();
         let (tell, told) = mpsc::channel();
         let mut carrying = Carrying {
             node: runtime.send.node(),
@@ -170,7 +189,7 @@ impl Receiving {
             heard: BTreeSet::new(),
         };
         let mut ended = Ok(());
-        while ended.is_ok() && !stopping.load(Ordering::Acquire) {
+        while ended.is_ok() && !stopping.raised() {
             // What is told already is settled now, so what became of an
             // arrival is counted as it ends, not once the pool is full.
             while ended.is_ok() && carrying.count > 0 {
@@ -185,14 +204,21 @@ impl Receiving {
             if ended.is_err() {
                 break;
             }
-            match self.transport.receive() {
+            let began = Instant::now();
+            let outcome = match self.transport.receive() {
+                Ok(arrivals) if arrivals.is_empty() => Ended::Nothing,
                 Ok(arrivals) => {
                     carrying.count += arrivals.len();
                     self.carry_all(&pool, runtime, pickup, arrivals, room == 0, &tell);
+                    Ended::Found
                 }
-                Err(failure) if failure.retryable => {}
-                Err(failure) => ended = Err(self.stopped(&failure.message)),
-            }
+                Err(failure) if failure.retryable => Ended::Mendable,
+                Err(failure) => {
+                    ended = Err(self.stopped(&failure.message));
+                    break;
+                }
+            };
+            let _ = stopping.wait(self.pace.rest(polled, outcome, began.elapsed()));
         }
         while carrying.count > 0 {
             let settled = self.settle(&mut each, &told, &mut carrying);
