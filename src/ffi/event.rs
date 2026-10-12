@@ -253,7 +253,11 @@ pub unsafe extern "C" fn xmip_event_batch_free_v1(batch: *mut EventBatch) {
     }
 }
 
-/// Unsubscribe either kind of handle.
+/// Unsubscribe either kind of handle, and return once the subscription's
+/// audit records are kept, as the header promises: dropping it in Rust
+/// hands them to audit's keeper and never waits (ADR-0065, amendment
+/// 2026-09-27), and a program across the boundary that unsubscribes and
+/// exits loses none.
 ///
 /// # Safety
 /// `subscription` is null or a handle subscribe or listen returned and
@@ -263,6 +267,7 @@ pub unsafe extern "C" fn xmip_event_unsubscribe_v1(subscription: *mut Handle) {
     if !subscription.is_null() {
         // SAFETY: per the contract, the box subscribe or listen made.
         drop(unsafe { Box::from_raw(subscription.cast::<Held>()) });
+        xaudit::keeper::settle();
     }
 }
 
@@ -325,7 +330,6 @@ mod tests {
         let _: abi::operate::event::UnheardFn = super::unheard::xmip_event_unheard_v1;
     }
 
-    /// A temporary audit directory of this test's own.
     /// A cluster's scope kept apart for one test, so no other test's Events
     /// reach its subscriber, and the test cluster's first node's name.
     fn apart(test: &str) -> (String, String) {
@@ -334,6 +338,7 @@ mod tests {
         (scope, cluster.node(0).name.clone())
     }
 
+    /// A temporary audit directory of this test's own.
     fn directory(name: &str) -> String {
         let name = format!("xmip-runtime-event-{name}-{}", std::process::id());
         let at = std::env::temp_dir().join(name);
@@ -459,7 +464,14 @@ mod tests {
         assert!(batch.is_null());
         // SAFETY: the handle is unsubscribed once.
         unsafe { xmip_event_unsubscribe_v1(handle) };
-        let _ = std::fs::remove_dir_all(&at);
+
+        // Unsubscribing returned once every record of the subscription was
+        // kept, and the file is closed: it is read and deleted at once.
+        let file = std::path::Path::new(&at).join(xaudit::file_sink::FILE_NAME);
+        let audit = std::fs::read_to_string(&file).expect("kept");
+        assert!(audit.contains("action = \"event.deliver\""), "{audit}");
+        assert!(audit.contains("action = \"event.unsubscribe\""), "{audit}");
+        std::fs::remove_dir_all(&at).expect("nothing holds the audit open");
     }
 
     extern "C" fn told(context: *mut c_void, event: *const Wire) {
