@@ -31,8 +31,11 @@
 //! send step is asked whether the Journey's claim is still surely this
 //! node's; where it is not — found another's, or unconfirmed for longer
 //! than its lease — the pass stops, and no Location is tried again from
-//! here (section 10, *Corrected 2026-10-06*). A send already under way
-//! goes on: its Journey's identifier lets the far end deduplicate it.
+//! here (section 10, *Corrected 2026-10-06*). It is asked again once the
+//! Message is authorized and read, the last thing before the transport's
+//! I/O, so a claim lost while a large payload was read starts no send. A
+//! send already under way goes on: its Journey's identifier lets the far
+//! end deduplicate it.
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
@@ -142,8 +145,9 @@ impl Progress {
 /// its backoff the send step's to keep. A Send Port Group is sent as one
 /// Journey per Port, opened at its Publication, so one that reaches here is
 /// declared by no Application of this node. `owned` says, before each
-/// Location is tried, whether the Journey is still this node's to send; the
-/// pass stops where it is not, nothing more tried.
+/// Location is tried and again just before its transport sends, whether the
+/// Journey is still this node's to send; the pass stops where it is not,
+/// nothing more tried.
 pub fn depart_to(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
@@ -190,7 +194,9 @@ fn depart_port(
             departed.push(Departed::NoSuchDestination { to });
             return departed;
         };
-        let one = depart_one(runtime, work, facts, to.clone(), sending);
+        let Some(one) = depart_one(runtime, (work, facts), to.clone(), (sending, owned)) else {
+            return departed;
+        };
         standing.tries += 1;
         let again = match &one {
             Departed::Sent { .. } => {
@@ -216,13 +222,14 @@ fn depart_port(
     }
 }
 
+/// One Location tried; nothing where the claim was lost before its
+/// transport was reached.
 fn depart_one(
     runtime: &Runtime<'_>,
-    work: &ReceivedWork,
-    facts: &IdentityFacts,
+    (work, facts): (&ReceivedWork, &IdentityFacts),
     to: Subscriber,
-    sending: &Sending,
-) -> Departed {
+    (sending, owned): (&Sending, &dyn Fn() -> bool),
+) -> Option<Departed> {
     let location = &sending.configured;
 
     // Authorized again, now, against the clock. What receive concluded may be
@@ -235,10 +242,10 @@ fn depart_one(
     );
 
     if !permitted.allowed() {
-        return Departed::NotPermitted {
+        return Some(Departed::NotPermitted {
             to,
             decision: permitted,
-        };
+        });
     }
 
     // ADR-0006. The first identity found walking Location, Port, Group,
@@ -260,27 +267,33 @@ fn depart_one(
     let bytes = match work.message.sections()[0].stream.load() {
         Ok(bytes) => bytes,
         Err(unread) => {
-            return Departed::Failed {
+            return Some(Departed::Failed {
                 to,
                 retryable: true,
                 detail: unread.to_string(),
-            };
+            });
         }
     };
 
-    let key = work.journey.journey_id().to_string();
-    match sending.transport.send_keyed(&location.address, bytes, &key) {
-        Ok(()) => Departed::Sent {
-            to,
-            presented_from: resolved.map(|(_, level)| level),
-            presented,
-        },
-        Err(failure) => Departed::Failed {
-            to,
-            retryable: failure.retryable,
-            detail: failure.message,
-        },
+    // Asked again at the edge: the read above may have outlasted the claim.
+    if !owned() {
+        return None;
     }
+    let key = work.journey.journey_id().to_string();
+    Some(
+        match sending.transport.send_keyed(&location.address, bytes, &key) {
+            Ok(()) => Departed::Sent {
+                to,
+                presented_from: resolved.map(|(_, level)| level),
+                presented,
+            },
+            Err(failure) => Departed::Failed {
+                to,
+                retryable: failure.retryable,
+                detail: failure.message,
+            },
+        },
+    )
 }
 
 /// What departures came to, in words, as a Journey records it.

@@ -25,6 +25,7 @@ pub enum Operation {
     ReadJourney,
     WriteJourney,
     ReadMessage,
+    ReadChunk,
     WriteAdministration,
     ReadDead,
     Replay,
@@ -129,6 +130,7 @@ impl XmipStorage for Failing {
         stream: StreamId,
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
+        self.asked(Operation::ReadChunk)?;
         self.beneath.read_chunk(stream, index)
     }
 

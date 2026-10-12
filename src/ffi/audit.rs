@@ -12,7 +12,8 @@
 //! capability's one reader and one query (`audit_store`, `audit_query`) and
 //! answers the header's JSON (ADR-0062, amendment 2026-09-29) — with each
 //! writer's audit chain walked and said where the query asks `verify`
-//! (ADR-0070 clause 5).
+//! (ADR-0070 clause 5), and apart from them each fragment of the file no
+//! write finished (`audit_fragment`).
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a surface hands over where to write.
@@ -20,6 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use abi::ffi::{Str, status};
 use abi::operate::audit::kept;
@@ -27,6 +29,7 @@ use serde_json::{Map, Value, json};
 use xaudit::audit_chain::Verdict;
 use xaudit::audit_column::Column;
 use xaudit::audit_entry::AuditEntry;
+use xaudit::audit_fragment::Fragment;
 use xaudit::audit_query::{AuditGroup, AuditQuery};
 use xaudit::audit_store;
 use xaudit::emit::AuditOutcome;
@@ -169,18 +172,20 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
     let Some(file) = audit_store::stated(stated) else {
         let none = json!({"file": "", "read": 0, "matched": 0, "offset": asked.offset,
             "limit": asked.limit, "records": [], "groups": [], "actions": [], "chains": [],
+            "fragments": [],
             "columns": Column::ALL.map(Column::word),
             "severities": Severity::ALL.map(Severity::word)});
         return (status::OK, none.to_string());
     };
-    // A verification walks the file's bytes as they are now (ADR-0070 clause 5).
+    // A verification walks the file's bytes as they are now (ADR-0070 clause 5),
+    // and says the bytes no write finished apart from the chains.
     let read = if asked.verify {
-        audit_store::read_whole(&file)
+        audit_store::read_whole(&file).map(|whole| (Arc::new(whole.entries), whole.fragments))
     } else {
-        audit_store::read(&file)
+        audit_store::read(&file).map(|entries| (entries, Vec::new()))
     };
-    let entries = match read {
-        Ok(entries) => entries,
+    let (entries, fragments) = match read {
+        Ok(read) => read,
         Err(error) => return (status::IO, error.to_string()),
     };
     let page = asked.ask(&entries);
@@ -194,6 +199,7 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
         "groups": page.groups.iter().map(group).collect::<Vec<_>>(),
         "actions": page.actions,
         "chains": page.chains.iter().map(chain).collect::<Vec<_>>(),
+        "fragments": fragments.iter().map(fragment).collect::<Vec<_>>(),
         "columns": Column::ALL.map(Column::word),
         "severities": Severity::ALL.map(Severity::word),
     });
@@ -233,6 +239,15 @@ fn chain(verdict: &Verdict) -> Value {
     json!({
         "writer": verdict.writer, "records": verdict.records, "whole": verdict.whole(),
         "said": verdict.said(),
+    })
+}
+
+/// Bytes of the file a verification found no whole record in: where, how
+/// many, whether sealed by a later append, and what they are in words.
+fn fragment(fragment: &Fragment) -> Value {
+    json!({
+        "offset": fragment.offset, "length": fragment.length, "sealed": fragment.sealed,
+        "said": fragment.said(),
     })
 }
 
@@ -368,6 +383,24 @@ mod tests {
             (json!(1), json!(true))
         );
         assert!(chain["said"].as_str().expect("words").starts_with("OK: "));
+        assert_eq!(answer["fragments"], json!([]), "every write finished");
+
+        // A write left unfinished is said apart from the chain, which stays whole.
+        let file = directory.join("audit.toml");
+        let mut bytes = fs::read(&file).expect("read");
+        bytes.extend_from_slice(b"[[record]]\naudit_id = \"0");
+        fs::write(&file, bytes).expect("written");
+        let (_, text) = read(&place, &["verify", "yes"]);
+        let answer: Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(answer["chains"][0]["whole"], json!(true), "{text}");
+        let open = &answer["fragments"][0];
+        assert_eq!(open["sealed"], json!(false), "{text}");
+        assert!(
+            open["said"]
+                .as_str()
+                .expect("words")
+                .starts_with("UNFINISHED: ")
+        );
         let _ = fs::remove_dir_all(&directory);
     }
 

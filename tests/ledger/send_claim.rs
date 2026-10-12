@@ -4,6 +4,9 @@
 //! test lets it go and then refusing it, so whether the second is tried
 //! says whether the pass went on.
 //!
+//! - a claim lost while the Message is read for its send starts no send:
+//!   the claim is asked again at the edge, after the read, before the
+//!   transport;
 //! - a renewal that finds the claim another's — it lapsed on the Storage
 //!   node's clock and another node took the Journey up — stops the pass: the
 //!   second Location is never tried, nothing is written, the loss is
@@ -20,15 +23,15 @@ use journey::JourneyState;
 use persist::storage::XmipStorage;
 use transport::TransportError;
 use xcore::JourneyId;
-use xmip_core_runtime::fixture::{Answer, FarEnd, Operation};
+use xmip_core_runtime::fixture::{Answer, Failing, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::carry;
 use xmip_core_runtime::sending::Sends;
 
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{
-    Pinned, dispatching, interleaving, journey, onward, order, out, quick, taking, telling, took,
-    until,
+    Pinned, dispatching, interleaving, journey, onward, order, out, quick, sender, taking, telling,
+    took, until,
 };
 
 /// A far end that says it was reached, holds its send until `go`, and
@@ -80,6 +83,45 @@ fn taken_over(clock: &Pinned, storage: &dyn XmipStorage, id: JourneyId) {
         }
         assert!(Instant::now() < deadline, "never taken over");
     }
+}
+
+#[test]
+fn a_claim_lost_while_the_message_is_read_starts_no_send() {
+    let clock = Arc::new(Pinned::default());
+    let failing = Failing::over(telling(&clock));
+    let storage: Arc<dyn XmipStorage> = failing.clone();
+    let (reading, go) = (Arc::<AtomicBool>::default(), Arc::<AtomicBool>::default());
+    let (far, taken) = FarEnd::answering(taking());
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, out(|_| {})),
+        |runtime, pickup, gate| {
+            let ((), _) = dispatching(runtime, |told| {
+                let (read, let_go) = (Arc::clone(&reading), Arc::clone(&go));
+                failing.before(
+                    Operation::ReadChunk,
+                    Box::new(move || {
+                        read.store(true, Ordering::SeqCst);
+                        until(|| let_go.load(Ordering::SeqCst), "the read let go");
+                    }),
+                );
+                let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+                until(
+                    || reading.load(Ordering::SeqCst),
+                    "the Message read for its send",
+                );
+                taken_over(&clock, storage.as_ref(), id);
+                until(|| runtime.send.is_lost(id), "the loss found by a renewal");
+                go.store(true, Ordering::SeqCst);
+                told.wait_for(id, "lost");
+            });
+        },
+    );
+    assert!(
+        took(&taken).is_empty(),
+        "no send started after the claim was lost"
+    );
 }
 
 #[test]
