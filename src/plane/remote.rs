@@ -1,8 +1,9 @@
-//! The remote surface: a node on another machine, reached at its operate
-//! address over gRPC inside Xmip's mutual TLS (ADR-0014, amendment
-//! 2026-10-12), written once here and exported through `xmip_operate.h`
-//! section 17, so the command line, the PowerShell module and the GUIs
-//! follow a node the same way.
+//! The surface over a node's operate listener: a node on another machine,
+//! reached at its operate address over gRPC inside Xmip's mutual TLS
+//! (ADR-0014, amendment 2026-10-12), or a node on this one, reached at its
+//! local endpoint (ADR-0014, amendment 2026-10-13) — written once here
+//! and exported through `xmip_operate.h` section 17, so the command line,
+//! the PowerShell module and the GUIs follow a node the same way.
 //!
 //! It reads the node's publication — the text its file holds, which every
 //! surface reads with the one reader (section 8) — acts on what the node
@@ -26,7 +27,13 @@ use serde_json::json;
 
 use crate::plane::call::{ACT, PUBLICATION, REFUSED_CALL};
 use crate::plane::follow;
-use crate::plane::line::{Ending, Line, host_of};
+use crate::plane::line::{Line, Reach, host_of};
+use crate::plane::local;
+use crate::plane::shared::Shared;
+
+/// How long a drop waits for the follow to end once its read is
+/// cancelled.
+const FOLLOW_ENDS: Duration = Duration::from_secs(1);
 
 /// How long a connect, a handshake or an answer waits on the node.
 pub const PATIENCE: Duration = Duration::from_secs(5);
@@ -65,38 +72,7 @@ pub enum Outcome {
     Failed,
 }
 
-pub(crate) struct Shared {
-    pub(crate) address: String,
-    pub(crate) config: Arc<tls::ClientConfig>,
-    pub(crate) retry: Vec<Duration>,
-    pub(crate) state: Mutex<State>,
-    pub(crate) told: Condvar,
-    pub(crate) ending: Arc<AtomicBool>,
-    /// In a connect, which nothing cuts short.
-    pub(crate) connecting: AtomicBool,
-}
-
-impl Shared {
-    /// Tell every follower `change`.
-    pub(crate) fn tell(&self, change: impl FnOnce(&mut State)) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        change(&mut state);
-        state.told += 1;
-        self.told.notify_all();
-    }
-
-    pub(crate) fn ending(&self) -> bool {
-        self.ending.load(Ordering::SeqCst)
-    }
-
-    /// What a line of this surface asks whether it ends by.
-    pub(crate) fn ended(&self) -> Ending {
-        let ending = Arc::clone(&self.ending);
-        Box::new(move || ending.load(Ordering::SeqCst))
-    }
-}
-
-/// A node reached at its operate address.
+/// A node reached at its operate listener.
 pub struct Remote {
     shared: Arc<Shared>,
     asking: Mutex<Option<Line>>,
@@ -130,15 +106,49 @@ impl Remote {
         host_of(address)?;
         let client = identity.client().map_err(|failed| failed.message)?;
         let config = Arc::new(tls::alpn::offering(client, &[b"h2"]));
+        let reach = Reach::Network {
+            address: address.to_string(),
+            config,
+        };
+        Ok(Self::reaching(address.to_string(), reach, retry))
+    }
+
+    /// A surface over the node on this machine whose local endpoint is
+    /// called `endpoint` (`plane::local`): no TLS, the operating system
+    /// proving to the node who this side runs as. Nothing is connected
+    /// yet.
+    ///
+    /// # Errors
+    ///
+    /// An empty endpoint.
+    pub fn local(endpoint: &str) -> Result<Self, String> {
+        Self::local_retrying(endpoint, RETRY.to_vec())
+    }
+
+    /// The same, trying a lost node again on `retry`'s schedule.
+    ///
+    /// # Errors
+    ///
+    /// As [`Remote::local`].
+    pub fn local_retrying(endpoint: &str, retry: Vec<Duration>) -> Result<Self, String> {
+        if endpoint.trim().is_empty() {
+            return Err("a local endpoint needs a name, like xmip-node1".to_string());
+        }
+        let path = local::path_of(endpoint);
+        let address = path.display().to_string();
+        Ok(Self::reaching(address, Reach::Local(path), retry))
+    }
+
+    fn reaching(address: String, reach: Reach, retry: Vec<Duration>) -> Self {
         let retry = if retry.is_empty() {
             RETRY.to_vec()
         } else {
             retry
         };
-        Ok(Self {
+        Self {
             shared: Arc::new(Shared {
-                address: address.to_string(),
-                config,
+                address,
+                reach,
                 retry,
                 state: Mutex::new(State {
                     reason: "not connected yet".to_string(),
@@ -147,13 +157,15 @@ impl Remote {
                 told: Condvar::new(),
                 ending: Arc::new(AtomicBool::new(false)),
                 connecting: AtomicBool::new(false),
+                following: Mutex::new(None),
+                asking: Mutex::new(None),
             }),
             asking: Mutex::new(None),
             follow: Mutex::new(None),
-        })
+        }
     }
 
-    /// The node's operate address.
+    /// The node's operate address, or its local endpoint's path.
     #[must_use]
     pub fn address(&self) -> &str {
         &self.shared.address
@@ -289,14 +301,14 @@ impl Remote {
                 Err(_) => *asking = None,
             }
         }
-        let mut line = Line::open(
-            &self.shared.address,
-            &self.shared.config,
-            PATIENCE,
-            PATIENCE,
-            self.shared.ended(),
-        )
-        .map_err(|why| (true, why))?;
+        let (mut line, cancel) =
+            Line::open(&self.shared.reach, PATIENCE, PATIENCE, self.shared.ended())
+                .map_err(|why| (true, why))?;
+        *self
+            .shared
+            .asking
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = cancel;
         match line.call(method, message) {
             Ok(answer) => {
                 *asking = Some(line);
@@ -319,12 +331,16 @@ impl Remote {
         // Every line reads through `net::watched`, which sees this within
         // a WATCH; every wait is woken now.
         self.shared.ending.store(true, Ordering::SeqCst);
-        let _state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        self.shared.told.notify_all();
+        {
+            let _state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            self.shared.told.notify_all();
+        }
+        // A line on a pipe has no timeout to look between: its read ends.
+        self.shared.cancel();
     }
 }
 
@@ -338,9 +354,18 @@ impl Drop for Remote {
             .take();
         // A follow in a connect is not waited for: it ends when the connect
         // does, holding nothing of this side's but what it shares.
-        if let Some(follow) = follow
-            && !self.shared.connecting.load(Ordering::SeqCst)
-        {
+        let Some(follow) = follow else {
+            return;
+        };
+        let until = std::time::Instant::now() + FOLLOW_ENDS;
+        while !follow.is_finished() && std::time::Instant::now() < until {
+            if self.shared.connecting.load(Ordering::SeqCst) {
+                return;
+            }
+            self.shared.cancel();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        if follow.is_finished() {
             let _ = follow.join();
         }
     }

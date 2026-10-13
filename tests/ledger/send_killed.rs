@@ -18,9 +18,10 @@ use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 use xmip_core_runtime::send_step::{Departure, Ended, dispatch};
 
+use super::child_process::ChildProcess;
 use super::receive_cycle::{node, on_node};
 use super::sending::{dispatching, onward, order, out, sender};
-use super::{STARTED, directory, heard, killed, say, spawn, test_node};
+use super::{STARTED, directory, say, test_node};
 
 /// Carry orders one after the other through `runtime`, saying each whose
 /// receive cycle completed — what its sender is acknowledged for — with
@@ -124,12 +125,12 @@ fn sent_by(
 #[test]
 fn a_node_killed_after_publication_and_before_send_leaves_every_journey_to_another_node() {
     let place = directory("unsent");
-    let (child, lines) = spawn("publish", &place);
+    let child = ChildProcess::start("publish", &place);
     let mut first = Vec::new();
     while first.len() < 20 {
-        first.push(acknowledged(&heard(&lines, "received ", STARTED)));
+        first.push(acknowledged(&child.heard("received ", STARTED)));
     }
-    let acknowledged = every_acknowledged(first, &killed(child, &lines));
+    let acknowledged = every_acknowledged(first, &child.killed());
 
     let other = configure::fixture::test_cluster().node_scope(1);
     let taken = sent_by(other, &place, &acknowledged);
@@ -143,13 +144,13 @@ fn a_node_killed_after_publication_and_before_send_leaves_every_journey_to_anoth
 #[test]
 fn a_node_killed_mid_send_sends_again_once_restarted_at_least_once_never_lost() {
     let place = directory("mid-send");
-    let (child, lines) = spawn("sending", &place);
-    let sending = heard(&lines, "sending ", STARTED);
+    let child = ChildProcess::start("sending", &place);
+    let sending = child.heard("sending ", STARTED);
     let mut first = Vec::new();
     while first.len() < 10 {
-        first.push(acknowledged(&heard(&lines, "received ", STARTED)));
+        first.push(acknowledged(&child.heard("received ", STARTED)));
     }
-    let said = killed(child, &lines);
+    let said = child.killed();
     let acknowledged = every_acknowledged(first, &said);
 
     let taken = sent_by(node(), &place, &acknowledged);

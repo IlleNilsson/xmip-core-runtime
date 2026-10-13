@@ -2,7 +2,8 @@
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
 //! sections 5 to 16, ADR-0027, ADR-0053, ADR-0064, ADR-0065 and ADR-0013)
 //! and the loader that opens a module's library and calls through its table
-//! (ADR-0057). Unsafe
+//! (ADR-0057), and the two Windows calls the local operate endpoint makes
+//! (`system`; ADR-0014, amendment 2026-10-13). Unsafe
 //! code is allowed in these files and nowhere else in the runtime; each file
 //! lowers the crate's `deny` at its top, and `test/Unsafe.Test.ps1` holds the
 //! folder.
@@ -34,4 +35,6 @@ pub mod security_role;
 pub mod served;
 pub mod start;
 pub mod subscription;
+#[cfg(windows)]
+pub(crate) mod system;
 pub mod topology;

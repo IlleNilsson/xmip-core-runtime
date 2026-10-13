@@ -1,7 +1,10 @@
 //! The operate plane (ADR-0067): how an operator surface reads and follows
-//! a node on another machine, and acts on it — over gRPC on TCP to the
-//! node's operate listener, inside Xmip's mutual TLS (ADR-0014, amendment
-//! 2026-10-12; ADR-0052, amendment 2026-10-05; ADR-0063). SignalR stays
+//! a node, and acts on it — over gRPC to the node's operate listener: on
+//! TCP inside Xmip's mutual TLS from another machine (ADR-0014, amendment
+//! 2026-10-12; ADR-0063), on the node's local endpoint, a named pipe or a
+//! Unix domain socket, from its own (ADR-0014, amendment 2026-10-13;
+//! ADR-0052, amendment 2026-10-05). Every .NET surface operates a node
+//! this way, on its machine and elsewhere alike. SignalR stays
 //! between a web host and the browser it serves, and running a command on
 //! another machine stays shell remoting (ADR-0014 clause 6).
 //!
@@ -26,9 +29,11 @@ pub mod call;
 mod follow;
 mod line;
 pub mod listener;
+pub mod local;
 pub mod remote;
 pub mod role;
 pub mod served;
+mod shared;
 
 pub use board::{Board, Published};
 pub use line::host_of;

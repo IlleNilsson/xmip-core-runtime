@@ -1,11 +1,14 @@
 //! One connection to a node's operate listener: the handshake, who the
-//! certificate proves, and each call answered in turn — the publication,
+//! certificate — or, on the local endpoint, the operating system — proves,
+//! and each call answered in turn — the publication,
 //! a wait for its next revision, and an operator's act, admitted by the
 //! caller's role and audited taken or refused (ADR-0009, amendment
 //! 2026-10-06; ADR-0062).
 
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 use authenticate::x509::Name;
@@ -19,6 +22,7 @@ use xcore::{ExecutionPhase, Severity};
 use crate::applied::{Applied, apply};
 use crate::plane::call::{self, ACT, PUBLICATION, WAIT};
 use crate::plane::listener::{Serve, WATCH};
+use crate::plane::local::Stream;
 use crate::plane::role::{Role, admitted};
 
 /// The most a handshake, or a write to a surface that does not read,
@@ -33,17 +37,19 @@ pub const LONGEST_WAIT: Duration = Duration::from_secs(25);
 /// `GatedOperator.AuditAction` names.
 pub const AUDIT_ACTION: &str = "act";
 
-/// Serve one connection until the surface or the listener ends it.
+/// Serve one network connection until the surface or the listener ends
+/// it: mutual TLS agreeing `h2`, the caller its certificate's subject.
 pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
     let settled = connection
         .set_nodelay(true)
         .and_then(|()| connection.set_read_timeout(Some(PATIENCE)))
         .and_then(|()| connection.set_write_timeout(Some(PATIENCE)));
+    let Some(config) = serve.config.as_ref() else {
+        return;
+    };
     let guarded = settled
         .map_err(|error| error.to_string())
-        .and_then(|()| {
-            tls::server(connection, std::sync::Arc::clone(&serve.config)).map_err(|e| e.message)
-        })
+        .and_then(|()| tls::server(connection, Arc::clone(config)).map_err(|e| e.message))
         .and_then(|mut guarded| {
             let agreed = tls::alpn::agreed(&mut guarded).map_err(|e| e.message)?;
             if agreed.as_deref() != Some(b"h2") {
@@ -58,19 +64,36 @@ pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
                 .map_err(|error| error.to_string())?;
             Ok((guarded, who))
         });
-    let (guarded, who) = match guarded {
-        Ok(made) => made,
-        Err(reason) => return noted(serve, peer, &format!("refused: {reason}")),
+    match guarded {
+        Ok((guarded, who)) => calls(Watched::new(guarded, || serve.stopped()), &who, serve),
+        Err(reason) => noted(serve, &peer.to_string(), &format!("refused: {reason}")),
+    }
+}
+
+/// Serve one connection on the node's local endpoint: plain HTTP/2, the
+/// caller the user the operating system says its process runs as.
+pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
+    let who = match stream.caller() {
+        Ok(who) => who,
+        Err(reason) => return noted(serve, "the local endpoint", &format!("refused: {reason}")),
     };
-    let watched = Watched::new(guarded, || serve.stopped());
-    let Ok(mut server) = Server::handshake(watched) else {
+    if let Err(error) = stream.watch(WATCH) {
+        return noted(serve, &who, &format!("refused: {error}"));
+    }
+    calls(Watched::new(stream, || serve.stopped()), &who, serve);
+}
+
+/// Each call on a connection answered in turn, until the surface or the
+/// listener ends it.
+fn calls<S: Read + Write>(connection: S, who: &str, serve: &Serve) {
+    let Ok(mut server) = Server::handshake(connection) else {
         return;
     };
     while !serve.stopped() {
         let Ok(Some((stream, request))) = server.next_request() else {
             break;
         };
-        let response = called(serve, &who, &request);
+        let response = called(serve, who, &request);
         if server.respond(stream, &response).is_err() {
             break;
         }
@@ -140,8 +163,9 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
         Ok(act) => act,
         Err(refused) => return outcome("invalid", &refused),
     };
-    // Every caller here is proven, by its certificate; the role is the one
-    // the node's configuration states, Observer where it states none.
+    // Every caller here is proven, by its certificate or by the operating
+    // system; the role is the one the node's configuration states,
+    // Observer where it states none.
     let role = serve.stated.unwrap_or_default();
     let thing = format!("{} '{target}' at {node}", noun.called());
     let gate = admitted(Some(who), role, act.word(), &thing);
@@ -191,7 +215,7 @@ fn record(serve: &Serve, who: &str, role: Role, act: &str, target: &str, refused
 }
 
 /// A connection refused, in the node's audit.
-fn noted(serve: &Serve, peer: SocketAddr, message: &str) {
+fn noted(serve: &Serve, peer: &str, message: &str) {
     let properties = BTreeMap::from([("peer".to_string(), peer.to_string())]);
     let _ = serve.audit.record(
         "operate.connection",

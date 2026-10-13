@@ -5,6 +5,8 @@
 //! fast, an act gated by the caller's role and audited, a stranger
 //! refused, and a node lost and found again on the recovery loop.
 
+mod local;
+
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,7 +31,7 @@ fn node(authority: &Authority, board: &Arc<Board>, role: Option<Role>) -> (Liste
 }
 
 fn remote(authority: &Authority, listener: &Listener) -> Remote {
-    let address = listener.address().to_string();
+    let address = listener.address();
     Remote::retrying(
         &address,
         &authority.identity("surface"),
@@ -136,7 +138,11 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
     let (mut listener, _) = node(&authority, &board, None);
-    let port = listener.address().port();
+    let port = listener
+        .address()
+        .parse::<std::net::SocketAddr>()
+        .expect("host:port")
+        .port();
     let surface = remote(&authority, &listener);
 
     let reached = surface.wait(0, Duration::from_secs(5));

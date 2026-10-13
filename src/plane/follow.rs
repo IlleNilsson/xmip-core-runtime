@@ -11,8 +11,9 @@ use serde_json::json;
 
 use crate::plane::call::WAIT;
 use crate::plane::line::Line;
-use crate::plane::remote::{PATIENCE, Shared};
+use crate::plane::remote::PATIENCE;
 use crate::plane::served::LONGEST_WAIT;
+use crate::plane::shared::Shared;
 
 /// Follow until the surface ends: reach the node, hold its wait while it
 /// answers, and when it is lost or never reached, tell every follower why
@@ -22,15 +23,18 @@ pub(crate) fn run(shared: &Arc<Shared>) {
     while !shared.ending() {
         shared.connecting.store(true, Ordering::SeqCst);
         let opened = Line::open(
-            &shared.address,
-            &shared.config,
+            &shared.reach,
             PATIENCE,
             LONGEST_WAIT + PATIENCE,
             shared.ended(),
         );
         shared.connecting.store(false, Ordering::SeqCst);
         let why = match opened {
-            Ok(line) => {
+            Ok((line, cancel)) => {
+                *shared
+                    .following
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = cancel;
                 attempt = 0;
                 held(shared, line)
             }

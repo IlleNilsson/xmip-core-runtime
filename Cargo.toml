@@ -82,6 +82,21 @@ rcgen = { version = "0.13", optional = true }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
+# The local operate endpoint (`plane::local`; ADR-0014, amendment
+# 2026-10-13): on Windows a named pipe — `interprocess`, the pipe the named
+# pipe transport makes, behind a safe surface, its security descriptor
+# written from SDDL — and the two calls it does not make: ending a read from
+# another thread and the connecting user's name.
+[target.'cfg(windows)'.dependencies]
+interprocess = "2.4"
+widestring = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_Security_Authentication_Identity"] }
+
+# On Unix a Unix domain socket: the connecting user by the kernel's word,
+# and its name.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "user"] }
+
 [dev-dependencies]
 # This crate with its `test-support`, so the integration tests (tests/) take
 # the same fixtures its unit tests do.
