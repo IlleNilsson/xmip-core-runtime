@@ -34,6 +34,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod windows_scm;
+
+pub use windows_scm::{windows_service_arguments, windows_service_settings};
+
 /// What the operating system is told about one service.
 ///
 /// Everything an operator sees comes from here, and everything here comes from
@@ -62,6 +66,12 @@ pub struct ServiceDefinition {
 
     /// The node's installation directory.
     pub working_directory: String,
+
+    /// What the service's environment holds beyond the platform's, each a
+    /// name and its value: the audit directory an installer gave the node
+    /// (ADR-0062), and nothing a person types.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment: Vec<(String, String)>,
 }
 
 impl ServiceDefinition {
@@ -86,6 +96,7 @@ impl ServiceDefinition {
             arguments: vec![String::from("--configuration"), configuration.into()],
             service_identity: None,
             working_directory: working_directory.into(),
+            environment: Vec::new(),
         }
     }
 
@@ -120,6 +131,7 @@ impl ServiceDefinition {
             ],
             service_identity: None,
             working_directory: working_directory.into(),
+            environment: Vec::new(),
         }
     }
 
@@ -128,6 +140,13 @@ impl ServiceDefinition {
     #[must_use]
     pub fn running_as(mut self, identity: &str) -> Self {
         self.service_identity = Some(identity.into());
+        self
+    }
+
+    /// The same definition, its environment holding `name` as `value`.
+    #[must_use]
+    pub fn with_variable(mut self, name: &str, value: &str) -> Self {
+        self.environment.push((name.into(), value.into()));
         self
     }
 }
@@ -203,6 +222,11 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
         Some(user) => format!("User={user}\n"),
         None => String::new(),
     };
+    let environment: String = definition
+        .environment
+        .iter()
+        .map(|(name, value)| format!("Environment=\"{name}={value}\"\n"))
+        .collect();
 
     format!(
         "[Unit]\n\
@@ -215,6 +239,7 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
          ExecStart={executable} {arguments}\n\
          WorkingDirectory={working}\n\
          {identity}\
+         {environment}\
          Restart=on-failure\n\
          RestartPreventExitStatus={refused}\n\
          RestartSec=5\n\
@@ -226,6 +251,7 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
         arguments = arguments,
         working = definition.working_directory,
         identity = identity,
+        environment = environment,
         refused = REFUSED,
     )
 }
@@ -257,7 +283,7 @@ fn quoted(text: &str) -> String {
 /// `RunAtLoad` with `KeepAlive` on `SuccessfulExit=false` is launchd's spelling
 /// of `Restart=on-failure`, for the same reason. launchd has no spelling of
 /// `RestartPreventExitStatus`, so a refused node is started again after its
-/// throttle interval; macOS is a development target (ADR-0015 clause 7).
+/// throttle interval, until an operator fixes its configuration.
 #[must_use]
 pub fn launchd_plist(definition: &ServiceDefinition) -> String {
     let mut arguments = String::new();
@@ -272,6 +298,16 @@ pub fn launchd_plist(definition: &ServiceDefinition) -> String {
         Some(user) => format!("\t<key>UserName</key>\n\t<string>{user}</string>\n"),
         None => String::new(),
     };
+    let environment = if definition.environment.is_empty() {
+        String::new()
+    } else {
+        let pairs: String = definition
+            .environment
+            .iter()
+            .map(|(name, value)| format!("\t\t<key>{name}</key>\n\t\t<string>{value}</string>\n"))
+            .collect();
+        format!("\t<key>EnvironmentVariables</key>\n\t<dict>\n{pairs}\t</dict>\n")
+    };
 
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -284,6 +320,7 @@ pub fn launchd_plist(definition: &ServiceDefinition) -> String {
          \t<key>WorkingDirectory</key>\n\
          \t<string>{working}</string>\n\
          {identity}\
+         {environment}\
          \t<key>RunAtLoad</key>\n\
          \t<true/>\n\
          \t<key>KeepAlive</key>\n\
@@ -297,38 +334,8 @@ pub fn launchd_plist(definition: &ServiceDefinition) -> String {
         arguments = arguments,
         working = definition.working_directory,
         identity = identity,
+        environment = environment,
     )
-}
-
-/// The `sc.exe create` arguments for this definition.
-///
-/// Returned as arguments rather than as a command line, so a caller passes them
-/// to the process API without quoting anything. `binPath=` is the one place
-/// Windows requires the executable and its arguments to be one string, and the
-/// space after each `=` is required by `sc.exe` — omitting it is the classic
-/// way this fails with an unhelpful usage message.
-#[must_use]
-pub fn windows_service_arguments(definition: &ServiceDefinition) -> Vec<String> {
-    let mut binary = quoted(&definition.executable);
-
-    for argument in &definition.arguments {
-        binary.push(' ');
-        binary.push_str(&quoted(argument));
-    }
-
-    let mut arguments = vec![
-        String::from("create"),
-        definition.name.clone(),
-        format!("binPath= {binary}"),
-        format!("DisplayName= {}", definition.display_name),
-        String::from("start= auto"),
-    ];
-
-    if let Some(user) = &definition.service_identity {
-        arguments.push(format!("obj= {user}"));
-    }
-
-    arguments
 }
 
 #[cfg(test)]
@@ -490,6 +497,37 @@ mod tests {
             r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\xmip-node.toml"#
         );
         assert!(systemd_unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
+    }
+
+    #[test]
+    fn every_manager_hands_the_service_its_environment() {
+        let audit = "/var/opt/xmip/data/audit";
+        let definition = node_service().with_variable("XMIP_AUDIT_DIRECTORY", audit);
+
+        assert!(
+            systemd_unit(&definition)
+                .contains(&format!("Environment=\"XMIP_AUDIT_DIRECTORY={audit}\"\n"))
+        );
+        let plist = launchd_plist(&definition);
+        assert!(plist.contains("<key>EnvironmentVariables</key>"));
+        assert!(plist.contains(&format!("<string>{audit}</string>")));
+        let settings = windows_service_settings(&definition);
+        assert_eq!(settings[0].1[0], "description");
+        assert_eq!(settings[1].0, "reg.exe");
+        assert!(
+            settings[1]
+                .1
+                .contains(&format!("XMIP_AUDIT_DIRECTORY={audit}"))
+        );
+    }
+
+    #[test]
+    fn a_service_with_no_environment_sets_none() {
+        let definition = node_service();
+
+        assert!(!systemd_unit(&definition).contains("Environment="));
+        assert!(!launchd_plist(&definition).contains("EnvironmentVariables"));
+        assert_eq!(windows_service_settings(&definition).len(), 1);
     }
 
     #[test]
