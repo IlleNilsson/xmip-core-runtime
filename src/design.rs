@@ -121,8 +121,14 @@ mod tests {
 
         assert_eq!(answer["views"][0]["kind"], "cluster");
         assert_eq!(answer["document"], "node");
-        let route = &answer["views"][10];
-        assert_eq!(route["kind"], "route");
+        // Found by its kind, never by its place: a view added before it
+        // (the Parties, 2026-10-13) must not move what this test reads.
+        let route = answer["views"]
+            .as_array()
+            .expect("views")
+            .iter()
+            .find(|view| view["kind"] == "route")
+            .expect("the route view");
         assert_eq!(route["entries"][0]["routes"]["application"], "Orders");
         assert_eq!(
             route["entries"][0]["routes"]["edges"][0]["to"],
