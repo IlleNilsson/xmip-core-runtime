@@ -85,6 +85,8 @@ pub struct Running {
     capabilities: CapabilityRegistry,
     host_services: Vec<HostService>,
     locations: Vec<(&'static str, ConfiguredLocation)>,
+    /// Each Location it knows and did not start, by stage and name.
+    not_started: Vec<(&'static str, String)>,
     stopping: Arc<Stopping>,
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
@@ -94,6 +96,8 @@ pub struct Running {
     storage: Reached,
     /// `[operate]`, and the file it was read from ([`Running::operate`]).
     operate: Option<configure::OperateConfiguration>,
+    /// `[tuning] local_timeout`: how long a surface's local call waits.
+    local_timeout: std::time::Duration,
     configuration: PathBuf,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
@@ -181,6 +185,7 @@ impl Running {
                     .map(|s| ("send", s.configured.clone())),
             )
             .collect();
+        let not_started = tree.not_started();
         let send = Arc::new(SendStep::new(
             (
                 &publication::cluster_location(&tree.service.cluster_name),
@@ -218,6 +223,7 @@ impl Running {
             capabilities,
             host_services,
             locations,
+            not_started,
             stopping,
             serving: Some(serving),
             tally,
@@ -226,6 +232,7 @@ impl Running {
             data,
             storage,
             operate,
+            local_timeout: tree.tuning.local_timeout,
             configuration: PathBuf::from(path),
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),

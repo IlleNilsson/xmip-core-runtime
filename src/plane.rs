@@ -26,6 +26,7 @@
 
 pub mod board;
 pub mod call;
+pub mod deadline;
 mod follow;
 mod line;
 pub mod listener;

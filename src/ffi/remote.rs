@@ -74,7 +74,9 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
 
 /// `crate::plane::Remote::local` over the node on this machine whose local
 /// endpoint is called `endpoint` — a named pipe on Windows, a Unix domain
-/// socket elsewhere (ADR-0014, amendment 2026-10-13).
+/// socket elsewhere (ADR-0014, amendment 2026-10-13) — each call waiting
+/// at most `within_ms`, or where it is 0 what the node declared from its
+/// `[tuning] local_timeout`.
 ///
 /// # Safety
 /// `endpoint` points at its stated length; `out` is writable; `report` has
@@ -82,6 +84,7 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_open_local_v1(
     endpoint: Str,
+    within_ms: u32,
     out: *mut *mut RemoteHandle,
     report: *mut u8,
     cap: usize,
@@ -91,8 +94,9 @@ pub unsafe extern "C" fn xmip_remote_open_local_v1(
     let Some(endpoint) = (unsafe { scope_text(endpoint) }) else {
         return status::MALFORMED;
     };
+    let within = std::time::Duration::from_millis(u64::from(within_ms));
     // SAFETY: per the contract above.
-    unsafe { handed(Remote::local(endpoint), out, report, cap, out_len) }
+    unsafe { handed(Remote::local(endpoint, within), out, report, cap, out_len) }
 }
 
 /// A remote opened, as a handle in `out`, or why not in `report`.

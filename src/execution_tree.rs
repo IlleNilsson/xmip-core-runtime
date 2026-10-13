@@ -18,6 +18,7 @@ use configure::{
     SendPortGroup, ServiceConfiguration, WorkProcessConfiguration, XmipApplication,
     XmipConfigurationDocument,
 };
+use node::Stage;
 use route::Subscription;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -41,6 +42,12 @@ pub struct ExecutionTree {
     /// their policy: Send Locations in order, retry, failover, execution
     /// style, order key and failure policy (the same amendment).
     pub send_ports: Vec<DesignedSendPort>,
+    /// The Receive Locations, and the Send Locations and bound Send Ports,
+    /// the node knows and does not start: their `start` does not say
+    /// `true` (the owner, 2026-10-13). Named, so a surface shows each as
+    /// [`configure::NOT_STARTED`].
+    pub receive_locations_not_started: Vec<String>,
+    pub send_locations_not_started: Vec<String>,
     pub verified_extensions: Vec<VerifiedExtensionNode>,
     /// What routing asks of every published Message on this node: every
     /// Subscription of every Xmip Application the node binds.
@@ -51,6 +58,23 @@ pub struct ExecutionTree {
     /// What the node runs by, `[tuning]` read with its defaults
     /// (ADR-0031, amendment 2026-10-03).
     pub tuning: Tuning,
+}
+
+impl ExecutionTree {
+    /// Each Location the node knows and does not start, by the stage it
+    /// would serve — `receive` or `send` — and its name.
+    #[must_use]
+    pub fn not_started(&self) -> Vec<(&'static str, String)> {
+        let at = |stage: Stage, names: &[String]| {
+            names
+                .iter()
+                .map(move |name| (stage.name(), name.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut known = at(Stage::Receive, &self.receive_locations_not_started);
+        known.extend(at(Stage::Send, &self.send_locations_not_started));
+        known
+    }
 }
 
 /// An extension the runtime checked at startup, and whether it loaded it.
@@ -122,25 +146,30 @@ pub fn build_execution_tree(
         .map(verified_extension)
         .collect();
 
+    let (receive_locations_to_start, receive_locations_not_started) = starting(
+        document
+            .receive_locations
+            .into_iter()
+            .chain(bound.receive_locations),
+    );
+    let (send_locations_to_start, send_locations_not_started) = starting(
+        document
+            .send_locations
+            .into_iter()
+            .chain(bound.send_locations),
+    );
+
     Ok((
         ExecutionTree {
             service: document.service,
             modules_to_start,
             work_processes_to_start,
-            receive_locations_to_start: starting(
-                document
-                    .receive_locations
-                    .into_iter()
-                    .chain(bound.receive_locations),
-            ),
+            receive_locations_to_start,
             receive_ports: bound.receive_ports,
-            send_locations_to_start: starting(
-                document
-                    .send_locations
-                    .into_iter()
-                    .chain(bound.send_locations),
-            ),
+            send_locations_to_start,
             send_ports: bound.send_ports,
+            receive_locations_not_started,
+            send_locations_not_started,
             verified_extensions,
             subscriptions: bound.subscriptions,
             send_port_groups: bound.send_port_groups,
@@ -150,9 +179,16 @@ pub fn build_execution_tree(
     ))
 }
 
-/// The locations that start, the node's own and those its bindings give it.
-fn starting(locations: impl Iterator<Item = ConfiguredLocation>) -> Vec<ConfiguredLocation> {
-    locations.filter(|location| location.start).collect()
+/// The locations that start, the node's own and those its bindings give it
+/// — those whose `start` says `true` — and the names of the rest.
+fn starting(
+    locations: impl Iterator<Item = ConfiguredLocation>,
+) -> (Vec<ConfiguredLocation>, Vec<String>) {
+    let (started, known): (Vec<_>, Vec<_>) = locations.partition(|location| location.start);
+    (
+        started,
+        known.into_iter().map(|location| location.name).collect(),
+    )
 }
 
 /// Everything in the document that would stop the node starting, as errors,
@@ -395,8 +431,25 @@ address = "C:/out"
         assert_eq!(tree.work_processes_to_start, document.work_processes);
         assert_eq!(tree.receive_locations_to_start, document.receive_locations);
         assert!(tree.send_locations_to_start.is_empty(), "start = false");
+        assert_eq!(tree.send_locations_not_started, ["billing-out"], "known");
+        assert!(tree.receive_locations_not_started.is_empty());
         assert_eq!(tree.verified_extensions.len(), 1);
         assert!(!tree.verified_extensions[0].loaded_during_startup);
+    }
+
+    /// Only `true` starts a Location; nothing is not started, and known.
+    #[test]
+    fn a_location_that_does_not_say_start_true_is_known_and_not_started() {
+        let source = node().replace(
+            "name = \"orders-in\"\nstart = true\n",
+            "name = \"orders-in\"\n",
+        );
+        let document = configure::parse_toml(&source).expect("parses");
+        let (tree, _) =
+            build_execution_tree(document, &[], &Declarations::new()).expect("valid tree");
+
+        assert!(tree.receive_locations_to_start.is_empty());
+        assert_eq!(tree.receive_locations_not_started, ["orders-in"]);
     }
 
     #[test]

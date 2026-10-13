@@ -115,14 +115,15 @@ impl Listener {
     ///
     /// # Errors
     ///
-    /// An endpoint that cannot be made, or no thread.
+    /// A name that would leave the endpoints' folder
+    /// ([`local::place`]), an endpoint that cannot be made, or no thread.
     pub fn local(
         endpoint: &str,
         published: Arc<dyn Published>,
         stated: Option<Role>,
         audit: &ProgramAudit,
     ) -> Result<Self, String> {
-        let path = local::path_of(endpoint);
+        let path = local::place(endpoint)?;
         let acceptor = Acceptor::bind(&path)?;
         let where_ = path.display().to_string();
         let _ = audit.record(

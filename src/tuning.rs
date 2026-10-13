@@ -25,6 +25,7 @@
 //! send_scan = "1s"                            # send_step::SEND_SCAN
 //! storage_timeout = "5s"                      # persist's client::TIMEOUT
 //! storage_pass_over = "5s"                    # persist's client::PASS_OVER
+//! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
 //! ```
 
 use std::time::Duration;
@@ -35,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
 use crate::ledger::SEGMENTS;
+use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
 use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
 use crate::send_step::{SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD};
@@ -146,6 +148,13 @@ pub const TUNING: &Settings = &Settings {
             meaning: "How long a Storage node that did not answer is asked only after the rest.",
             applies: Applies::Both,
         },
+        Setting {
+            name: "local_timeout",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(LOCAL_TIMEOUT)),
+            meaning: "How long a surface's call to this node's local endpoint waits for it.",
+            applies: Applies::Both,
+        },
     ],
 };
 
@@ -170,6 +179,7 @@ pub struct Tuning {
     pub send_scan: Duration,
     pub storage_timeout: Duration,
     pub storage_pass_over: Duration,
+    pub local_timeout: Duration,
 }
 
 impl Default for Tuning {
@@ -222,6 +232,7 @@ impl Tuning {
             send_scan: duration("send_scan"),
             storage_timeout: duration("storage_timeout"),
             storage_pass_over: duration("storage_pass_over"),
+            local_timeout: duration("local_timeout"),
         };
         if problems.is_empty() {
             Ok(tuning)
@@ -277,6 +288,7 @@ mod tests {
         assert_eq!(tuning.pace(), Pace::default());
         assert_eq!(tuning.storage_timeout, client::TIMEOUT);
         assert_eq!(tuning.storage_pass_over, client::PASS_OVER);
+        assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
         assert_eq!(
             tuning.receive().most,
             RECEIVE_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
@@ -297,9 +309,11 @@ mod tests {
             "tcp_segment = 1440\nsegments = 8\nreceive_threads_per_hardware_thread = 4\n\
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
-             send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n",
+             send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n\
+             local_timeout = \"500ms\"\n",
         )
         .expect("reads");
+        assert_eq!(tuning.local_timeout, Duration::from_millis(500));
         assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
         assert_eq!(tuning.send_lease, Duration::from_secs(5));
         assert_eq!(tuning.send_scan, Duration::from_millis(200));
