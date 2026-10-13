@@ -43,9 +43,10 @@
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
 //! drawing every publisher calls: the cluster, the node, its stages with an
 //! endpoint per Location, and the Party on each side (ADR-0052, amendment
-//! 2026-09-29). A node's configuration names no Party yet (`configure`'s
-//! `Accept` refuses a `party` list), so whoever its Receive Locations accept
-//! and its Send Ports deliver to is drawn as one Party per side,
+//! 2026-09-29). A node's configuration names its Parties (`[[parties]]`)
+//! but no Location says which it serves (`configure`'s `Accept` refuses a
+//! `party` list), so whoever its Receive Locations accept and its Send Ports
+//! deliver to is drawn as one Party per side, over every endpoint,
 //! [`ANY_PARTY`].
 
 use node::{Capability, Stage};
@@ -374,7 +375,8 @@ fn drawn(cluster: &str, node: &str, snapshot: &Snapshot) -> Topology {
         nodes: draw::members(snapshot, &root, &names),
         links: Vec::new(),
     };
-    party::draw(snapshot, &root, &names, ANY_PARTY, &mut topology);
+    let parties = [party::Party::everywhere(ANY_PARTY)];
+    party::draw(snapshot, &root, &names, &parties, &mut topology);
     topology
 }
 
