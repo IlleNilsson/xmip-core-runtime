@@ -210,6 +210,12 @@ impl ServiceManager {
 /// configuration is wrong and will still be wrong. Restarting it forever
 /// turns one legible refusal into a log nobody reads. A stop exits 0, which
 /// is no failure, so systemd restarts nothing Xmip stopped on purpose.
+///
+/// `RuntimeDirectory=xmip` makes `/run/xmip`, the folder every node's local
+/// operate endpoint is in, for the node's account — decided by the owner,
+/// 2026-10-13: *created by systemd / launchd for the node's account* — and
+/// keeps it when the unit stops, so a node stopping never takes another's
+/// socket with it.
 #[must_use]
 pub fn systemd_unit(definition: &ServiceDefinition) -> String {
     let arguments = definition
@@ -240,6 +246,9 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
          WorkingDirectory={working}\n\
          {identity}\
          {environment}\
+         RuntimeDirectory={runtime}\n\
+         RuntimeDirectoryMode=0755\n\
+         RuntimeDirectoryPreserve=yes\n\
          Restart=on-failure\n\
          RestartPreventExitStatus={refused}\n\
          RestartSec=5\n\
@@ -253,6 +262,10 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
         identity = identity,
         environment = environment,
         refused = REFUSED,
+        // `/run/xmip/` as systemd names a folder under `/run`: `xmip`.
+        runtime = crate::plane::local::LINUX_FOLDER
+            .trim_start_matches("/run/")
+            .trim_end_matches('/'),
     )
 }
 
@@ -276,6 +289,41 @@ fn quoted(text: &str) -> String {
     } else {
         text.to_string()
     }
+}
+
+/// The launchd daemon that makes `/var/run/xmip`, the folder every node's
+/// local operate endpoint is in, for this definition's account at every
+/// boot — macOS empties `/var/run` as it starts, and launchd has no
+/// spelling of systemd's `RuntimeDirectory` (decided by the owner,
+/// 2026-10-13: *created by systemd / launchd for the node's account*). It
+/// runs as root, once at load, and is labelled `<name>.run`.
+#[must_use]
+pub fn launchd_run_directory(definition: &ServiceDefinition) -> String {
+    let folder = crate::plane::local::MACOS_FOLDER.trim_end_matches('/');
+    let owner = definition
+        .service_identity
+        .as_deref()
+        .map_or(String::new(), |user| {
+            format!(" &amp;&amp; chown {user} {folder}")
+        });
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \t<key>Label</key>\n\
+         \t<string>{name}.run</string>\n\
+         \t<key>ProgramArguments</key>\n\
+         \t<array>\n\
+         \t\t<string>/bin/sh</string>\n\
+         \t\t<string>-c</string>\n\
+         \t\t<string>mkdir -p -m 0755 {folder}{owner}</string>\n\
+         \t</array>\n\
+         \t<key>RunAtLoad</key>\n\
+         \t<true/>\n\
+         </dict>\n\
+         </plist>\n",
+        name = definition.name,
+    )
 }
 
 /// A launchd property list for this definition.
@@ -417,6 +465,21 @@ mod tests {
 
         assert!(unit.contains("Restart=on-failure"));
         assert!(!unit.contains("Restart=always"));
+    }
+
+    /// Decided by the owner, 2026-10-13: the local endpoints' folder is
+    /// *created by systemd / launchd for the node's account*.
+    #[test]
+    fn the_folder_of_local_endpoints_is_made_for_the_nodes_account() {
+        let unit = systemd_unit(&node_service().running_as("xmip"));
+        assert!(unit.contains("RuntimeDirectory=xmip\n"), "{unit}");
+        assert!(unit.contains("RuntimeDirectoryPreserve=yes\n"));
+
+        let run = launchd_run_directory(&node_service().running_as("xmip"));
+        assert!(run.contains("mkdir -p -m 0755 /var/run/xmip &amp;&amp; chown xmip"));
+        assert!(run.contains(&format!("<string>{}.run</string>", node_service().name)));
+        let root = launchd_run_directory(&node_service());
+        assert!(!root.contains("chown"));
     }
 
     #[test]

@@ -11,7 +11,6 @@ use serde_json::json;
 
 use crate::plane::call::WAIT;
 use crate::plane::line::Line;
-use crate::plane::remote::PATIENCE;
 use crate::plane::served::LONGEST_WAIT;
 use crate::plane::shared::Shared;
 
@@ -24,17 +23,14 @@ pub(crate) fn run(shared: &Arc<Shared>) {
         shared.connecting.store(true, Ordering::SeqCst);
         let opened = Line::open(
             &shared.reach,
-            PATIENCE,
-            LONGEST_WAIT + PATIENCE,
+            shared.patience,
+            LONGEST_WAIT + shared.patience,
             shared.ended(),
+            &shared.following,
         );
         shared.connecting.store(false, Ordering::SeqCst);
         let why = match opened {
-            Ok((line, cancel)) => {
-                *shared
-                    .following
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = cancel;
+            Ok(line) => {
                 attempt = 0;
                 held(shared, line)
             }
@@ -73,7 +69,14 @@ fn held(shared: &Shared, mut line: Line) -> String {
         match line.call(WAIT, &asked) {
             Ok(answer) => {
                 let now = answer["revision"].as_u64().unwrap_or(revision);
-                if !reached || now != revision {
+                // A call that waited too long said the node unreachable;
+                // its next answer here says it is back.
+                let said_lost = !shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .reachable;
+                if !reached || now != revision || said_lost {
                     revision = now;
                     shared.tell(|state| {
                         state.reachable = true;

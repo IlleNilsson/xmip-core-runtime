@@ -199,6 +199,16 @@ pub fn start(path: &str) -> Snapshot {
             });
         }
     }
+    // What the configuration does not say `true` to is known, and says so.
+    for (stage, name) in tree.not_started() {
+        snapshot.record_health(HealthRecord {
+            scope: format!("{node}/{stage}/{name}"),
+            health: Health::Done,
+            severity: 0,
+            evidence: configure::NOT_STARTED.to_string(),
+            observed_unix_nanos: now,
+        });
+    }
 
     snapshot
 }
@@ -361,6 +371,11 @@ name = "billing-out"
 start = true
 transport = "file"
 address = "C:/out"
+
+[[send_locations]]
+name = "archive-out"
+transport = "file"
+address = "C:/archive"
 "#
             ),
         )
@@ -369,7 +384,11 @@ address = "C:/out"
         let snapshot = start(path.to_str().expect("utf-8 path"));
 
         let at = format!("xmip:///{node}");
-        let records = snapshot.health(&at);
+        let mut records = snapshot.health(&at);
+        let off = format!("{at}/send/archive-out");
+        let known = records.iter().position(|r| r.scope == off).expect("known");
+        assert_eq!(records[known].evidence, configure::NOT_STARTED);
+        records.remove(known);
         assert_eq!(records.len(), 5, "node, module, process, receive, send");
         for leaf in [
             "receive/orders-in",
@@ -426,7 +445,7 @@ symbol = "xmip_create_module_v1"
     }
 
     #[test]
-    fn a_location_missing_start_or_transport_is_refused_not_defaulted() {
+    fn a_location_missing_transport_is_refused_and_missing_start_is_not_started() {
         let (head, _) = service();
         let no_start = format!(
             "{head}[[receive_locations]]\nname = \"in\"\ntransport = \"file\"\naddress = \"a\"\n"
@@ -434,11 +453,10 @@ symbol = "xmip_create_module_v1"
         let no_transport =
             format!("{head}[[send_locations]]\nname = \"out\"\nstart = true\naddress = \"a\"\n");
 
-        for (source, key) in [(no_start, "start"), (no_transport, "transport")] {
-            let problems = validate(&source);
-            assert_eq!(problems.len(), 1, "{problems:?}");
-            assert!(problems[0].contains(key), "names `{key}`: {}", problems[0]);
-        }
+        assert!(validate(&no_start).is_empty(), "{:?}", validate(&no_start));
+        let problems = validate(&no_transport);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("transport"), "{}", problems[0]);
     }
 
     #[test]

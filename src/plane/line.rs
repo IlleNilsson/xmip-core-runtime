@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use net::http2::Client;
@@ -74,8 +74,10 @@ impl Line {
     /// the node's certificate names its host and reaches the anchors the
     /// configuration holds, and presenting this side's; an answer is
     /// waited for at most `silence` where the connection keeps time, and
-    /// not once `ending` says so. What ends a read in flight, where a
-    /// connection has no timeout to look between, comes with it.
+    /// not once `ending` says so. What ends a read or a write in flight,
+    /// where a connection has no timeout to look between, is put in
+    /// `cancel` as soon as the connection is made — before the handshake,
+    /// whose own read and write may wait on a node that does not answer.
     ///
     /// # Errors
     ///
@@ -85,8 +87,9 @@ impl Line {
         patience: Duration,
         silence: Duration,
         ending: Ending,
-    ) -> Result<(Self, Option<Cancel>), String> {
-        let (link, authority, scheme, cancel) = match reach {
+        cancel: &Mutex<Option<Cancel>>,
+    ) -> Result<Self, String> {
+        let (link, authority, scheme, ends) = match reach {
             Reach::Network { address, config } => (
                 secured(address, config, patience)?,
                 address.clone(),
@@ -96,19 +99,20 @@ impl Line {
             Reach::Local(path) => {
                 let stream = local::connect(path, patience)?;
                 stream.watch(WATCH).map_err(|error| error.to_string())?;
-                let cancel = stream.cancel();
+                let ends = stream.cancel();
                 (
                     Link::Local(stream),
                     "localhost".to_string(),
                     "http",
-                    Some(cancel),
+                    Some(ends),
                 )
             }
         };
+        *cancel.lock().unwrap_or_else(PoisonError::into_inner) = ends;
         let mut watched = Watched::new(link, ending);
         watched.silence = Some(silence);
         let client = Client::handshake(watched, scheme).map_err(|failed| failed.message)?;
-        Ok((Self { client, authority }, cancel))
+        Ok(Self { client, authority })
     }
 
     /// Call `method` with `message` and read what it answered.

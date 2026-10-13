@@ -13,7 +13,9 @@
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
-//! <node>/send/<Location>     Done with the reason once it stopped
+//! <node>/send/<Location>     Done with the reason once it stopped, and
+//!                            Done saying `configure::NOT_STARTED` where its
+//!                            configuration does not say `start = true`
 //! <node>/send/<Port>         each Send Port this node sends, apart from its
 //!                            Send Locations: what it sent, what failed — the
 //!                            last Journey that did, and why — what waits,
@@ -56,9 +58,13 @@ use observe::{
 use std::collections::BTreeMap;
 
 use super::Running;
+
+mod stopped;
+
 use crate::capability_registry::Load;
 use crate::pickup::PUBLISHED;
 use crate::send_step::PortFigures;
+pub use stopped::stopped;
 
 /// The Party a node draws on each side while its configuration can name
 /// none.
@@ -132,7 +138,9 @@ impl Running {
             );
         }
         let figures = self.send.figures();
-        let staged = stage_records(&node, &self.locations, &failures, &figures);
+        let staged = not_started_records(&node, &self.not_started)
+            .into_iter()
+            .chain(stage_records(&node, &self.locations, &failures, &figures));
         let subscriptions = self.pickup.standing();
         for subscription in &subscriptions {
             let scope = format!("{node}/{}/{}", Stage::Process.name(), subscription.name);
@@ -312,6 +320,21 @@ fn stage_records(
     records
 }
 
+/// The record of each Location the node knows and did not start, at
+/// `<node>/<stage>/<Location>`: Done, as a stopped one is, with no
+/// severity, saying [`configure::NOT_STARTED`] (the owner, 2026-10-13).
+fn not_started_records(node: &str, known: &[(&'static str, String)]) -> Vec<StageRecord> {
+    let said = configure::NOT_STARTED.to_string();
+    let record = |(stage, name): &(&str, String)| {
+        (
+            format!("{node}/{stage}/{name}"),
+            (Health::Done, 0),
+            said.clone(),
+        )
+    };
+    known.iter().map(record).collect()
+}
+
 /// The severity a record of `health` carries: none while Fine, a deliberate
 /// hold's, and the pain's.
 const fn severity(health: Health) -> u8 {
@@ -355,61 +378,9 @@ fn drawn(cluster: &str, node: &str, snapshot: &Snapshot) -> Topology {
     topology
 }
 
-/// What the node `node` of `cluster` leaves published once it has stopped:
-/// `last`, its last publication while it ran, with the node, its System
-/// Process, its modules and its Locations Done — the node saying `said`,
-/// the rest that they stopped with it — and drawn again. What it declared
-/// and its Subscriptions' standing stay as they were: a pause outlives the
-/// stop (ADR-0013, amendment 2026-09-30). A surface over the file shows a
-/// stopped node, never a running one that went quiet.
-#[must_use]
-pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Publication {
-    let at = location(cluster, node);
-    let kept = [
-        observe::capability::scope(&at),
-        format!("{at}/{}/", Stage::Process.name()),
-    ];
-    let now = now_unix_nanos();
-    let mut snapshot = last.snapshot();
-    for record in &last.records {
-        if kept
-            .iter()
-            .any(|kept| record.scope.starts_with(kept.as_str()))
-        {
-            continue;
-        }
-        let evidence = if record.scope == at {
-            said.to_string()
-        } else {
-            "stopped with the node".to_string()
-        };
-        snapshot.record_health(HealthRecord {
-            scope: record.scope.clone(),
-            health: Health::Done,
-            severity: 0,
-            evidence,
-            observed_unix_nanos: now,
-        });
-    }
-    let topology = drawn(cluster, node, &snapshot);
-    Publication::whole(&last.source, &last.node, &snapshot)
-        .with_orders(last.orders.clone())
-        .with_topology(Some(topology))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn record(scope: &str, health: Health) -> HealthRecord {
-        HealthRecord {
-            scope: scope.to_string(),
-            health,
-            severity: 0,
-            evidence: "said".to_string(),
-            observed_unix_nanos: 1,
-        }
-    }
 
     fn configured(name: &str) -> configure::ConfiguredLocation {
         configure::ConfiguredLocation {
@@ -593,55 +564,35 @@ mod tests {
         );
     }
 
+    /// A Location the configuration does not say `true` to is published
+    /// at its stage, saying so, apart from what started.
     #[test]
-    fn a_stopped_node_is_done_and_keeps_what_it_declared_and_its_pauses() {
-        let cluster = configure::fixture::test_cluster();
-        let (name, node) = (&cluster.name, &cluster.node(0).name);
-        let at = cluster.node_scope(0);
-        let at = at.as_str();
-        let mut snapshot = Snapshot::new();
-        for (leaf, health) in [
-            ("", Health::Fine),
-            ("/system-process", Health::Fine),
-            ("/capability", Health::Fine),
-            ("/receive/In", Health::Fine),
-            ("/process/onward", Health::Paused),
-        ] {
-            snapshot.record_health(record(&format!("{at}{leaf}"), health));
-        }
-        let last = Publication::whole("xmip-service", at, &snapshot).with_orders("orders");
+    fn a_location_not_started_is_published_saying_the_configuration_does_not_say_true() {
+        let node = configure::fixture::test_cluster().node_scope(0);
+        let locations = [("receive", configured("In"))];
+        let not_started = [("receive", "Off".to_string()), ("send", "Out".to_string())];
 
-        let left = stopped(name, node, &last, "stopped by the console");
-        let moods: Vec<(&str, Health)> = left
-            .records
-            .iter()
-            .map(|record| (record.scope.as_str(), record.health))
-            .collect();
-        for (leaf, health) in [
-            ("", Health::Done),
-            ("/system-process", Health::Done),
-            ("/receive/In", Health::Done),
-            ("/capability", Health::Fine),
-            ("/process/onward", Health::Paused),
+        let records = not_started_records(&node, &not_started)
+            .into_iter()
+            .chain(stage_records(&node, &locations, &[], &BTreeMap::new()))
+            .collect::<Vec<_>>();
+
+        for (scope, ended) in [
+            ("receive/Off", true),
+            ("send/Out", true),
+            ("receive/In", false),
         ] {
-            let scope = format!("{at}{leaf}");
-            assert!(
-                moods.contains(&(scope.as_str(), health)),
-                "{scope}: {moods:?}"
+            let scope = format!("{node}/{scope}");
+            let (_, standing, evidence) = records
+                .iter()
+                .find(|(at, _, _)| *at == scope)
+                .expect("published");
+            assert_eq!(
+                evidence == configure::NOT_STARTED,
+                ended,
+                "{scope}: {evidence}"
             );
+            assert_eq!(standing.0 == Health::Done, ended, "{scope}");
         }
-        let record = left.records.iter().find(|record| record.scope == at);
-        assert_eq!(
-            record.map(|record| record.evidence.as_str()),
-            Some("stopped by the console")
-        );
-        assert_eq!(left.orders, "orders");
-        let drawn = left.topology.expect("drawn again");
-        let id = format!("node/{node}");
-        assert!(drawn.nodes.iter().any(|drawn| drawn.id == id));
-        assert!(
-            (drawn.nodes[0].activity).abs() < f64::EPSILON,
-            "no process alive"
-        );
     }
 }

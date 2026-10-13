@@ -25,18 +25,27 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::plane::call::{ACT, PUBLICATION, REFUSED_CALL};
+use crate::plane::call::{ACT, PUBLICATION};
+use crate::plane::deadline::{self, Deadline};
 use crate::plane::follow;
 use crate::plane::line::{Line, Reach, host_of};
 use crate::plane::local;
 use crate::plane::shared::Shared;
 
+mod asking;
+
 /// How long a drop waits for the follow to end once its read is
 /// cancelled.
 const FOLLOW_ENDS: Duration = Duration::from_secs(1);
 
-/// How long a connect, a handshake or an answer waits on the node.
+/// How long a connect, a handshake or an answer waits on a node on another
+/// machine.
 pub const PATIENCE: Duration = Duration::from_secs(5);
+
+/// How long the same waits on a node on this machine, at its local
+/// endpoint, where a configuration's `[tuning] local_timeout` says nothing
+/// (`deadline`).
+pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long the follow waits before each try to reach a node it lost or
 /// never reached, the last repeated for as long as it follows.
@@ -110,19 +119,21 @@ impl Remote {
             address: address.to_string(),
             config,
         };
-        Ok(Self::reaching(address.to_string(), reach, retry))
+        Ok(Self::reaching(address.to_string(), reach, PATIENCE, retry))
     }
 
     /// A surface over the node on this machine whose local endpoint is
     /// called `endpoint` (`plane::local`): no TLS, the operating system
-    /// proving to the node who this side runs as. Nothing is connected
-    /// yet.
+    /// proving to the node who this side runs as; each call waiting at most
+    /// `within` — where it is zero, what the node declared from its
+    /// `[tuning] local_timeout`, else [`LOCAL_TIMEOUT`]
+    /// (`deadline::declared`). Nothing is connected yet.
     ///
     /// # Errors
     ///
-    /// An empty endpoint.
-    pub fn local(endpoint: &str) -> Result<Self, String> {
-        Self::local_retrying(endpoint, RETRY.to_vec())
+    /// An endpoint that is no name in the endpoints' folder.
+    pub fn local(endpoint: &str, within: Duration) -> Result<Self, String> {
+        Self::local_retrying(endpoint, within, RETRY.to_vec())
     }
 
     /// The same, trying a lost node again on `retry`'s schedule.
@@ -130,16 +141,24 @@ impl Remote {
     /// # Errors
     ///
     /// As [`Remote::local`].
-    pub fn local_retrying(endpoint: &str, retry: Vec<Duration>) -> Result<Self, String> {
-        if endpoint.trim().is_empty() {
-            return Err("a local endpoint needs a name, like xmip-node1".to_string());
-        }
-        let path = local::path_of(endpoint);
+    pub fn local_retrying(
+        endpoint: &str,
+        within: Duration,
+        retry: Vec<Duration>,
+    ) -> Result<Self, String> {
+        let path = local::place(endpoint)?;
         let address = path.display().to_string();
-        Ok(Self::reaching(address, Reach::Local(path), retry))
+        let within = if within.is_zero() {
+            deadline::declared(&path)
+        } else {
+            within
+        };
+        let remote = Self::reaching(address, Reach::Local(path), within, retry);
+        deadline::kept(&remote.shared);
+        Ok(remote)
     }
 
-    fn reaching(address: String, reach: Reach, retry: Vec<Duration>) -> Self {
+    fn reaching(address: String, reach: Reach, patience: Duration, retry: Vec<Duration>) -> Self {
         let retry = if retry.is_empty() {
             RETRY.to_vec()
         } else {
@@ -149,6 +168,8 @@ impl Remote {
             shared: Arc::new(Shared {
                 address,
                 reach,
+                patience,
+                deadline: Deadline::default(),
                 retry,
                 state: Mutex::new(State {
                     reason: "not connected yet".to_string(),
@@ -285,42 +306,6 @@ impl Remote {
             format!("{} unreachable: {why}", self.shared.address)
         })
     }
-
-    /// The call itself: its answer, or whether the node was lost and why.
-    fn called(
-        &self,
-        method: &str,
-        message: &serde_json::Value,
-    ) -> Result<serde_json::Value, (bool, String)> {
-        let mut asking = self.asking.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(line) = asking.as_mut() {
-            match line.call(method, message) {
-                Ok(answer) => return Ok(answer),
-                Err(why) if why.starts_with(REFUSED_CALL) => return Err((false, why)),
-                // Lost since it last answered: a fresh connection is tried.
-                Err(_) => *asking = None,
-            }
-        }
-        let (mut line, cancel) =
-            Line::open(&self.shared.reach, PATIENCE, PATIENCE, self.shared.ended())
-                .map_err(|why| (true, why))?;
-        *self
-            .shared
-            .asking
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = cancel;
-        match line.call(method, message) {
-            Ok(answer) => {
-                *asking = Some(line);
-                Ok(answer)
-            }
-            Err(why) if why.starts_with(REFUSED_CALL) => {
-                *asking = Some(line);
-                Err((false, why))
-            }
-            Err(why) => Err((true, why)),
-        }
-    }
 }
 
 impl Remote {
@@ -341,6 +326,7 @@ impl Remote {
         }
         // A line on a pipe has no timeout to look between: its read ends.
         self.shared.cancel();
+        self.shared.deadline.wake();
     }
 }
 
