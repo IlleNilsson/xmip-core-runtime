@@ -7,7 +7,8 @@ use xcore::{JourneyId, MessageId, StreamId};
 
 use xmip_core_runtime::ledger::Chunks;
 
-use super::{STARTED, directory, heard, killed, spawn, test_node};
+use super::child_process::ChildProcess;
+use super::{STARTED, directory, test_node};
 
 /// One completed receive as the child said it: the number its content
 /// carries, its Message and its Journeys.
@@ -36,13 +37,14 @@ fn acknowledged(said: &str) -> Acknowledged {
 #[test]
 fn a_message_acknowledged_before_the_kill_is_in_the_ledger_after_it() {
     let place = directory("acknowledged");
-    let (child, lines) = spawn("receive", &place);
+    let child = ChildProcess::start("receive", &place);
     let mut received = Vec::new();
     while received.len() < 100 {
-        received.push(acknowledged(&heard(&lines, "received ", STARTED)));
+        received.push(acknowledged(&child.heard("received ", STARTED)));
     }
     received.extend(
-        killed(child, &lines)
+        child
+            .killed()
             .iter()
             .filter_map(|line| line.find("received ").map(|at| &line[at + 9..]))
             .map(acknowledged),
@@ -79,17 +81,16 @@ fn a_message_acknowledged_before_the_kill_is_in_the_ledger_after_it() {
 #[test]
 fn a_receive_killed_after_its_chunks_and_before_publication_leaves_no_message() {
     let place = directory("halted");
-    let (child, lines) = spawn("halt", &place);
-    let stream: u128 = heard(&lines, "chunk ", STARTED)
+    let child = ChildProcess::start("halt", &place);
+    let stream: u128 = child
+        .heard("chunk ", STARTED)
         .split_whitespace()
         .next()
         .expect("a Stream")
         .parse()
         .expect("a number");
-    let message: u128 = heard(&lines, "halting ", STARTED)
-        .parse()
-        .expect("a Message");
-    killed(child, &lines);
+    let message: u128 = child.heard("halting ", STARTED).parse().expect("a Message");
+    child.killed();
 
     let node = test_node(&place);
     let chunk = node

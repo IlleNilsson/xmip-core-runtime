@@ -16,6 +16,8 @@ use configure::views::Views;
 use configure::{DocumentKind, document_kind};
 use serde::Serialize;
 
+use crate::tuning::TUNING;
+
 /// Why a node's own document is not sliced: it is the slice.
 pub const NOT_A_CLUSTER: &str = "this is a node's configuration document, not a cluster's \
                                  xmip.toml: it declares no [nodes]; only the cluster's file is \
@@ -37,6 +39,9 @@ pub fn views(cluster: &str) -> Result<String, String> {
         DocumentKind::Node => "node",
     }
     .into();
+    // `[tuning]`'s keys are the runtime's own declaration (`tuning.rs`), so
+    // an editor suggests and explains them as it does a Location's settings.
+    answer["tuning"] = serde_json::to_value(TUNING).map_err(|error| error.to_string())?;
     json(&answer)
 }
 
@@ -122,6 +127,14 @@ mod tests {
         assert_eq!(
             route["entries"][0]["routes"]["edges"][0]["to"],
             "send-port:Billing"
+        );
+        let tuning = answer["tuning"]["settings"].as_array().expect("declared");
+        assert!(tuning.iter().any(|setting| setting["name"] == "segments"));
+        assert_eq!(answer["references"][0]["names"], "Work Process");
+        assert!(
+            answer["keys"]
+                .as_array()
+                .is_some_and(|keys| !keys.is_empty())
         );
         assert!(views("not = [toml").is_err());
     }

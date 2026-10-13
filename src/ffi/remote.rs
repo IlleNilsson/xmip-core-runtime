@@ -1,5 +1,6 @@
-//! `xmip_operate.h` section 17: a node reached at its operate address,
-//! the remote surface `crate::plane::Remote` is, forwarded.
+//! `xmip_operate.h` section 17: a node reached at its operate address, or
+//! at its local endpoint on this machine, the surface `crate::plane::Remote`
+//! is, forwarded.
 //!
 //! A handle owns its remote, or its listener, and one call frees it. The
 //! follow, its recovery loop and every word are the plane's; this lays
@@ -67,6 +68,45 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
     };
     let opened =
         identity(certificate, key, anchors).and_then(|identity| Remote::open(address, &identity));
+    // SAFETY: per the contract above.
+    unsafe { handed(opened, out, report, cap, out_len) }
+}
+
+/// `crate::plane::Remote::local` over the node on this machine whose local
+/// endpoint is called `endpoint` — a named pipe on Windows, a Unix domain
+/// socket elsewhere (ADR-0014, amendment 2026-10-13).
+///
+/// # Safety
+/// `endpoint` points at its stated length; `out` is writable; `report` has
+/// room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_remote_open_local_v1(
+    endpoint: Str,
+    out: *mut *mut RemoteHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: per the contract above.
+    let Some(endpoint) = (unsafe { scope_text(endpoint) }) else {
+        return status::MALFORMED;
+    };
+    // SAFETY: per the contract above.
+    unsafe { handed(Remote::local(endpoint), out, report, cap, out_len) }
+}
+
+/// A remote opened, as a handle in `out`, or why not in `report`.
+///
+/// # Safety
+/// `out` is writable; `report` has room for `cap` bytes; `out_len` is
+/// writable.
+unsafe fn handed(
+    opened: Result<Remote, String>,
+    out: *mut *mut RemoteHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     match opened {
         Ok(remote) => {
             let held = Box::new(Held {
@@ -94,7 +134,8 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
 /// The remote behind a handle.
 ///
 /// # Safety
-/// `remote` is null or a live handle `xmip_remote_open_v1` returned.
+/// `remote` is null or a live handle `xmip_remote_open_v1` or
+/// `xmip_remote_open_local_v1` returned.
 unsafe fn held<'a>(remote: *const RemoteHandle) -> Option<&'a Held> {
     // SAFETY: per the contract above.
     unsafe { remote.cast::<Held>().as_ref() }
@@ -242,8 +283,8 @@ pub unsafe extern "C" fn xmip_remote_end_v1(remote: *const RemoteHandle) {
 /// it may be in flight.
 ///
 /// # Safety
-/// `remote` is null or a handle `xmip_remote_open_v1` returned and nobody
-/// freed.
+/// `remote` is null or a handle `xmip_remote_open_v1` or
+/// `xmip_remote_open_local_v1` returned and nobody freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_free_v1(remote: *mut RemoteHandle) {
     if !remote.is_null() {

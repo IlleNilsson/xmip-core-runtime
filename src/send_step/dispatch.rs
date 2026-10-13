@@ -132,22 +132,22 @@ impl SendStep {
     }
 
     /// How `departure`'s pass ended, settled: counted, kept until its due
-    /// time, or let go of.
+    /// time, or let go of — and only then told, so whoever is told reads
+    /// figures that already hold it.
     fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
-        settled(&departure, &ended);
         let id = departure.work.journey.journey_id();
         let mut state = self.lock();
         if departure.sequence.is_some() && !state.asked.contains(&departure.queue) {
             state.asked.push(departure.queue);
         }
-        match ended {
+        match &ended {
             Ended::Waiting { after, .. } if !state.closed => {
+                let due = Instant::now() + *after;
                 drop(state);
                 // Its hand-on confirmed the claim to its due time.
                 self.confirm(&departure);
-                state = self.lock();
-                state.due.push((Instant::now() + after, departure));
-                drop(state);
+                settled(&departure, &ended);
+                self.lock().due.push((due, departure));
                 self.wake.notify_all();
                 return;
             }
@@ -170,13 +170,15 @@ impl SendStep {
             Ended::Lost(_) => {
                 drop(state);
                 self.lost(&departure, "its claim was another's at its hand-on");
+                settled(&departure, &ended);
                 return;
             }
-            Ended::Unwritten(why) => self.failed(&why),
+            Ended::Unwritten(why) => self.failed(why),
         }
         state.owned.remove(&id);
         state.freed();
         drop(state);
+        settled(&departure, &ended);
         self.wake.notify_all();
     }
 

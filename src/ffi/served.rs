@@ -1,7 +1,8 @@
 //! `xmip_operate.h` section 17, the node's side, for a program that hosts a
 //! node through the C ABI: what it posts as its publication, and the acts
 //! on the nodes of its process, served on an operate listener of its own
-//! (`crate::plane::Listener` over a `crate::plane::Board`).
+//! (`crate::plane::Listener` over a `crate::plane::Board`) — on the
+//! network inside mutual TLS, or on this machine's local endpoint.
 //!
 //! A handle owns its listener and its board, and one call stops and frees
 //! them.
@@ -62,6 +63,58 @@ pub unsafe extern "C" fn xmip_operate_serve_v1(
         let bound = std::net::TcpListener::bind(listen).map_err(|error| error.to_string())?;
         Listener::start(bound, &identity, published, stated, &audit)
     });
+    // SAFETY: per the contract above.
+    unsafe { handed(started, board, out, report, cap, out_len) }
+}
+
+/// Serve the same on this machine's local endpoint called `local` — a
+/// named pipe on Windows, a Unix domain socket elsewhere — every caller
+/// the user its process runs as, holding the role `role` names (ADR-0014,
+/// amendment 2026-10-13). Audited as `program`.
+///
+/// # Safety
+/// The strings point at their stated lengths; `out` is writable; `report`
+/// has room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_operate_serve_local_v1(
+    local: Str,
+    role: Str,
+    program: Str,
+    out: *mut *mut ServedHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: per the contract above.
+    let (Some(local), Some(role), Some(program)) = (
+        unsafe { scope_text(local) },
+        unsafe { scope_text(role) },
+        unsafe { scope_text(program) },
+    ) else {
+        return status::MALFORMED;
+    };
+    let stated = (!role.trim().is_empty()).then(|| Role::named(role));
+    let audit = ProgramAudit::new(program, None);
+    let board = Arc::new(Board::default());
+    let published: Arc<dyn Published> = Arc::clone(&board) as Arc<dyn Published>;
+    let started = Listener::local(local, published, stated, &audit);
+    // SAFETY: per the contract above.
+    unsafe { handed(started, board, out, report, cap, out_len) }
+}
+
+/// A listener started, as a handle in `out`, or why not in `report`.
+///
+/// # Safety
+/// `out` is writable; `report` has room for `cap` bytes; `out_len` is
+/// writable.
+unsafe fn handed(
+    started: Result<Listener, String>,
+    board: Arc<Board>,
+    out: *mut *mut ServedHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     match started {
         Ok(listener) => {
             let serving = Box::new(Serving { listener, board });
@@ -83,7 +136,8 @@ pub unsafe extern "C" fn xmip_operate_serve_v1(
     }
 }
 
-/// Where a served listener listens, `host:port`.
+/// Where a served listener listens: `host:port`, or the local endpoint's
+/// path.
 ///
 /// # Safety
 /// `served` is a live handle; `out` has room for `cap` bytes; `out_len` is
@@ -100,7 +154,7 @@ pub unsafe extern "C" fn xmip_operate_served_address_v1(
         return status::INVALID;
     };
     // SAFETY: per the contract above.
-    unsafe { refuse(&serving.listener.address().to_string(), out, cap, out_len) };
+    unsafe { refuse(&serving.listener.address(), out, cap, out_len) };
     status::OK
 }
 
@@ -130,8 +184,8 @@ pub unsafe extern "C" fn xmip_operate_post_v1(
 /// Stop a served listener and release it.
 ///
 /// # Safety
-/// `served` is null or a handle `xmip_operate_serve_v1` returned and nobody
-/// freed.
+/// `served` is null or a handle `xmip_operate_serve_v1` or
+/// `xmip_operate_serve_local_v1` returned and nobody freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operate_serve_stop_v1(served: *mut ServedHandle) {
     if !served.is_null() {
@@ -181,6 +235,8 @@ mod tests {
         let _: header::EndFn = xmip_remote_end_v1;
         let _: header::FreeFn = xmip_remote_free_v1;
         let _: header::ServeFn = xmip_operate_serve_v1;
+        let _: header::ServeLocalFn = xmip_operate_serve_local_v1;
+        let _: header::OpenLocalFn = crate::ffi::remote::xmip_remote_open_local_v1;
         let _: header::ServedAddressFn = xmip_operate_served_address_v1;
         let _: header::PostFn = xmip_operate_post_v1;
         let _: header::ServeStopFn = xmip_operate_serve_stop_v1;

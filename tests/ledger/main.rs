@@ -14,8 +14,10 @@
 //! test program started again with [`CHILD`] naming what it does, as the
 //! estate root's `storage` test does it; the kill is the operating system's.
 //!
-//! What each file holds: this one the harness — the test Storage node, a
-//! child started and killed, what it says — and the child itself;
+//! What each file holds: this one the harness — the test Storage node, what
+//! a child says — and the child itself; `child_process.rs` a child started,
+//! heard and killed, ended on every path its test takes, a panic and the
+//! test program's own end among them;
 //! `receive_cycle.rs` the receive a child runs; `halts_at_publication.rs`
 //! the Xmip Storage that stops a receive at its Publication; `killed.rs`
 //! the two kill tests, and what they read back; `bounded.rs` a Stream far
@@ -44,6 +46,7 @@
 
 mod audited;
 mod bounded;
+mod child_process;
 mod dead_message_queue;
 mod halts_at_publication;
 mod held;
@@ -62,11 +65,9 @@ mod send_raced;
 mod sending;
 mod untold;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use persist::storage::{Embedded, XmipStorage};
@@ -133,6 +134,7 @@ fn child() {
     let (Ok(what), Ok(place)) = (std::env::var(CHILD), std::env::var(PLACE)) else {
         return;
     };
+    child_process::ending_with_its_test();
     let place = PathBuf::from(place);
     match what.as_str() {
         "receive" => receive_until_killed(&test_node(&place)),
@@ -141,53 +143,4 @@ fn child() {
         "sending" => send_killed::send_until_killed(&test_node(&place)),
         other => panic!("no child does '{other}'"),
     }
-}
-
-/// This test program started again as a child doing `what` in `place`, and
-/// what it says, line by line.
-fn spawn(what: &str, place: &Path) -> (Child, Receiver<String>) {
-    let mut child = Command::new(std::env::current_exe().expect("this program"))
-        .args(["child", "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD, what)
-        .env(PLACE, place)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("a child");
-    let output = child.stdout.take().expect("its output");
-    let (tell, told) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(output).lines().map_while(Result::ok) {
-            if tell.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    (child, told)
-}
-
-/// What follows `opening` in the next line a child says with it.
-fn heard(lines: &Receiver<String>, opening: &str, within: Duration) -> String {
-    let deadline = std::time::Instant::now() + within;
-    loop {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let line = lines
-            .recv_timeout(left)
-            .unwrap_or_else(|_| panic!("the child never said '{opening}'"));
-        // The harness says `test child ... ` before the child's first line.
-        if let Some(at) = line.find(opening) {
-            return line[at + opening.len()..].trim().to_string();
-        }
-    }
-}
-
-/// The child killed, and every line it said before it died.
-fn killed(mut child: Child, lines: &Receiver<String>) -> Vec<String> {
-    child.kill().expect("killed");
-    let _ = child.wait();
-    let mut said = Vec::new();
-    while let Ok(line) = lines.recv_timeout(Duration::from_secs(1)) {
-        said.push(line);
-    }
-    said
 }
