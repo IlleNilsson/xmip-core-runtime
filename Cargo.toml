@@ -47,7 +47,9 @@ stream = { package = "xmip-core-stream", git = "https://github.com/IlleNilsson/x
 party = { package = "xmip-core-party", git = "https://github.com/IlleNilsson/xmip-core-party", branch = "main" }
 receive = { package = "xmip-core-receive", git = "https://github.com/IlleNilsson/xmip-core-receive", branch = "main" }
 identify = { package = "xmip-core-identify", git = "https://github.com/IlleNilsson/xmip-core-identify", branch = "main" }
-authenticate = { package = "xmip-core-authenticate", git = "https://github.com/IlleNilsson/xmip-core-authenticate", branch = "main" }
+# x509: who a surface is, the subject of the certificate it presented to
+# the operate listener, read by the one reader of a name (plane::served).
+authenticate = { package = "xmip-core-authenticate", git = "https://github.com/IlleNilsson/xmip-core-authenticate", branch = "main", features = ["x509"] }
 send = { package = "xmip-core-send", git = "https://github.com/IlleNilsson/xmip-core-send", branch = "main" }
 authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main" }
 route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmip-core-route", branch = "main" }
@@ -70,6 +72,13 @@ persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson
 # The key home the runtime store's data key is wrapped in: the key store the
 # node's `[store]` names, among those its program linked (ADR-0063 clause 4).
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main" }
+# The operate plane (ADR-0067; ADR-0014, amendment 2026-10-12): gRPC on
+# the estate's own HTTP/2 and framing, inside Xmip's own mutual TLS.
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
+# A test authority and each end's certificate, for the operate plane's
+# tests (`fixture::authority`): only the test-support feature turns it on.
+rcgen = { version = "0.13", optional = true }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
@@ -117,7 +126,7 @@ dynamic-loading = ["dep:libloading"]
 # placed once for its unit tests and its integration tests. Enabled only by
 # the dev-dependency on this crate below, so never in a production build.
 # It names its nodes from the test cluster's `xmip.toml` (`configure::fixture`).
-test-support = ["configure/test-support"]
+test-support = ["configure/test-support", "dep:rcgen"]
 
 [profile.dev.package."*"]
 opt-level = 3

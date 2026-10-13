@@ -13,8 +13,10 @@ use identify::Presented;
 use persist::storage::XmipStorage;
 use xcore::{Layer, Mechanism, mechanism};
 
+pub mod authority;
 mod failing;
 
+pub use authority::Authority;
 pub use failing::{Failing, Interleaved, Operation};
 
 /// Verifies every claim of its mechanism with the verdict it was given.
@@ -149,6 +151,15 @@ impl transport::Transport for FarEnd {
             .push(bytes.to_vec());
         Ok(())
     }
+}
+
+/// The scope of a node the test cluster does not have
+/// (`configure::fixture::TestCluster::absent`): what a test asks of a node
+/// no process runs, by a name taken from the cluster and never invented.
+#[must_use]
+pub fn absent_node() -> String {
+    let cluster = configure::fixture::test_cluster();
+    format!("{}/node/{}", cluster.scope(), cluster.absent())
 }
 
 /// A send step over `storage` of the test cluster's first node, run by the

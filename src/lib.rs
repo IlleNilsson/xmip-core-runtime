@@ -9,6 +9,7 @@
 //! it is stopped. [`start`] is the first three phases
 //! alone, for a surface that validates and plans a node without running it.
 
+pub mod applied;
 pub mod arrival;
 pub mod capability_registry;
 pub mod catalogue;
@@ -30,6 +31,7 @@ pub mod message_path;
 pub mod operator;
 pub mod outcome;
 pub mod pickup;
+pub mod plane;
 pub mod pool;
 pub mod receiving;
 pub mod registration;

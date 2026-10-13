@@ -49,6 +49,7 @@ use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
 use crate::storage::Reached;
 
+mod operate;
 pub mod publication;
 mod serving;
 
@@ -91,6 +92,9 @@ pub struct Running {
     send: Arc<SendStep>,
     data: PathBuf,
     storage: Reached,
+    /// `[operate]`, and the file it was read from ([`Running::operate`]).
+    operate: Option<configure::OperateConfiguration>,
+    configuration: PathBuf,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
 }
@@ -110,6 +114,7 @@ impl Running {
         let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
         let data = document.service.data_directory(Path::new(path));
+        let operate = document.operate.clone();
         let reaching = crate::storage::plan(&document, path, &linked)?;
 
         let declared: Declarations = linked
@@ -220,6 +225,8 @@ impl Running {
             send,
             data,
             storage,
+            operate,
+            configuration: PathBuf::from(path),
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
