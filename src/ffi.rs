@@ -24,11 +24,14 @@ pub mod operate;
 pub mod order;
 pub mod process;
 pub mod publication;
+pub mod remote;
 /// The library pins itself when Windows loads it; `build.rs` does the same
 /// for `dlclose` (`xmip_operate.h` section 1).
 #[cfg(windows)]
 pub mod resident;
 pub mod rule;
+pub mod security_role;
+pub mod served;
 pub mod start;
 pub mod subscription;
 pub mod topology;
