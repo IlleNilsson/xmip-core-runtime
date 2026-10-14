@@ -148,7 +148,9 @@ fn watch(shared: &Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "node")]
     use crate::plane::Remote;
+    #[cfg(feature = "node")]
     use crate::plane::local::{Acceptor, place};
 
     #[test]
@@ -166,7 +168,8 @@ mod tests {
     /// Decided by the owner, 2026-10-13: *a local call waits at most a set
     /// time, then says the node did not answer and shows it so.* An
     /// endpoint that takes the connection and never answers stands for a
-    /// hung node.
+    /// hung node: the node's end, so only where the node is built.
+    #[cfg(feature = "node")]
     #[test]
     fn a_node_that_does_not_answer_within_the_wait_is_unreachable_at_once_after() {
         let name = format!("xmip-deadline-test-{}", std::process::id());

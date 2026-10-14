@@ -11,8 +11,8 @@
 use abi::ffi::{Str, status};
 
 use crate::design;
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 
 /// Read both texts, answer, and write the answer or the refusal in the
 /// header's text shape: its true length in `out_len` whether or not it fit.

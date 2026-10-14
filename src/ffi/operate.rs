@@ -16,6 +16,7 @@ use abi::ffi::{Str, status};
 use abi::operate::{HealthEntry, Measurement, Operate};
 use std::time::Duration;
 
+use crate::ffi::text::{borrow, scope_text};
 use crate::operator::{Operator, announce_change, change_clock};
 use crate::wire::{from_wire_counted, wire_health};
 
@@ -34,29 +35,6 @@ impl Operator {
             destroy: Some(destroy_entry),
         }
     }
-}
-
-pub(crate) fn borrow(text: &str) -> Str {
-    Str {
-        ptr: text.as_ptr(),
-        len: text.len(),
-    }
-}
-
-/// The scope a surface passed, as `&str`, or `None` if it is not UTF-8 —
-/// which the header says to answer with `XMIP_E_MALFORMED`.
-///
-/// # Safety
-/// `scope` must point at `scope.len` readable bytes, as the header requires.
-pub(crate) unsafe fn scope_text<'a>(scope: Str) -> Option<&'a str> {
-    if scope.ptr.is_null() {
-        return Some("");
-    }
-
-    // SAFETY: the caller upholds the header's contract on `scope`.
-    let bytes = unsafe { core::slice::from_raw_parts(scope.ptr, scope.len) };
-
-    core::str::from_utf8(bytes).ok()
 }
 
 /// `health` in the table. Fill up to `cap`, report the true count.

@@ -9,9 +9,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::plane::call::WAIT;
+use crate::plane::call::{LONGEST_WAIT, WAIT};
 use crate::plane::line::Line;
-use crate::plane::served::LONGEST_WAIT;
 use crate::plane::shared::Shared;
 
 /// Follow until the surface ends: reach the node, hold its wait while it

@@ -10,15 +10,21 @@
 //! 2026-10-02). It is not section 14, a node's Subscriptions.
 #![allow(unsafe_code)]
 
-use abi::ffi::{Str, status};
+#[cfg(feature = "node")]
+use abi::ffi::Str;
+use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::{EventSubscription, Noun, PauseState, Unheard};
+#[cfg(feature = "node")]
+use observe::Noun;
+use observe::{EventSubscription, PauseState, Unheard};
 use serde_json::{Value, json};
+#[cfg(feature = "node")]
 use xevent::hub::Hub;
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
+#[cfg(feature = "node")]
+use crate::ffi::text::scope_text;
 
 /// A list of Event subscriptions, and the members not heard, as the header
 /// writes it.
@@ -60,6 +66,7 @@ fn listed<'a>(
 /// `node` points at its stated length of readable bytes; `out` has room for
 /// `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_event_subscriptions_v1(
     node: Str,
     out: *mut u8,
@@ -84,6 +91,7 @@ pub unsafe extern "C" fn xmip_event_subscriptions_v1(
 /// Every `Str` points at its stated length of readable bytes; `said` has room
 /// for `said_cap` bytes; `said_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_event_subscription_act_v1(
     id: u64,
     act: Str,
@@ -138,7 +146,7 @@ pub unsafe extern "C" fn xmip_publication_event_subscriptions_v1(
     status::OK
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "node"))]
 mod tests {
     use xaudit::program_audit::ProgramAudit;
     use xcore::PartyId;
@@ -146,8 +154,8 @@ mod tests {
     use xevent::subscriber::Subscriber;
 
     use super::*;
-    use crate::ffi::operate::borrow;
     use crate::ffi::publication::{xmip_publication_free_v1, xmip_publication_read_v1};
+    use crate::ffi::text::borrow;
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {

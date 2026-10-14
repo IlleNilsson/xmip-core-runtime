@@ -12,27 +12,36 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use interprocess::ConnectWaitMode;
+use interprocess::os::windows::named_pipe::DuplexPipeStream;
 use interprocess::os::windows::named_pipe::pipe_mode::Bytes;
-use interprocess::os::windows::named_pipe::{DuplexPipeStream, PipeListener, PipeListenerOptions};
+#[cfg(feature = "node")]
+use interprocess::os::windows::named_pipe::{PipeListener, PipeListenerOptions};
+#[cfg(feature = "node")]
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 
-use crate::ffi::system::{cancel_io, user_name};
+use crate::ffi::system::cancel_io;
+#[cfg(feature = "node")]
+use crate::ffi::system::user_name;
 
 /// Who may open the pipe, as Windows writes a security descriptor: the
 /// account that made it — the node's — the system and the machine's
 /// administrators, each fully; nobody else. No ACE for anyone else is
 /// a refusal of everyone else.
+#[cfg(feature = "node")]
 const OPENERS: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)";
 
 /// What each direction of the pipe holds before a write waits on the
 /// reader: room for a call and its answer's frames.
+#[cfg(feature = "node")]
 const BUFFER: u32 = 64 * 1024;
 
 /// The made end, waiting for a connection.
+#[cfg(feature = "node")]
 pub(crate) struct Acceptor {
     inner: PipeListener<Bytes, Bytes>,
 }
 
+#[cfg(feature = "node")]
 impl Acceptor {
     /// Make the pipe at `path`, opened only by whom [`OPENERS`] names and
     /// never from another machine.
@@ -92,6 +101,7 @@ impl Stream {
     /// # Errors
     ///
     /// Where Windows does not say, or the client sent nothing.
+    #[cfg(feature = "node")]
     pub(crate) fn caller(&mut self) -> Result<String, String> {
         if self.read_ahead.is_empty() {
             let mut first = [0u8; 64];
@@ -183,6 +193,7 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
 }
 
 /// Wake a listener waiting at `path` for a connection.
+#[cfg(feature = "node")]
 pub(crate) fn wake(path: &Path) {
     let _ = connect(path, Duration::from_secs(1));
 }

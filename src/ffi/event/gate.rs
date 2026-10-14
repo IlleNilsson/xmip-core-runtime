@@ -21,7 +21,7 @@ use context::IdentityFacts;
 use xcore::Layer;
 use xevent::hub::Hub;
 
-use crate::ffi::operate::borrow;
+use crate::ffi::text::borrow;
 
 /// The name a denial by the hosting program's policy carries.
 const NAME: &str = "hosting-program";
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn xmip_event_authorize_v1(
 #[cfg(test)]
 pub(crate) mod allowed {
     use super::*;
-    use crate::ffi::operate::scope_text;
+    use crate::ffi::text::scope_text;
     use abi::ffi::Str;
 
     /// The Parties allowed.

@@ -9,14 +9,20 @@
 //! remove: a Subscription is added and removed in the TOML configuration.
 #![allow(unsafe_code)]
 
-use abi::ffi::{Str, status};
+#[cfg(feature = "node")]
+use abi::ffi::Str;
+use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::{Noun, PauseState, Scope, Subscription};
+#[cfg(feature = "node")]
+use observe::{Noun, Scope};
+use observe::{PauseState, Subscription};
 use serde_json::{Value, json};
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
+#[cfg(feature = "node")]
+use crate::ffi::text::scope_text;
+#[cfg(feature = "node")]
 use crate::pickup::Pickup;
 
 /// A list of Subscriptions as the header writes it.
@@ -50,6 +56,7 @@ fn listed<'a>(orders: &str, subscriptions: impl Iterator<Item = &'a Subscription
 /// `node` points at its stated length of readable bytes; `out` has room for
 /// `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_subscriptions_v1(
     node: Str,
     out: *mut u8,
@@ -79,6 +86,7 @@ pub unsafe extern "C" fn xmip_subscriptions_v1(
 /// Every `Str` points at its stated length of readable bytes; `said` has room
 /// for `said_cap` bytes; `said_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_subscription_act_v1(
     node: Str,
     name: Str,
@@ -145,14 +153,14 @@ pub unsafe extern "C" fn xmip_publication_subscriptions_v1(
     status::OK
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "node"))]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
     use crate::configured_subscription::ConfiguredSubscription;
-    use crate::ffi::operate::borrow;
     use crate::ffi::publication::{xmip_publication_free_v1, xmip_publication_read_v1};
+    use crate::ffi::text::borrow;
     use crate::pickup::tests::{published, subscription};
 
     /// This test's node: the test cluster's first, named apart so no other

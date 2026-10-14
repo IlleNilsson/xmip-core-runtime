@@ -32,6 +32,7 @@ pub(crate) fn cancel_io(open: &std::sync::Mutex<Option<usize>>) {
 /// # Errors
 ///
 /// Where Windows does not say.
+#[cfg(feature = "node")]
 pub(crate) fn user_name() -> Result<String, String> {
     use windows_sys::Win32::Security::Authentication::Identity::{
         GetUserNameExW, NameSamCompatible,

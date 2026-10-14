@@ -14,9 +14,9 @@ use abi::ffi::{Str, status};
 use abi::operate::remote::Served as ServedHandle;
 use xaudit::program_audit::ProgramAudit;
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::remote::{identity, texts};
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 use crate::plane::{Board, Listener, Published, Role};
 
 /// A listener and the board it answers from.

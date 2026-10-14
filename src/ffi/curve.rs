@@ -17,9 +17,9 @@ use abi::operate::Measurement;
 use abi::operate::publication::Curve as Handle;
 use observe::Curve;
 
-use crate::ffi::operate::{borrow, scope_text};
 use crate::ffi::publication::fill_copied;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::{borrow, scope_text};
 use crate::wire::wire_counted;
 
 /// A read curve and its points laid out as the header's, each string borrowed

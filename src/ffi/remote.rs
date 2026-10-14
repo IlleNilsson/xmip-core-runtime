@@ -13,8 +13,8 @@ use std::time::Duration;
 use abi::ffi::{Str, status};
 use abi::operate::remote::Remote as RemoteHandle;
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 use crate::plane::{Outcome, Remote};
 
 /// A remote, and a publication read whole but not yet handed over whole.

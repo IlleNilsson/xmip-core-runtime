@@ -8,14 +8,20 @@
 //! nodes and for a read publication alike.
 #![allow(unsafe_code)]
 
-use abi::ffi::{Str, status};
+#[cfg(feature = "node")]
+use abi::ffi::Str;
+use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::{DeadMessage, Scope};
+use observe::DeadMessage;
+#[cfg(feature = "node")]
+use observe::Scope;
 use serde_json::{Value, json};
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
+#[cfg(feature = "node")]
+use crate::ffi::text::scope_text;
+#[cfg(feature = "node")]
 use crate::pickup::{PUBLISHED, Pickup};
 
 /// A list of Dead Message Queue entries as the header writes it.
@@ -45,6 +51,7 @@ fn listed<'a>(orders: &str, dead: impl Iterator<Item = &'a DeadMessage>) -> Stri
 /// `node` points at its stated length of readable bytes; `out` has room for
 /// `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_dead_messages_v1(
     node: Str,
     out: *mut u8,
@@ -75,6 +82,7 @@ pub unsafe extern "C" fn xmip_dead_messages_v1(
 /// Every `Str` points at its stated length of readable bytes; `said` has room
 /// for `said_cap` bytes; `said_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_dead_message_replay_v1(
     node: Str,
     message: Str,
@@ -133,10 +141,10 @@ pub unsafe extern "C" fn xmip_publication_dead_messages_v1(
     status::OK
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "node"))]
 mod tests {
     use super::*;
-    use crate::ffi::operate::borrow;
+    use crate::ffi::text::borrow;
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {
