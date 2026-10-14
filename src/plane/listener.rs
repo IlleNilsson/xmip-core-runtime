@@ -35,11 +35,6 @@ use crate::plane::served::{answer, answer_local};
 /// connection to end.
 const WAKE: Duration = Duration::from_secs(1);
 
-/// How often a connection waiting on its surface looks whether the
-/// listener stops. An arriving byte wakes it at once; this bounds only how
-/// long a stop waits for an idle connection.
-pub(crate) const WATCH: Duration = Duration::from_millis(50);
-
 /// What every connection shares.
 pub(crate) struct Serve {
     pub(crate) published: Arc<dyn Published>,

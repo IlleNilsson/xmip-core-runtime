@@ -15,7 +15,7 @@ use net::watched::Watched;
 use serde_json::Value;
 
 use crate::plane::call;
-use crate::plane::listener::WATCH;
+use crate::plane::call::WATCH;
 use crate::plane::local::{self, Cancel, Stream};
 
 /// Whether the surface a line belongs to is ending.

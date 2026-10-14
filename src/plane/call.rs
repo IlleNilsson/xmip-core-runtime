@@ -3,9 +3,20 @@
 //! (`application/grpc+json`), and the answer's status in its trailers —
 //! the request built and the answer read here, for both ends, once.
 
+use std::time::Duration;
+
 use net::grpc;
 use net::http::{Request, Response};
 use serde_json::Value;
+
+/// How often a connection waiting on its peer looks whether its end stops
+/// — a listener stopping, a surface ending. An arriving byte wakes it at
+/// once; this bounds only how long a stop waits for an idle connection.
+pub(crate) const WATCH: Duration = Duration::from_millis(50);
+
+/// The longest one wait is held before it is answered with the revision
+/// unchanged: what a surface's own patience allows for.
+pub const LONGEST_WAIT: Duration = Duration::from_secs(25);
 
 /// The service a node's operate listener answers.
 pub const SERVICE: &str = "xmip.operate.v1.Operate";

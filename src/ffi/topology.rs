@@ -14,7 +14,7 @@
 
 use abi::ffi::{Str, status};
 
-use crate::ffi::operate::borrow;
+use crate::ffi::text::borrow;
 use crate::wire::{from_wire_kind, from_wire_origin, from_wire_pattern};
 
 /// The word and the name of whatever `value` reads as, both static.

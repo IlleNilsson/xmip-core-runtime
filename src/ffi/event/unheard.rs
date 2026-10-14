@@ -6,13 +6,18 @@
 //! subscriptions list alike.
 #![allow(unsafe_code)]
 
+#[cfg(feature = "node")]
 use abi::ffi::status;
+#[cfg(feature = "node")]
 use abi::operate::event::EventBatch;
 use observe::Unheard;
 use serde_json::{Value, json};
+#[cfg(feature = "node")]
 use xevent::hub::Hub;
 
-use super::Batch;
+#[cfg(feature = "node")]
+use super::hub::Batch;
+#[cfg(feature = "node")]
 use crate::ffi::rule::refuse;
 
 /// The members not heard, as the header writes them.
@@ -37,6 +42,7 @@ pub(super) fn listed(unheard: &[Unheard]) -> Value {
 /// `batch` is null or a batch next returned and nobody freed; `out` has
 /// room for `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_event_batch_unheard_v1(
     batch: *const EventBatch,
     out: *mut u8,
@@ -62,6 +68,7 @@ pub unsafe extern "C" fn xmip_event_batch_unheard_v1(
 /// # Safety
 /// `out` has room for `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_event_unheard_v1(
     out: *mut u8,
     cap: usize,

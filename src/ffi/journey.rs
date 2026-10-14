@@ -8,14 +8,20 @@
 //! process's nodes and for a read publication alike.
 #![allow(unsafe_code)]
 
-use abi::ffi::{Str, status};
+#[cfg(feature = "node")]
+use abi::ffi::Str;
+use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::{Act, FailedJourneys, Scope};
+use observe::FailedJourneys;
+#[cfg(feature = "node")]
+use observe::{Act, Scope};
 use serde_json::{Value, json};
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
+#[cfg(feature = "node")]
+use crate::ffi::text::scope_text;
+#[cfg(feature = "node")]
 use crate::send_step::{PUBLISHED_FAILED, PortFigures, SendStep};
 
 /// A list of failed Journeys as the header writes it: each Port's, with the
@@ -64,6 +70,7 @@ fn listed<'a>(
 /// `node` and `port` point at their stated length of readable bytes; `out`
 /// has room for `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_failed_journeys_v1(
     node: Str,
     port: Str,
@@ -98,6 +105,7 @@ pub unsafe extern "C" fn xmip_failed_journeys_v1(
 
 /// Each Port's page of failed Journeys, as [`xmip_failed_journeys_v1`]
 /// lists them.
+#[cfg(feature = "node")]
 fn failed(
     node: &str,
     port: &str,
@@ -168,6 +176,7 @@ pub unsafe extern "C" fn xmip_publication_failed_journeys_v1(
 /// Every `Str` points at its stated length of readable bytes; `said` has room
 /// for `said_cap` bytes; `said_len` is writable.
 #[unsafe(no_mangle)]
+#[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_journey_act_v1(
     node: Str,
     journey: Str,
@@ -197,6 +206,7 @@ pub unsafe extern "C" fn xmip_journey_act_v1(
 }
 
 /// What came of `act` on `journey` at `node`, and its status.
+#[cfg(feature = "node")]
 fn acted(node: &str, journey: &str, act: &str, who: &str) -> (i32, String) {
     let Some(act) = Act::named(act).filter(|act| matches!(act, Act::Retry | Act::Dismiss)) else {
         let refused = observe::Noun::Journey.act(act).err().unwrap_or_default();
@@ -218,10 +228,10 @@ fn acted(node: &str, journey: &str, act: &str, who: &str) -> (i32, String) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "node"))]
 mod tests {
     use super::*;
-    use crate::ffi::operate::borrow;
+    use crate::ffi::text::borrow;
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {

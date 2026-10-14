@@ -31,7 +31,9 @@ mod system;
 #[path = "local/windows.rs"]
 mod system;
 
-pub(crate) use system::{Acceptor, Cancel, Stream, connect, wake};
+#[cfg(feature = "node")]
+pub(crate) use system::{Acceptor, wake};
+pub(crate) use system::{Cancel, Stream, connect};
 
 /// The pipe namespace, Windows' folder of local endpoints.
 pub const WINDOWS_FOLDER: &str = r"\\.\pipe\";

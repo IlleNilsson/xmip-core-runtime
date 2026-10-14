@@ -17,7 +17,7 @@ use xevent::Event;
 use xevent::filter::Filter;
 use xevent::subscriber::Subscriber;
 
-use crate::ffi::operate::{borrow, scope_text};
+use crate::ffi::text::{borrow, scope_text};
 use crate::wire::{outcome_of, stage_of, wire_outcome, wire_stage};
 
 /// The text an Event's identifiers are written as, and its diagnostics as

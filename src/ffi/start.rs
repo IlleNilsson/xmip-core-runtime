@@ -9,7 +9,7 @@
 
 use abi::ffi::{Str, status};
 
-use crate::ffi::operate::scope_text;
+use crate::ffi::text::scope_text;
 use crate::start::{start_published, validate};
 
 /// `xmip_start_v1`: [`crate::start::start`] from a surface. Publishes whatever it found and

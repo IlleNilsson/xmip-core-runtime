@@ -12,8 +12,8 @@ use std::path::Path;
 use abi::ffi::{Str, status};
 use observe::{Noun, Order};
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 
 /// `observe::Order::leave`, forwarded: `act` on the `noun` called `target`
 /// of the node at `node`, left in `orders` by `who`.
@@ -97,7 +97,7 @@ mod tests {
     use observe::Act;
 
     use super::*;
-    use crate::ffi::operate::borrow;
+    use crate::ffi::text::borrow;
 
     /// The node the orders are left for: the test cluster's second.
     fn node() -> String {

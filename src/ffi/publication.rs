@@ -23,8 +23,8 @@ use abi::operate::publication::{
 use abi::operate::{HealthEntry, Measurement};
 use observe::{Publication, RunList};
 
-use crate::ffi::operate::{borrow, scope_text};
 use crate::ffi::rule::{fill, refuse};
+use crate::ffi::text::{borrow, scope_text};
 use crate::wire::{wire_counted, wire_health, wire_kind, wire_origin, wire_pattern};
 
 /// A read publication and its values laid out as the header's, each string

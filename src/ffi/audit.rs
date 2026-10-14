@@ -36,8 +36,8 @@ use xaudit::emit::AuditOutcome;
 use xaudit::program_audit::ProgramAudit;
 use xcore::Severity;
 
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 use crate::wire::{from_wire_phase, from_wire_severity};
 
 /// `audit::program_audit::ProgramAudit::record`, forwarded.
@@ -291,7 +291,7 @@ pub(crate) unsafe fn pairs<Kept: FromIterator<(String, String)>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::operate::borrow;
+    use crate::ffi::text::borrow;
     use abi::operate::audit::{phase, severity};
     use std::fs;
 

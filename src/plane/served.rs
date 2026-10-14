@@ -21,17 +21,14 @@ use xcore::{ExecutionPhase, Severity};
 
 use crate::applied::{Applied, apply};
 use crate::plane::call::{self, ACT, PUBLICATION, WAIT};
-use crate::plane::listener::{Serve, WATCH};
+use crate::plane::call::{LONGEST_WAIT, WATCH};
+use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
 use crate::plane::role::{Role, admitted};
 
 /// The most a handshake, or a write to a surface that does not read,
 /// waits.
 const PATIENCE: Duration = Duration::from_secs(5);
-
-/// The longest one wait is held before it is answered with the revision
-/// unchanged: what a surface's own patience allows for.
-pub const LONGEST_WAIT: Duration = Duration::from_secs(25);
 
 /// The audit action every act through the gate records — the one
 /// `GatedOperator.AuditAction` names.

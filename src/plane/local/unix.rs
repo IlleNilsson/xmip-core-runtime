@@ -6,17 +6,24 @@
 //! to do.
 
 use std::io::{Read, Write};
+#[cfg(feature = "node")]
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "node")]
+use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+#[cfg(feature = "node")]
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// The made end, waiting for a connection; its socket file goes with it.
+#[cfg(feature = "node")]
 pub(crate) struct Acceptor {
     inner: UnixListener,
     path: PathBuf,
 }
 
+#[cfg(feature = "node")]
 impl Acceptor {
     /// Make the socket at `path`, readable and writable by its owner only.
     /// A socket file a node that stopped left behind is replaced; one a
@@ -52,6 +59,7 @@ impl Acceptor {
     }
 }
 
+#[cfg(feature = "node")]
 impl Drop for Acceptor {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -68,6 +76,7 @@ impl Stream {
     /// # Errors
     ///
     /// Where the kernel does not say.
+    #[cfg(feature = "node")]
     pub(crate) fn caller(&mut self) -> Result<String, String> {
         let uid = peer_uid(&self.0).map_err(|error| format!("the caller is not known: {error}"))?;
         Ok(nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
@@ -92,13 +101,13 @@ impl Stream {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(feature = "node", any(target_os = "linux", target_os = "android")))]
 fn peer_uid(stream: &UnixStream) -> nix::Result<u32> {
     use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
     getsockopt(stream, PeerCredentials).map(|credentials| credentials.uid())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(feature = "node", not(any(target_os = "linux", target_os = "android"))))]
 fn peer_uid(stream: &UnixStream) -> nix::Result<u32> {
     nix::unistd::getpeereid(stream).map(|(uid, _)| uid.as_raw())
 }
@@ -141,6 +150,7 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
 }
 
 /// Wake a listener waiting at `path` for a connection.
+#[cfg(feature = "node")]
 pub(crate) fn wake(path: &Path) {
     let _ = UnixStream::connect(path);
 }

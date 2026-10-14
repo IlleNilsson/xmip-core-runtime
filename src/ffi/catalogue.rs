@@ -11,8 +11,8 @@
 use abi::ffi::{Str, status};
 
 use crate::catalogue;
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 
 /// `xmip_technology_catalogue_v1`: [`catalogue::catalogue`].
 ///

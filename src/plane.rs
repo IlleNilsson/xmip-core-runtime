@@ -24,20 +24,25 @@
 //! wire, and the publication they carry is the TOML its file holds, read
 //! by the one reader every surface reads with.
 
+#[cfg(feature = "node")]
 pub mod board;
 pub mod call;
 pub mod deadline;
 mod follow;
 mod line;
+#[cfg(feature = "node")]
 pub mod listener;
 pub mod local;
 pub mod remote;
 pub mod role;
+#[cfg(feature = "node")]
 pub mod served;
 mod shared;
 
+#[cfg(feature = "node")]
 pub use board::{Board, Published};
 pub use line::host_of;
+#[cfg(feature = "node")]
 pub use listener::Listener;
 pub use remote::{Outcome, Remote, State};
 pub use role::Role;

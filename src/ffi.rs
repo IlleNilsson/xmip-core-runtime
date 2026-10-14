@@ -7,13 +7,25 @@
 //! code is allowed in these files and nowhere else in the runtime; each file
 //! lowers the crate's `deny` at its top, and `test/Unsafe.Test.ps1` holds the
 //! folder.
+//!
+//! A remote build (`remote` without `node`) carries what a surface reads
+//! and records with: sections 7, 8, 9 and 18, section 17's client, and of
+//! sections 11, 14, 15 and 16 only what a read publication carries; the rest
+//! is the node's.
 
+#[cfg(feature = "remote")]
 pub mod audit;
+#[cfg(feature = "node")]
 pub mod catalogue;
+#[cfg(feature = "remote")]
 pub mod curve;
+#[cfg(feature = "remote")]
 pub mod dead_message;
+#[cfg(feature = "node")]
 pub mod design;
+#[cfg(feature = "remote")]
 pub mod event;
+#[cfg(feature = "remote")]
 pub mod journey;
 /// The contract trait of a loaded module (ADR-0057 clause 8 step 2).
 #[cfg(feature = "dynamic-loading")]
@@ -21,20 +33,33 @@ pub mod loaded_contract;
 /// Opening a module for real. Behind the feature that has always named it.
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_module;
+#[cfg(feature = "node")]
 pub mod operate;
+#[cfg(feature = "node")]
 pub mod order;
+#[cfg(feature = "node")]
 pub mod process;
+#[cfg(feature = "remote")]
 pub mod publication;
+#[cfg(feature = "remote")]
 pub mod remote;
 /// The library pins itself when Windows loads it; `build.rs` does the same
 /// for `dlclose` (`xmip_operate.h` section 1).
 #[cfg(windows)]
 pub mod resident;
+#[cfg(feature = "remote")]
 pub mod rule;
+#[cfg(feature = "remote")]
 pub mod security_role;
+#[cfg(feature = "node")]
 pub mod served;
+#[cfg(feature = "node")]
 pub mod start;
+#[cfg(feature = "remote")]
 pub mod subscription;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "remote"))]
 pub(crate) mod system;
+#[cfg(feature = "remote")]
+mod text;
+#[cfg(feature = "remote")]
 pub mod topology;

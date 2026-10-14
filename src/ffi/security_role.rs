@@ -6,8 +6,8 @@
 
 use abi::ffi::{Str, status};
 
-use crate::ffi::operate::{borrow, scope_text};
 use crate::ffi::rule::refuse;
+use crate::ffi::text::{borrow, scope_text};
 use crate::plane::role::{Role, admitted};
 
 /// The role a word names, Observer for any other.

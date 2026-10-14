@@ -15,12 +15,15 @@
 //! `xmip-core-observe` is Operation.
 
 use abi::operate::audit::{phase, severity};
+#[cfg(feature = "node")]
 use abi::operate::event::{action, outcome};
 use abi::operate::publication::{kind, origin, pattern};
 use abi::operate::{counted, health};
+#[cfg(feature = "node")]
 use node::Stage;
 use observe::{Counted, Health, NodeKind, Origin, Pattern};
 use xcore::{ExecutionPhase, Severity};
+#[cfg(feature = "node")]
 use xevent::outcome::Outcome;
 
 /// The header's `int` for an observe `Health`.
@@ -167,6 +170,7 @@ pub(crate) const fn from_wire_severity(value: i32) -> Option<Severity> {
 }
 
 /// The stage the header's `XmipAction` names.
+#[cfg(feature = "node")]
 pub(crate) const fn stage_of(value: i32) -> Option<Stage> {
     match value {
         action::RECEIVE => Some(Stage::Receive),
@@ -177,6 +181,7 @@ pub(crate) const fn stage_of(value: i32) -> Option<Stage> {
 }
 
 /// A stage as the header's `XmipAction`.
+#[cfg(feature = "node")]
 pub(crate) const fn wire_stage(stage: Stage) -> i32 {
     match stage {
         Stage::Receive => action::RECEIVE,
@@ -186,6 +191,7 @@ pub(crate) const fn wire_stage(stage: Stage) -> i32 {
 }
 
 /// The outcome the header's `XmipOutcome` names.
+#[cfg(feature = "node")]
 pub(crate) const fn outcome_of(value: i32) -> Option<Outcome> {
     match value {
         outcome::SUCCESS => Some(Outcome::Success),
@@ -201,6 +207,7 @@ pub(crate) const fn outcome_of(value: i32) -> Option<Outcome> {
 }
 
 /// An outcome as the header's `XmipOutcome`.
+#[cfg(feature = "node")]
 pub(crate) const fn wire_outcome(ended: Outcome) -> i32 {
     match ended {
         Outcome::Success => outcome::SUCCESS,
@@ -278,6 +285,7 @@ mod tests {
         assert_eq!(patterns, (0..7).collect::<Vec<i32>>());
     }
 
+    #[cfg(feature = "node")]
     #[test]
     fn every_stage_and_outcome_crosses_as_the_header_numbers_it() {
         for stage in Stage::ALL {

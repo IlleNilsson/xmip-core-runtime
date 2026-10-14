@@ -12,7 +12,7 @@ use abi::ffi::{Str, status};
 use node::{Capability, NodeRole, Stage};
 
 use super::{fill, refuse};
-use crate::ffi::operate::{borrow, scope_text};
+use crate::ffi::text::{borrow, scope_text};
 
 /// `node::Stage::WORDS`, forwarded. Static.
 ///

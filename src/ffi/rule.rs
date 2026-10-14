@@ -28,7 +28,7 @@ use abi::ffi::{Str, status};
 use abi::operate::HealthEntry;
 use observe::{Counted, Health, Scope, Standing};
 
-use crate::ffi::operate::{borrow, scope_text};
+use crate::ffi::text::{borrow, scope_text};
 use crate::wire::{from_wire_counted, from_wire_health, wire_counted, wire_health};
 
 /// The header's fill shape: up to `cap` entries into `out`, the true count

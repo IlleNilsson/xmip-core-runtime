@@ -15,8 +15,8 @@ use abi::ffi::{Str, status};
 use serde_json::{Map, Value, json};
 
 use crate::ffi::audit::pairs;
-use crate::ffi::operate::scope_text;
 use crate::ffi::rule::refuse;
+use crate::ffi::text::scope_text;
 
 /// `xmip_process_declare_v1`: [`node::Declaration::declare`], the file left
 /// standing for the caller to take away where its process ends.
@@ -127,7 +127,7 @@ pub unsafe extern "C" fn xmip_process_declarations_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::operate::borrow;
+    use crate::ffi::text::borrow;
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {
