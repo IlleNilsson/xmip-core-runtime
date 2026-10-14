@@ -19,6 +19,7 @@
 //! receive_idle = "1m"                         # pool::RECEIVE_IDLE
 //! receive_poll = "1s"                         # receiving::RECEIVE_POLL
 //! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
+//! receive_drain = "1s"                        # receiving::RECEIVE_DRAIN
 //! send_threads_per_hardware_thread = 2        # send_step::SEND_THREADS_PER_HARDWARE_THREAD
 //! send_idle = "1m"                            # send_step::SEND_IDLE
 //! send_lease = "30s"                          # send_step::SEND_LEASE
@@ -38,7 +39,7 @@ use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 use crate::ledger::SEGMENTS;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
-use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
+use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL};
 use crate::send_step::{SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD};
 
 /// The longest any `[tuning]` duration may be: an hour.
@@ -99,6 +100,14 @@ pub const TUNING: &Settings = &Settings {
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(RECEIVE_BACKOFF)),
             meaning: "How long a polled Receive Location rests after a failure that may mend.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_drain",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(RECEIVE_DRAIN)),
+            meaning: "How long a stopping Receive Location goes on taking what its far end \
+                      already let go of.",
             applies: Applies::Both,
         },
         Setting {
@@ -173,6 +182,7 @@ pub struct Tuning {
     pub receive_idle: Duration,
     pub receive_poll: Duration,
     pub receive_backoff: Duration,
+    pub receive_drain: Duration,
     pub send_threads_per_hardware_thread: usize,
     pub send_idle: Duration,
     pub send_lease: Duration,
@@ -226,6 +236,7 @@ impl Tuning {
             receive_idle: duration("receive_idle"),
             receive_poll: duration("receive_poll"),
             receive_backoff: duration("receive_backoff"),
+            receive_drain: duration("receive_drain"),
             send_threads_per_hardware_thread: count("send_threads_per_hardware_thread"),
             send_idle: duration("send_idle"),
             send_lease: duration("send_lease"),
@@ -261,6 +272,7 @@ impl Tuning {
         Pace {
             poll: self.receive_poll,
             backoff: self.receive_backoff,
+            drain: self.receive_drain,
         }
     }
 
@@ -310,7 +322,7 @@ mod tests {
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
              send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n\
-             local_timeout = \"500ms\"\n",
+             receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\n",
         )
         .expect("reads");
         assert_eq!(tuning.local_timeout, Duration::from_millis(500));
@@ -322,6 +334,7 @@ mod tests {
             Pace {
                 poll: Duration::from_millis(100),
                 backoff: Duration::from_secs(2),
+                drain: Duration::from_millis(250),
             }
         );
         assert_eq!(tuning.chunk(), 8 * 1440);

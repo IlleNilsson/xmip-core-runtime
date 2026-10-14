@@ -48,6 +48,7 @@ mod audited;
 mod bounded;
 mod child_process;
 mod dead_message_queue;
+mod drained;
 mod halts_at_publication;
 mod held;
 mod journey_act;

@@ -299,7 +299,9 @@ impl Running {
     }
 
     /// Stop: every Receive Location takes nothing more once its current
-    /// receive returns, what it took is carried whole, and then the
+    /// receive returns — one whose far end already let go of what it
+    /// handed over first drains what is queued for it (ADR-0018, amendment
+    /// 2026-10-15) — what it took is carried whole, and then the
     /// transports and the loaded Modules are let go (ADR-0018 clause 12).
     /// Returns what became of every Stream.
     pub fn stop(mut self) -> Outcomes {

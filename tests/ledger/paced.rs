@@ -151,6 +151,7 @@ fn an_idle_polled_location_rests_its_poll_between_receives() {
     let pace = Pace {
         poll: REST,
         backoff: NEVER,
+        ..Pace::default()
     };
     let served = serve("paced-poll", Waiting::Polled("listed"), false, pace, true);
     assert_eq!(served.asked, RECEIVES);
@@ -165,6 +166,7 @@ fn a_polled_location_backs_off_after_a_failure_that_may_mend() {
     let pace = Pace {
         poll: NEVER,
         backoff: REST,
+        ..Pace::default()
     };
     let served = serve("paced-backoff", Waiting::Polled("listed"), true, pace, true);
     let floor = REST * u32::try_from(served.asked - 1).expect("few");
@@ -177,6 +179,7 @@ fn a_location_whose_receive_waits_is_asked_again_at_once() {
     let pace = Pace {
         poll: NEVER,
         backoff: NEVER,
+        ..Pace::default()
     };
     let quiet = serve("paced-waits", Waiting::Waits("accepts"), false, pace, true);
     assert!(quiet.took < NEVER, "it rested: {:?}", quiet.took);
@@ -195,6 +198,7 @@ fn a_stop_ends_a_rest_at_once() {
     let pace = Pace {
         poll: NEVER,
         backoff: NEVER,
+        ..Pace::default()
     };
     let served = serve("paced-stop", Waiting::Polled("listed"), false, pace, false);
     // Stopped in its first rest, of a minute: it did not wait it out.
