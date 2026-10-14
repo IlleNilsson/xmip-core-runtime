@@ -104,7 +104,10 @@ fn keys(keys: &Path) -> Box<dyn KeyStore> {
 
 /// The test Storage node in `place`.
 fn test_node(place: &Path) -> Arc<dyn XmipStorage> {
-    std::fs::create_dir_all(place.join("key")).expect("its directory");
+    // The key directory is the key store's to make: it makes it private,
+    // and a directory made here with the default mode it would refuse
+    // (ADR-0063 clause 4).
+    std::fs::create_dir_all(place).expect("its directory");
     let runtime = RocksDb::open(&place.join("runtime")).expect("the runtime database");
     let administration = Sqlite::in_memory().expect("the administration database");
     let audit = Sqlite::in_memory().expect("the audit database");

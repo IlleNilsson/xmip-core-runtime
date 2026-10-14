@@ -28,7 +28,7 @@ crate-type = ["rlib", "cdylib"]
 unsafe_code = "deny"
 
 # What a remote surface needs — `abi`, `node`, `observe`, `net`, `tls`,
-# `serde_json` and the local endpoint's — is always linked; every
+# `serde_json` and the local endpoint's connecting end — is always linked; every
 # dependency marked optional is the running node's, and only the `node`
 # feature turns it on (see [features]).
 [dependencies]
@@ -97,9 +97,12 @@ widestring = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_Security_Authentication_Identity"] }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
-# and its name.
+# and its name. Only the node's side asks who connected, so only `node`
+# links it; a remote build connects with the standard library alone, and
+# the phone's (iOS) never compiles `nix`'s socket module, which names
+# macOS-only constants on every Apple target.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["socket", "user"] }
+nix = { version = "0.31", default-features = false, features = ["socket", "user"], optional = true }
 
 [dev-dependencies]
 # This crate with its `test-support`, so the integration tests (tests/) take
@@ -167,6 +170,7 @@ node = [
     "dep:persist",
     "dep:secret",
     "dep:codec",
+    "dep:nix",
 ]
 # A surface that follows nodes on other machines and runs none, the phone
 # (ADR-0014, amendment 2026-10-14): `plane::remote` and the operate plane's
