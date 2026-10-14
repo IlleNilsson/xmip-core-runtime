@@ -86,7 +86,7 @@ fn a_send_port_group_opens_one_journey_per_port_each_sent_alone() {
             let failed = journey(storage.as_ref(), to_archive);
             assert_eq!(failed.state, JourneyState::Failed, "alone");
             assert_eq!(took(&out_took), ["order 1"]);
-            assert!(took(&archive_took).is_empty());
+            assert_eq!(took(&archive_took), [] as [String; 0]);
             let figures = runtime.send.figures();
             assert_eq!((figures["Out"].sent, figures["Archive"].failed), (1, 1));
         },

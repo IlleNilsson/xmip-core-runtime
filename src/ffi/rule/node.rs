@@ -351,7 +351,7 @@ mod tests {
 
         let (code, words, said) = declared("Sending+relay");
         assert_eq!(code, status::INVALID);
-        assert!(words.is_empty());
+        assert_eq!(words, [] as [String; 0]);
         assert_eq!(
             said,
             NodeRole::declared("Sending+relay").expect_err("refused")

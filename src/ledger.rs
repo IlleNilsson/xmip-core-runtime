@@ -328,7 +328,7 @@ mod tests {
         let kept = write_stream(storage, stream, &mut [].as_slice(), 4096).expect("written");
         assert_eq!((kept.length, kept.chunks), (0, 1));
         let only = storage.read_chunk(stream, 0).expect("read").expect("there");
-        assert!(only.bytes.is_empty());
+        assert_eq!(only.bytes, [] as [u8; 0]);
         assert!(storage.read_chunk(stream, 1).expect("read").is_none());
         let kept = kept.stream(kept_in, None);
         assert_eq!(kept.load().expect("read back"), b"");

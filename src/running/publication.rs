@@ -383,6 +383,7 @@ fn drawn(cluster: &str, node: &str, snapshot: &Snapshot) -> Topology {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use observe::FailedJourney;
 
     fn configured(name: &str) -> configure::ConfiguredLocation {
         configure::ConfiguredLocation {
@@ -515,7 +516,7 @@ mod tests {
         assert_eq!(published.len(), 1, "none now is published too");
         let out = &published[0];
         assert_eq!((out.count, out.blocked), (0, false), "none now");
-        assert!(out.journeys.is_empty());
+        assert_eq!(out.journeys, [] as [FailedJourney; 0]);
         let last = out.last_failure.as_ref().expect("history kept apart");
         assert_eq!(
             (last.journey.as_str(), last.reason.as_str()),

@@ -607,6 +607,6 @@ attempts = 2
         let (code, handle, said) = read("not = [toml");
         assert_eq!(code, status::INVALID);
         assert!(handle.is_null());
-        assert!(!said.is_empty());
+        assert_ne!(said, "");
     }
 }

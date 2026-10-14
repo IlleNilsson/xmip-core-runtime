@@ -451,7 +451,7 @@ mod tests {
 
         assert!(verdict.held(), "got: {verdict:?}");
         assert_eq!(verdict.status, status::OK);
-        assert!(verdict.diagnostics.is_empty());
+        assert_eq!(verdict.diagnostics, [] as [String; 0]);
 
         assert_eq!(bound.implies("descriptor").as_deref(), Some("any"));
         assert_eq!(bound.implies("nothing-it-determines"), None);
