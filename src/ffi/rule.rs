@@ -636,7 +636,7 @@ mod tests {
 
         assert_eq!(code, status::OK);
         assert_eq!(read, [node.as_str(), "receive", "orders"]);
-        assert!(parts("xmip:///").1.is_empty());
+        assert_eq!(parts("xmip:///").1, [] as [String; 0]);
     }
 
     #[test]

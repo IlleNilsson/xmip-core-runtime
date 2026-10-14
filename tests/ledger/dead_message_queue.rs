@@ -17,6 +17,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
+use journey::Journey;
 use persist::fixture::Memory;
 use persist::storage::{Ask, Embedded, Query, Span, XmipStorage, dead_message_queue, named};
 use receive::ReceivedStream;
@@ -91,7 +92,7 @@ fn unmatched(storage: &Arc<dyn XmipStorage>, count: u32) -> Vec<MessageId> {
                 let Arrived::Unroutable { work, .. } = &carried.arrived else {
                     panic!("nothing matched: {:?}", carried.arrived);
                 };
-                assert!(carried.journeys.is_empty());
+                assert_eq!(carried.journeys, [] as [Journey; 0]);
                 work.message.message_id()
             })
             .collect()

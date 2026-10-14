@@ -432,7 +432,7 @@ address = "C:/out"
         assert_eq!(tree.receive_locations_to_start, document.receive_locations);
         assert!(tree.send_locations_to_start.is_empty(), "start = false");
         assert_eq!(tree.send_locations_not_started, ["billing-out"], "known");
-        assert!(tree.receive_locations_not_started.is_empty());
+        assert_eq!(tree.receive_locations_not_started, [] as [String; 0]);
         assert_eq!(tree.verified_extensions.len(), 1);
         assert!(!tree.verified_extensions[0].loaded_during_startup);
     }
@@ -448,7 +448,10 @@ address = "C:/out"
         let (tree, _) =
             build_execution_tree(document, &[], &Declarations::new()).expect("valid tree");
 
-        assert!(tree.receive_locations_to_start.is_empty());
+        assert_eq!(
+            tree.receive_locations_to_start,
+            [] as [ConfiguredLocation; 0]
+        );
         assert_eq!(tree.receive_locations_not_started, ["orders-in"]);
     }
 
@@ -594,7 +597,7 @@ filter = "MessageType = 'Order'"
             tree.send_locations_to_start.is_empty(),
             "the second takes it"
         );
-        assert!(tree.send_ports.is_empty());
+        assert_eq!(tree.send_ports, [] as [DesignedSendPort; 0]);
         assert_eq!(tree.subscriptions.len(), 1);
         assert_eq!(tree.subscriptions[0].id, "billing");
 
@@ -606,7 +609,7 @@ filter = "MessageType = 'Order'"
             tree.send_ports[0].on_failure,
             Some(configure::OnFailure::Block)
         );
-        assert!(tree.receive_ports.is_empty());
+        assert_eq!(tree.receive_ports, [] as [BoundReceivePort; 0]);
     }
 
     #[test]

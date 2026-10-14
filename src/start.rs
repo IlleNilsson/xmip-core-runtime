@@ -465,7 +465,7 @@ symbol = "xmip_create_module_v1"
         // validate, changes nothing an observer would see.
         let problems = validate("this is not toml {{{");
 
-        assert!(!problems.is_empty());
+        assert_ne!(problems, [] as [String; 0]);
         assert!(
             problems[0].to_lowercase().contains("parse") || problems[0].contains("configuration")
         );

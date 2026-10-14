@@ -56,7 +56,7 @@ fn a_send_that_fails_is_written_failed_with_why_and_its_sender_was_acknowledged(
                     "kept"
                 );
                 assert_eq!(waiting(runtime), [id], "kept in its queue for an operator");
-                assert!(took(&taken).is_empty());
+                assert_eq!(took(&taken), [] as [String; 0]);
                 let figures = &runtime.send.figures()["Out"];
                 assert_eq!((figures.sent, figures.failed), (0, 1));
                 let (journey, why) = figures.last_failure.clone().expect("visible");
@@ -83,7 +83,7 @@ fn a_send_that_succeeds_is_written_completed_and_leaves_its_queue() {
                 told.wait_for(id, "completed");
                 assert_eq!(journey(storage.as_ref(), id).state, JourneyState::Completed);
                 assert_eq!(took(&taken), ["order 1"]);
-                assert!(waiting(runtime).is_empty());
+                assert_eq!(waiting(runtime), [] as [JourneyId; 0]);
                 assert_eq!(runtime.send.figures()["Out"].sent, 1);
             });
         },

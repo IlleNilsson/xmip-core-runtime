@@ -80,7 +80,7 @@ fn a_retry_sends_a_failed_journey_again_once_its_fault_is_fixed_and_is_audited()
                 let acts: Vec<&str> = sent.entries().iter().map(|e| e.action.as_str()).collect();
                 assert_eq!(acts, ["send", "retry", "send"], "its history kept");
                 assert_eq!(took(&taken), ["order 1"]);
-                assert!(waiting(runtime).is_empty());
+                assert_eq!(waiting(runtime), [] as [JourneyId; 0]);
 
                 let again = runtime.send.act(&id.to_string(), Act::Retry, "ilian");
                 assert!(
@@ -160,7 +160,7 @@ fn a_retry_of_a_journey_a_sequential_port_blocks_behind_keeps_its_order() {
     let all: Vec<String> = (1..=6).map(|n| format!("order {n}")).collect();
     assert_eq!(took, all, "in order, from it");
     assert_eq!(state, JourneyState::Completed);
-    assert!(left.is_empty());
+    assert_eq!(left, [] as [JourneyId; 0]);
 }
 
 #[test]
