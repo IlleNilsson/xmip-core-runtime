@@ -17,17 +17,20 @@ use xaudit::program_audit::ProgramAudit;
 
 use crate::message_path::{Carried, Runtime, carry};
 
+mod drain;
 mod pace;
 mod received;
 mod refusal;
 mod turn;
 
+pub use drain::RECEIVE_DRAIN;
 pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
 
 use crate::outcome::Arrived;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
 use crate::stopping::Stopping;
+use drain::Drain;
 use pace::Ended;
 use refusal::verdict;
 use turn::{Ticket, Turn};
@@ -123,7 +126,12 @@ impl Receiving {
     /// or failed in a way saying again may mend (a technology's wait running
     /// out is one), and looks at `stopping` between receives: a node stops
     /// once each Location's current receive returns, which the technology's
-    /// own wait bounds. What arrived before that is carried whole.
+    /// own wait bounds. What arrived before that is carried whole. A
+    /// Location whose receive waits and whose far end let go of what it
+    /// handed over — raw TCP, a datagram — drains first: it goes on
+    /// receiving until a receive finds nothing, never past its pace's
+    /// `drain` from the stop, so a connection queued in its listener's
+    /// backlog before the stop is taken, not closed away (`drain.rs`).
     ///
     /// **What the transport declares decides how soon it is asked again**
     /// (`transport::Waiting`, [`Pace`]). One whose receive waits for what
@@ -189,7 +197,8 @@ impl Receiving {
             heard: BTreeSet::new(),
         };
         let mut ended = Ok(());
-        while ended.is_ok() && !stopping.raised() {
+        let mut drain = Drain::new(!polled, self.pace.drain);
+        while ended.is_ok() && drain.asks(stopping) {
             // What is told already is settled now, so what became of an
             // arrival is counted as it ends, not once the pool is full.
             while ended.is_ok() && carrying.count > 0 {
@@ -208,6 +217,7 @@ impl Receiving {
             let outcome = match self.transport.receive() {
                 Ok(arrivals) if arrivals.is_empty() => Ended::Nothing,
                 Ok(arrivals) => {
+                    drain.handed(arrivals.iter().any(|arrived| !arrived.defers()));
                     carrying.count += arrivals.len();
                     self.carry_all(&pool, runtime, pickup, arrivals, room == 0, &tell);
                     Ended::Found
@@ -218,6 +228,7 @@ impl Receiving {
                     break;
                 }
             };
+            drain.received(outcome);
             let _ = stopping.wait(self.pace.rest(polled, outcome, began.elapsed()));
         }
         while carrying.count > 0 {

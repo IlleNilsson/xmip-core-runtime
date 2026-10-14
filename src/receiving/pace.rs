@@ -9,6 +9,8 @@
 
 use std::time::Duration;
 
+use super::drain::RECEIVE_DRAIN;
+
 /// How long a polled Receive Location rests after a receive that found
 /// nothing, where the node's `[tuning] receive_poll` does not say: a second
 /// — the assistant's drafting, 2026-10-12, for the owner to overrule.
@@ -21,13 +23,17 @@ pub const RECEIVE_POLL: Duration = Duration::from_secs(1);
 /// for the owner to overrule.
 pub const RECEIVE_BACKOFF: Duration = Duration::from_secs(5);
 
-/// A Receive Location's rests, from the node's `[tuning]`.
+/// A Receive Location's rests, and how long it drains once its node stops,
+/// from the node's `[tuning]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pace {
     /// After a polled receive that found nothing.
     pub poll: Duration,
     /// After a polled receive that failed in a way asking again may mend.
     pub backoff: Duration,
+    /// How long, from the stop, a Location goes on taking what its far end
+    /// already let go of (`drain.rs`).
+    pub drain: Duration,
 }
 
 impl Default for Pace {
@@ -35,6 +41,7 @@ impl Default for Pace {
         Self {
             poll: RECEIVE_POLL,
             backoff: RECEIVE_BACKOFF,
+            drain: RECEIVE_DRAIN,
         }
     }
 }
@@ -78,6 +85,7 @@ mod tests {
     const PACE: Pace = Pace {
         poll: Duration::from_millis(200),
         backoff: Duration::from_secs(3),
+        drain: Duration::from_millis(500),
     };
 
     #[test]
@@ -122,7 +130,8 @@ mod tests {
             Pace::default(),
             Pace {
                 poll: RECEIVE_POLL,
-                backoff: RECEIVE_BACKOFF
+                backoff: RECEIVE_BACKOFF,
+                drain: RECEIVE_DRAIN,
             }
         );
     }
