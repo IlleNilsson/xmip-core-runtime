@@ -80,6 +80,14 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # the estate's own HTTP/2 and framing, inside Xmip's own mutual TLS.
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
+# A person's certificate (ADR-0034, amendment 2026-10-15): the request a
+# surface makes — the phone's build too — and, on a node's, the signing by
+# the authority `[provision.operator]` names. The capability alone; the
+# runtime links no technology of it.
+provision = { package = "xmip-core-provision", git = "https://github.com/IlleNilsson/xmip-core-provision", branch = "main" }
+# The private key a request is made with is overwritten when its answer is
+# dropped.
+zeroize = "1"
 # A test authority and each end's certificate, for the operate plane's
 # tests (`fixture::authority`): only the test-support feature turns it on.
 rcgen = { version = "0.13", optional = true }
@@ -148,8 +156,10 @@ default = ["node"]
 # the runtime store (`persist`) and its key home (`secret`), the transports
 # a program links, and the node's side of the operate plane — the operate
 # listener and its board (`plane::listener`, `plane::served`), with
-# `xmip_operate.h` sections 1, 5, 6 and 10 to 16 and section 17's serve
-# exports. Everything a remote surface has, too.
+# `xmip_operate.h` sections 1, 5, 6 and 10 to 16, section 17's serve
+# exports and section 19's signing (`xmip_operator_sign_v1`, by the
+# authority `[provision.operator]` names). Everything a remote surface has,
+# too.
 node = [
     "remote",
     "dep:serde",
@@ -176,8 +186,9 @@ node = [
 # (ADR-0014, amendment 2026-10-14): `plane::remote` and the operate plane's
 # call, local endpoint and role it stands on, with `xmip_operate.h` section
 # 7 (the rules), section 8 (a publication read), section 9 (a program's audit
-# record), section 18 (the role and the gate) and section 17's client exports
-# (`xmip_remote_*`). Built alone with
+# record), section 18 (the role and the gate), section 17's client exports
+# (`xmip_remote_*`) and section 19's request (`xmip_operator_request_v1`, a
+# person's key and request). Built alone with
 # `--no-default-features --features remote`.
 remote = []
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
