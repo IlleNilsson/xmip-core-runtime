@@ -187,8 +187,10 @@ node = [
 # call, local endpoint and role it stands on, with `xmip_operate.h` section
 # 7 (the rules), section 8 (a publication read), section 9 (a program's audit
 # record), section 18 (the role and the gate), section 17's client exports
-# (`xmip_remote_*`) and section 19's request (`xmip_operator_request_v1`, a
-# person's key and request). Built alone with
+# (`xmip_remote_*`, the kept open too) and section 19's request
+# (`xmip_operator_request_v1`, a person's key and request, and its two
+# halves around a keeper's signature, `xmip_operator_information_v1` and
+# `xmip_operator_assemble_v1`). Built alone with
 # `--no-default-features --features remote`.
 remote = []
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
