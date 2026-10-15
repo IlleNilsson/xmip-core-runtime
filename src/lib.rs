@@ -53,6 +53,8 @@ pub mod message_path;
 #[cfg(feature = "node")]
 pub mod operator;
 #[cfg(feature = "node")]
+pub mod operator_certificate;
+#[cfg(feature = "node")]
 pub mod outcome;
 #[cfg(feature = "node")]
 pub mod pickup;

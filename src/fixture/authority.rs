@@ -5,6 +5,7 @@
 //! and around it (`tests/plane`) alike.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The authority, and what issues with it.
 pub struct Authority {
@@ -27,13 +28,14 @@ impl Authority {
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let key = rcgen::KeyPair::generate().expect("a key");
         let cert = params.self_signed(&key).expect("self-signed");
+        // Numbered within the process, never by the clock: two tests made
+        // theirs in the same tick on Windows, and the first to end removed
+        // the folder the other's audit was written in.
+        static MADE: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
             "xmip-plane-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("after the epoch")
-                .as_nanos()
+            MADE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&directory).expect("a directory");
         Self {
