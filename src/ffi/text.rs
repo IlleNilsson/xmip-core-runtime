@@ -29,3 +29,16 @@ pub(crate) unsafe fn scope_text<'a>(scope: Str) -> Option<&'a str> {
 
     core::str::from_utf8(bytes).ok()
 }
+
+/// The bytes a surface lent as the header's `xmip_slice`; empty for null.
+///
+/// # Safety
+/// `bytes` must point at `bytes.len` readable bytes, as the header requires.
+pub(crate) unsafe fn slice_bytes<'a>(bytes: abi::ffi::Slice) -> &'a [u8] {
+    if bytes.ptr.is_null() {
+        return &[];
+    }
+
+    // SAFETY: the caller upholds the header's contract on `bytes`.
+    unsafe { core::slice::from_raw_parts(bytes.ptr, bytes.len) }
+}

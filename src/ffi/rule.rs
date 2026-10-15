@@ -63,13 +63,21 @@ pub(crate) unsafe fn fill<'a>(
 /// # Safety
 /// `said` has room for `cap` bytes; `said_len` is writable.
 pub(crate) unsafe fn refuse(sentence: &str, said: *mut u8, cap: usize, said_len: *mut usize) {
-    let bytes = sentence.as_bytes();
+    // SAFETY: per the contract above.
+    unsafe { hand(sentence.as_bytes(), said, cap, said_len) };
+}
 
+/// Bytes written into the caller's buffer, their true length in `out_len`
+/// whether or not they fit: a sentence's, or DER (section 19).
+///
+/// # Safety
+/// `out` has room for `cap` bytes; `out_len` is writable.
+pub(crate) unsafe fn hand(bytes: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) {
     // SAFETY: per the contract above; at most `cap` bytes are copied.
     unsafe {
-        *said_len = bytes.len();
+        *out_len = bytes.len();
         if cap > 0 {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), said, bytes.len().min(cap));
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len().min(cap));
         }
     }
 }

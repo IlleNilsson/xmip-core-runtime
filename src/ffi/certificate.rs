@@ -1,16 +1,19 @@
 //! `xmip_operate.h` section 19: a person's certificate (ADR-0034,
 //! amendment 2026-10-15). An operator's request made — a fresh key and the
 //! request naming the person, `provision::operator::request`, which the
-//! phone's build carries too — and, on a node's build, one signed by the
+//! phone's build carries too — its two halves around a keeper's signature
+//! for a key that never leaves its platform's keeper
+//! (`provision::operator::information` and `assemble`, every build too) —
+//! and, on a node's build, one signed by the
 //! authority `[provision.operator]` names (`crate::operator_certificate`).
 //! Forwarders only: the rules are the capability's.
 #![allow(unsafe_code)]
 
-use abi::ffi::{Str, status};
+use abi::ffi::{Slice, Str, status};
 use serde_json::json;
 
-use crate::ffi::rule::refuse;
-use crate::ffi::text::scope_text;
+use crate::ffi::rule::{hand, refuse};
+use crate::ffi::text::{scope_text, slice_bytes};
 
 /// A fresh P-256 key and an operator's request for `person`, as one JSON
 /// document `{"key","request"}`, each PEM; `XMIP_E_INVALID` with the
@@ -41,6 +44,65 @@ pub unsafe extern "C" fn xmip_operator_request_v1(
     };
     // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
     unsafe { refuse(text.as_str(), out, cap, out_len) };
+    code
+}
+
+/// What an operator's request for `person` signs over the P-256 key
+/// `public_key` — `SubjectPublicKeyInfo` DER or the uncompressed point, as
+/// a keeper hands it — DER, `provision::operator::information`; the keeper
+/// signs these bytes and `xmip_operator_assemble_v1` makes the request.
+/// `XMIP_E_INVALID` with the refusal.
+///
+/// # Safety
+/// `person` and `public_key` point at their stated lengths of readable
+/// bytes; `out` has room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_operator_information_v1(
+    person: Str,
+    public_key: Slice,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `person`.
+    let Some(person) = (unsafe { scope_text(person) }) else {
+        return status::MALFORMED;
+    };
+    // SAFETY: and on `public_key`.
+    let public_key = unsafe { slice_bytes(public_key) };
+    let (code, bytes) = match provision::operator::information(person, public_key) {
+        Ok(information) => (status::OK, information),
+        Err(refused) => (status::INVALID, refused.message.into_bytes()),
+    };
+    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
+    unsafe { hand(&bytes, out, cap, out_len) };
+    code
+}
+
+/// The request, `CERTIFICATE REQUEST` PEM, that `information` and the
+/// keeper's `signature` over it make, its signature verified under the key
+/// the information holds, `provision::operator::assemble`;
+/// `XMIP_E_INVALID` with the refusal.
+///
+/// # Safety
+/// Both slices point at their stated lengths of readable bytes; `out` has
+/// room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_operator_assemble_v1(
+    information: Slice,
+    signature: Slice,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on both.
+    let (information, signature) = unsafe { (slice_bytes(information), slice_bytes(signature)) };
+    let (code, text) = match provision::operator::assemble(information, signature) {
+        Ok(request) => (status::OK, request),
+        Err(refused) => (status::INVALID, refused.message),
+    };
+    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
+    unsafe { refuse(&text, out, cap, out_len) };
     code
 }
 
@@ -110,6 +172,51 @@ mod tests {
         });
         assert_eq!(code, status::INVALID);
         assert!(text.contains("person"), "{text}");
+    }
+
+    fn lent(bytes: &[u8]) -> Slice {
+        Slice {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+        }
+    }
+
+    fn bytes(call: impl Fn(*mut u8, usize, *mut usize) -> i32) -> (i32, Vec<u8>) {
+        let mut room = vec![0u8; 8192];
+        let mut length = 0usize;
+        let code = call(room.as_mut_ptr(), room.len(), &raw mut length);
+        room.truncate(length);
+        (code, room)
+    }
+
+    #[test]
+    fn a_keeper_signs_the_information_and_the_two_halves_make_a_request() {
+        let keeper = provision::KeyPair::generate().expect("a key");
+        let point = keeper.point().to_vec();
+        // SAFETY: every pointer is to live, writable storage of its size.
+        let (code, information) = bytes(|out, cap, len| unsafe {
+            xmip_operator_information_v1(borrow("alice@example.org"), lent(&point), out, cap, len)
+        });
+        assert_eq!(code, status::OK);
+        let signature = keeper.sign(&information).expect("signed");
+        // SAFETY: as above.
+        let (code, text) = answer(|out, cap, len| unsafe {
+            xmip_operator_assemble_v1(lent(&information), lent(&signature), out, cap, len)
+        });
+        assert_eq!(code, status::OK, "{text}");
+        assert!(text.contains("CERTIFICATE REQUEST"), "{text}");
+
+        // SAFETY: as above.
+        let (code, text) = answer(|out, cap, len| unsafe {
+            xmip_operator_assemble_v1(lent(&information), lent(b"no signature"), out, cap, len)
+        });
+        assert_eq!(code, status::INVALID);
+        assert!(text.contains("keeper"), "{text}");
+        // SAFETY: as above.
+        let (code, said) = bytes(|out, cap, len| unsafe {
+            xmip_operator_information_v1(borrow("alice@example.org"), lent(b"no"), out, cap, len)
+        });
+        assert_eq!(code, status::INVALID, "{}", String::from_utf8_lossy(&said));
     }
 
     #[cfg(feature = "node")]

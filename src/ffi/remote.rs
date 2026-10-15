@@ -104,7 +104,7 @@ pub unsafe extern "C" fn xmip_remote_open_local_v1(
 /// # Safety
 /// `out` is writable; `report` has room for `cap` bytes; `out_len` is
 /// writable.
-unsafe fn handed(
+pub(crate) unsafe fn handed(
     opened: Result<Remote, String>,
     out: *mut *mut RemoteHandle,
     report: *mut u8,
