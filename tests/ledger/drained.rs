@@ -103,12 +103,6 @@ impl Transport for Backlogged {
     }
 }
 
-/// A loopback address nothing listens on yet.
-fn free_address() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-    listener.local_addr().expect("its address").to_string()
-}
-
 /// A Receive Location called `In` over `transport`, at the default pace.
 fn location(
     transport: Box<dyn Transport + Send + Sync>,
@@ -139,7 +133,7 @@ fn a_stop_takes_every_connection_already_queued_at_the_listener() {
     let at = directory("drained-backlog");
     let storage = test_node(&at.join("node"));
     let stopping = Arc::new(Stopping::default());
-    let address = free_address();
+    let address = net::fixture::unheld().to_string();
     let backlogged = Backlogged {
         tcp: TcpTransport::new(address.clone()).timing_out_after(WAIT),
         address,

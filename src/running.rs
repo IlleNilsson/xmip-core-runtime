@@ -350,6 +350,7 @@ mod tests {
     use super::*;
     use crate::fixture::{Always, Open};
     use crate::linked::{LinkedTransport, Opened};
+    use net::fixture::unheld;
     use observe::Health;
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
@@ -508,12 +509,6 @@ address = "{far}"
         path.to_str().expect("a UTF-8 path")
     }
 
-    /// A loopback address nothing listens on yet.
-    fn free_address() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-        listener.local_addr().expect("its address").to_string()
-    }
-
     /// Send `payload` to the node, asking again while its Receive Location
     /// has not yet bound — it binds on its first receive, and nothing else
     /// says when that was. Bounded, and never a sleep.
@@ -535,7 +530,7 @@ address = "{far}"
         const MESSAGES: u32 = 200;
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
-        let receive = free_address();
+        let receive = unheld().to_string();
         let path = written("carries", &node(&receive, &far_address));
 
         OPENED.with(|opened| opened.set(0));
@@ -673,7 +668,7 @@ address = "{far}"
         const EACH: u32 = 50;
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
-        let receive = free_address();
+        let receive = unheld().to_string();
         let path = written("eight", &node(&receive, &far_address));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&receive, b"warm");
@@ -723,7 +718,7 @@ address = "{far}"
 
     #[test]
     fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
-        let unsound = node(&free_address(), &free_address())
+        let unsound = node(&unheld().to_string(), &unheld().to_string())
             .replace("timeout = \"100ms\"", "timeout = 5\ncolour = \"lime\"");
         let path = written("declared", &unsound);
 
@@ -746,7 +741,10 @@ address = "{far}"
 
         // Once a node has loaded tcp, a surface validating in this process
         // holds a tcp Location to the same declaration (xmip_validate_v1).
-        let sound = written("declared-sound", &node(&free_address(), &free_address()));
+        let sound = written(
+            "declared-sound",
+            &node(&unheld().to_string(), &unheld().to_string()),
+        );
         Running::start(path_text(&sound), linked(&sound))
             .expect("the node starts")
             .stop();
@@ -762,7 +760,7 @@ address = "{far}"
 
     #[test]
     fn every_transport_is_given_its_nodes_location_as_it_is_built() {
-        let path = written("given", &node(&free_address(), &free_address()));
+        let path = written("given", &node(&unheld().to_string(), &unheld().to_string()));
         GIVEN.with(|nodes| nodes.borrow_mut().clear());
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         let given = GIVEN.with(|nodes| nodes.borrow().clone());
@@ -784,7 +782,7 @@ address = "{far}"
     fn a_node_stops_cleanly_and_lets_its_listener_go() {
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
-        let receive = free_address();
+        let receive = unheld().to_string();
         let path = written("stops", &node(&receive, &far_address));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&receive, b"before the stop");
@@ -829,7 +827,7 @@ address = "{far}"
 
     #[test]
     fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
-        let base = node(&free_address(), &free_address());
+        let base = node(&unheld().to_string(), &unheld().to_string());
         let cases = [
             (
                 base.replacen(
@@ -911,7 +909,7 @@ address = "{far}"
     fn a_library_module_is_refused_where_the_runtime_opens_none() {
         let configuration = format!(
             "{}{LIBRARY_MODULE}library_path = \"xmip_core_contract_rust.dll\"\n",
-            node(&free_address(), &free_address())
+            node(&unheld().to_string(), &unheld().to_string())
         );
         let path = written("library", &configuration);
 
@@ -952,7 +950,7 @@ address = "{far}"
         );
         let configuration = format!(
             "{}{LIBRARY_MODULE}library_path = '{}'\n",
-            node(&free_address(), &free_address()),
+            node(&unheld().to_string(), &unheld().to_string()),
             library.display()
         );
         let path = written("opened", &configuration);
@@ -977,7 +975,7 @@ address = "{far}"
     fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_order() {
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
-        let receive = free_address();
+        let receive = unheld().to_string();
         // In order: a Sequential Send Port keeps it (`runtime-model.md`
         // section 3), where a Concurrent one sends side by side.
         let sequential = "execution_style = \"sequential\"\non_failure = \"block\"";

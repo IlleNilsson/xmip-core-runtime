@@ -226,33 +226,11 @@ impl SendStep {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use persist::fixture::Memory;
-    use persist::storage::{Claim, Embedded, XmipStorage};
-    use secret::{Held, KekName};
+    use persist::storage::Claim;
 
     use super::*;
     use crate::send_step::admission::Owned;
-    use crate::tuning::Tuning;
-
-    fn step() -> SendStep {
-        let keys = Held::new(secret::fixture::Memory::default());
-        let kek = KekName::new("storage").expect("a name");
-        let storage: Arc<dyn XmipStorage> = Arc::new(
-            Embedded::open(
-                Memory::default(),
-                Memory::default(),
-                Memory::default(),
-                &keys,
-                &kek,
-            )
-            .expect("opened"),
-        );
-        let cluster = configure::fixture::test_cluster();
-        let node = cluster.node_scope(0);
-        SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), None)
-    }
+    use crate::send_step::fixture::step;
 
     fn claim(token: u128) -> Claim {
         Claim {

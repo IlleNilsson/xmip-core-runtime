@@ -84,20 +84,17 @@ impl SendStep {
     /// Wait for something to do — handed, asked, a queue's retry due,
     /// closed — or `until`: whether the step is closed, what was handed and
     /// which queues are to be read, a queue whose retry is due among them.
-    fn next(&self, until: Instant) -> (bool, Vec<Departure>, Vec<u128>) {
+    pub(super) fn next(&self, until: Instant) -> (bool, Vec<Departure>, Vec<u128>) {
         let mut state = self.lock();
         loop {
             let now = Instant::now();
-            let earliest = state.due.values().filter_map(|due| due.at).min();
-            let ready = state.closed
-                || !state.handed.is_empty()
-                || !state.asked.is_empty()
-                || earliest.is_some_and(|at| at <= now)
-                || until <= now;
+            let wakes = state.wakes_at(until);
+            let ready =
+                state.closed || !state.handed.is_empty() || !state.asked.is_empty() || wakes <= now;
             if ready {
                 break;
             }
-            let wait = earliest.map_or(until, |at| at.min(until)) - now;
+            let wait = wakes - now;
             state = self
                 .wake
                 .wait_timeout(state, wait)
@@ -131,12 +128,16 @@ impl SendStep {
         }
         match &ended {
             Ended::Waiting { after, .. } => {
+                // Its backoff from now, once Xmip Storage took its hand-on:
+                // never before Xmip Storage's own due time, and kept across
+                // a read of its queue under way, which may have passed its
+                // place before the hand-on landed.
                 let port = departure.to.name();
                 state
                     .due
                     .entry(departure.queue)
                     .or_insert_with(|| Due::of(port))
-                    .waits(Instant::now() + *after);
+                    .noted(Instant::now() + *after);
             }
             Ended::Untried => {
                 drop(state);

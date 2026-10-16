@@ -60,8 +60,9 @@ pub unsafe extern "C" fn xmip_operator_request_v1(
 
 /// The text `text` — a chain the authority signed, or the anchors a surface
 /// trusts, PEM — kept whole at the file `path`, `provision::operator::keep`:
-/// written beside it, synced and renamed over what was there. An empty
-/// answer where kept; `XMIP_E_INVALID` with the refusal where not.
+/// written beside it and synced, then, where `replace` is non-zero, renamed
+/// over what was there; where it is zero, never over a file already there.
+/// An empty answer where kept; `XMIP_E_INVALID` with the refusal where not.
 ///
 /// # Safety
 /// Both strings point at their stated lengths of readable bytes; `out` has
@@ -70,6 +71,7 @@ pub unsafe extern "C" fn xmip_operator_request_v1(
 pub unsafe extern "C" fn xmip_operator_keep_v1(
     path: Str,
     text: Str,
+    replace: u8,
     out: *mut u8,
     cap: usize,
     out_len: *mut usize,
@@ -79,7 +81,8 @@ pub unsafe extern "C" fn xmip_operator_keep_v1(
     else {
         return status::MALFORMED;
     };
-    let (code, said) = match provision::operator::keep(std::path::Path::new(path), text) {
+    let path = std::path::Path::new(path);
+    let (code, said) = match provision::operator::keep(path, text, replace != 0) {
         Ok(()) => (status::OK, String::new()),
         Err(refused) => (status::INVALID, refused.message),
     };
@@ -228,13 +231,23 @@ mod tests {
             .join("operator.pem")
             .display()
             .to_string();
-        for pem in ["first", "second"] {
-            // SAFETY: as above.
-            let (code, said) = answer(|out, cap, len| unsafe {
-                xmip_operator_keep_v1(borrow(&chain), borrow(pem), out, cap, len)
-            });
-            assert_eq!(code, status::OK, "{said}");
-        }
+        // SAFETY: as above.
+        let (code, said) = answer(|out, cap, len| unsafe {
+            xmip_operator_keep_v1(borrow(&chain), borrow("first"), 0, out, cap, len)
+        });
+        assert_eq!(code, status::OK, "{said}");
+        // SAFETY: as above.
+        let (code, said) = answer(|out, cap, len| unsafe {
+            xmip_operator_keep_v1(borrow(&chain), borrow("over"), 0, out, cap, len)
+        });
+        assert_eq!(code, status::INVALID);
+        assert!(said.contains("nothing is overwritten"), "{said}");
+        assert_eq!(std::fs::read_to_string(&chain).expect("kept"), "first");
+        // SAFETY: as above.
+        let (code, said) = answer(|out, cap, len| unsafe {
+            xmip_operator_keep_v1(borrow(&chain), borrow("second"), 1, out, cap, len)
+        });
+        assert_eq!(code, status::OK, "{said}");
         assert_eq!(std::fs::read_to_string(&chain).expect("kept"), "second");
         let _ = std::fs::remove_dir_all(&base);
     }
