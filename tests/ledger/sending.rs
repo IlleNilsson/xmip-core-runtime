@@ -109,6 +109,9 @@ pub fn sent_elsewhere(storage: &dyn XmipStorage, queue: u128, id: JourneyId) {
         leaves: vec![queue],
         queued: Vec::new(),
         requeued: Vec::new(),
+        failed: None,
+        cleared: Vec::new(),
+        waits: None,
         kept_for_nanos: None,
     };
     assert!(storage.hand_on(&hand_on).expect("asked"), "written");
@@ -192,6 +195,7 @@ impl Told {
             Ended::Failed { .. } => "failed",
             Ended::Lost(_) => "lost",
             Ended::Unwritten(_) => "unwritten",
+            Ended::Untried => "untried",
         };
         let id = departure.work.journey.journey_id();
         self.0

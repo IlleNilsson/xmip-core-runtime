@@ -179,6 +179,9 @@ fn a_renewal_storage_does_not_answer_is_shown_and_stops_attempts_after_a_lease()
                     "the first Location reached",
                 );
                 interleaved.fail(Operation::Renew, u32::MAX);
+                // Nor is a claim taken while Xmip Storage does not answer,
+                // so no scan takes the Journey up again before it heals.
+                interleaved.fail(Operation::Claim, u32::MAX);
                 let unconfirmed = || {
                     let out = &runtime.send.figures()["Out"];
                     out.unconfirmed == 1 && out.unanswered_since.is_some()

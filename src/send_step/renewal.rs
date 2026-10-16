@@ -24,19 +24,11 @@
 //! claim in Xmip Storage, which decides. Until 2026-10-06 every renewal's
 //! answer was dropped, and a node that had lost its claim went on sending.
 
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use xcore::JourneyId;
 
-use super::dispatch::run;
-use super::{Departure, SendStep, Settled};
-use crate::message_path::Runtime;
-use crate::pool::Pool;
-
-/// How long a renewal Xmip Storage did not answer waits before it is asked
-/// again, for a Journey waiting for its due time.
-const AGAIN: Duration = Duration::from_millis(250);
+use super::{Departure, SendStep};
 
 /// Where a claim this node owns stands.
 #[derive(Clone, Copy, Debug)]
@@ -135,16 +127,11 @@ impl SendStep {
     /// in one request, and keep where each stands.
     fn renew(&self) {
         let state = self.lock();
-        let waiting: HashSet<_> = state
-            .due
-            .iter()
-            .map(|(_, departure)| departure.work.journey.journey_id())
-            .collect();
         let flying: Vec<_> = state
             .owned
-            .iter()
-            .filter(|(id, owned)| !waiting.contains(id) && !owned.standing.lost)
-            .map(|(_, owned)| owned.claim.clone())
+            .values()
+            .filter(|owned| !owned.standing.lost)
+            .map(|owned| owned.claim.clone())
             .collect();
         drop(state);
         if flying.is_empty() {
@@ -234,62 +221,6 @@ impl SendStep {
         if !said {
             self.failed(&format!("the Journey {id} to {}: {why}", departure.to));
         }
-    }
-
-    /// The claim of `departure`, waiting for its due time, confirmed until
-    /// its `until`.
-    pub(super) fn confirm(&self, departure: &Departure) {
-        let id = departure.work.journey.journey_id();
-        if let Some(owned) = self.lock().owned.get_mut(&id) {
-            owned.claim = departure.claim.clone();
-            owned.standing = Standing::confirmed(departure.until);
-        }
-    }
-}
-
-/// `departure`, due again: its claim renewed and sent; let go of where the
-/// claim is another's now; due again shortly where Xmip Storage did not
-/// answer, while its claim surely holds, and let go of as presumed lost
-/// once it may not — another node, or this one, takes it up from its queue
-/// once the claim has lapsed.
-pub(super) fn resume<'env>(
-    pool: &Pool<'_, 'env>,
-    runtime: &'env Runtime<'env>,
-    settled: Settled<'env>,
-    mut departure: Departure,
-) {
-    let step = runtime.send;
-    let asked = Instant::now();
-    let renewed = step
-        .storage
-        .renew(std::slice::from_ref(&departure.claim), step.lease)
-        .map(|held| {
-            held.into_iter()
-                .find(|held| held.token == departure.claim.token)
-        });
-    match renewed {
-        Ok(Some(claim)) => {
-            departure.claim = claim;
-            departure.until = asked + step.lease;
-            step.confirm(&departure);
-            run(pool, runtime, settled, departure);
-        }
-        Ok(None) => step.lost(&departure, "its claim is another's now"),
-        Err(_) if Instant::now() < departure.until => {
-            let id = departure.work.journey.journey_id();
-            let mut state = step.lock();
-            if let Some(owned) = state.owned.get_mut(&id) {
-                owned.standing.unconfirmed.get_or_insert(asked);
-            }
-            state.due.push((Instant::now() + AGAIN, departure));
-        }
-        Err(why) => step.lost(
-            &departure,
-            &format!(
-                "Xmip Storage has not confirmed its claim for longer than its lease, so it \
-                 is presumed lost and left to lapse ({why})"
-            ),
-        ),
     }
 }
 

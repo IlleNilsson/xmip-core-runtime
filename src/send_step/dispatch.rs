@@ -1,6 +1,6 @@
-//! The send step's dispatching: what is handed to it, what is due, and what
-//! a scan of its queues finds, each sent on the Send pool; the claims of
-//! work in flight renewed; and what a stop gives back.
+//! The send step's dispatching: what is handed to it, and what a scan of
+//! its queues finds — a queue read again when its earliest retry is due —
+//! each sent on the Send pool; and the claims of work in flight renewed.
 
 use std::thread::Scope;
 use std::time::Instant;
@@ -8,8 +8,8 @@ use std::time::Instant;
 use route::Subscriber;
 use xcore::JourneyId;
 
+use super::due::Due;
 use super::pass::{Ended, abandoned, blocks, send};
-use super::renewal::resume;
 use super::scan::{self, Ready, Unclaimed, scan};
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
@@ -19,7 +19,8 @@ use crate::pool::Pool;
 /// until it is closed and what was handed to it is sent; `settled` is told
 /// how each pass ended. Every queue this node sends is read as it starts,
 /// for no more than the pool can take; one read when the pool had no room
-/// is read again as soon as a place frees. The claims of work in flight are
+/// is read again as soon as a place frees, and one whose earliest retry is
+/// due as soon as it is. The claims of work in flight are
 /// renewed on a thread of their own, so no scan of a backlog, however
 /// long, holds a renewal back.
 pub fn dispatch<'scope, 'env>(
@@ -45,16 +46,12 @@ pub fn dispatch<'scope, 'env>(
     scope.spawn(move || step.renewing());
     let mut next_scan = Instant::now();
     loop {
-        let (closed, handed, due, asked) = step.next(next_scan);
+        let (closed, handed, asked) = step.next(next_scan);
         for departure in handed {
             run(&pool, runtime, settled, departure);
         }
         if closed {
-            step.give_back(due);
             return;
-        }
-        for departure in due {
-            resume(&pool, runtime, settled, departure);
         }
         let now = Instant::now();
         let all = next_scan <= now;
@@ -62,6 +59,8 @@ pub fn dispatch<'scope, 'env>(
             if !all && !asked.contains(queue) {
                 continue;
             }
+            // Its failed Journeys as Xmip Storage counts them, room or none.
+            step.read_failed((to.name(), *queue), false);
             // No room: read again the moment a place frees, not at the
             // next scan.
             if step.room() == 0 {
@@ -82,14 +81,14 @@ pub fn dispatch<'scope, 'env>(
 }
 
 impl SendStep {
-    /// Wait for something to do — handed, due, asked, closed — or `until`:
-    /// whether the step is closed, what was handed, what is due and which
-    /// queues were asked for.
-    fn next(&self, until: Instant) -> (bool, Vec<Departure>, Vec<Departure>, Vec<u128>) {
+    /// Wait for something to do — handed, asked, a queue's retry due,
+    /// closed — or `until`: whether the step is closed, what was handed and
+    /// which queues are to be read, a queue whose retry is due among them.
+    fn next(&self, until: Instant) -> (bool, Vec<Departure>, Vec<u128>) {
         let mut state = self.lock();
         loop {
             let now = Instant::now();
-            let earliest = state.due.iter().map(|(at, _)| *at).min();
+            let earliest = state.due.values().filter_map(|due| due.at).min();
             let ready = state.closed
                 || !state.handed.is_empty()
                 || !state.asked.is_empty()
@@ -107,33 +106,23 @@ impl SendStep {
         }
         let now = Instant::now();
         let handed = state.handed.drain(..).collect();
-        let (due, waiting) = std::mem::take(&mut state.due)
-            .into_iter()
-            .partition(|(at, _)| *at <= now);
-        state.due = waiting;
-        let asked = std::mem::take(&mut state.asked);
-        let due = due.into_iter().map(|(_, departure)| departure).collect();
-        (state.closed, handed, due, asked)
-    }
-
-    /// Give back the claim of everything waiting for its due time, `due`
-    /// among it: a stop drains rather than letting its claims lapse
-    /// (ADR-0018 clause 12).
-    fn give_back(&self, due: Vec<Departure>) {
-        let waiting = std::mem::take(&mut self.lock().due);
-        let waiting = waiting.into_iter().map(|(_, departure)| departure);
-        for departure in waiting.chain(due) {
-            let _ = self.storage.release(&departure.claim);
-            self.lock()
-                .owned
-                .remove(&departure.work.journey.journey_id());
+        let mut asked = std::mem::take(&mut state.asked);
+        for (queue, due) in &mut state.due {
+            if due.at.is_some_and(|at| at <= now) {
+                due.at = None;
+                if !asked.contains(queue) {
+                    asked.push(*queue);
+                }
+            }
         }
-        self.wake.notify_all();
+        (state.closed, handed, asked)
     }
 
-    /// How `departure`'s pass ended, settled: counted, kept until its due
-    /// time, or let go of — and only then told, so whoever is told reads
-    /// figures that already hold it.
+    /// How `departure`'s pass ended, settled: counted, or let go of — a
+    /// retry's due time noted for its queue, a failure's Port's window read
+    /// again — and only then told, so whoever is told reads figures that
+    /// already hold it. Nothing it settles stays owned: a Journey waiting
+    /// for a retry holds no claim and no place.
     fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
         let id = departure.work.journey.journey_id();
         let mut state = self.lock();
@@ -141,20 +130,21 @@ impl SendStep {
             state.asked.push(departure.queue);
         }
         match &ended {
-            Ended::Waiting { after, .. } if !state.closed => {
-                let due = Instant::now() + *after;
-                drop(state);
-                // Its hand-on confirmed the claim to its due time.
-                self.confirm(&departure);
-                settled(&departure, &ended);
-                self.lock().due.push((due, departure));
-                self.wake.notify_all();
-                return;
+            Ended::Waiting { after, .. } => {
+                let port = departure.to.name();
+                state
+                    .due
+                    .entry(departure.queue)
+                    .or_insert_with(|| Due::of(port))
+                    .waits(Instant::now() + *after);
             }
-            Ended::Waiting { .. } => {
+            Ended::Untried => {
                 drop(state);
                 let _ = self.storage.release(&departure.claim);
                 state = self.lock();
+                if !state.asked.contains(&departure.queue) {
+                    state.asked.push(departure.queue);
+                }
             }
             Ended::Completed(_) => {
                 let port = departure.to.name().to_string();
@@ -178,6 +168,9 @@ impl SendStep {
         state.owned.remove(&id);
         state.freed();
         drop(state);
+        if matches!(ended, Ended::Failed { .. }) {
+            self.read_failed((departure.to.name(), departure.queue), false);
+        }
         settled(&departure, &ended);
         self.wake.notify_all();
     }

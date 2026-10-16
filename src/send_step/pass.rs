@@ -2,13 +2,13 @@
 //! from the Ledger to be sent: what the Send pool's threads run, and what a
 //! scan finds.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use configure::OnFailure;
 use context::IdentityFacts;
 use journey::{Journey, JourneyEntry, JourneyState};
 use message::Message;
-use persist::storage::HandOn;
+use persist::storage::{Failure, HandOn, Wait};
 use route::Subscriber;
 use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
 
@@ -24,8 +24,8 @@ use crate::sending::Destination;
 pub enum Ended {
     /// Sent to every Port: written Completed, and out of its queue.
     Completed(Vec<Departed>),
-    /// A Location is tried again after `after`: written Recovering, its
-    /// claim kept until then and a lease past it.
+    /// A Location is tried again after `after`: written Recovering, its due
+    /// time kept at its place in its queue, its claim released.
     Waiting {
         after: Duration,
         departed: Vec<Departed>,
@@ -42,6 +42,13 @@ pub enum Ended {
     /// the Journey up, or a renewal found it another's — so nothing was
     /// written, and nothing more tried from here.
     Lost(Vec<Departed>),
+    /// Nothing was tried: the claim was not surely this node's when the
+    /// pass began — its last confirmation older than a lease — though no
+    /// renewal found it another's. Nothing is written, so the pass leaves no
+    /// entry and counts no try; the claim is given back and the queue read
+    /// again, where a scan claims it afresh. Until 2026-10-16 such a pass was
+    /// written Recovering, an entry and a backoff for a try never made.
+    Untried,
     /// Xmip Storage did not take the hand-on, in words: the claim lapses,
     /// and the Journey is sent again — at least once, never lost.
     Unwritten(String),
@@ -51,9 +58,10 @@ pub enum Ended {
 /// tried once on its active Send Location, failing over as its policy says,
 /// each try only while its claim is surely this node's — and its hand-on,
 /// one write: the outcome on the Journey, with what was tried in words and
-/// its tries, its place let go of where it was sent, and the claim released
-/// or kept to its due time. A claim a renewal found another's writes
-/// nothing: the Journey is the other holder's.
+/// its tries, its place let go of where it was sent or its due time kept
+/// there where it waits, and the claim released. A claim a renewal found
+/// another's writes nothing: the Journey is the other holder's; nor does a
+/// pass that tried nothing ([`Ended::Untried`]).
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let step = runtime.send;
     let Departure {
@@ -68,6 +76,9 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let departed = depart_to(runtime, work, facts, to, (progress, &owned));
     if step.is_lost(id) {
         return Ended::Lost(departed);
+    }
+    if departed.is_empty() && progress.waiting() {
+        return Ended::Untried;
     }
     let (state, kept) = if progress.sent {
         (JourneyState::Completed, None)
@@ -125,12 +136,12 @@ pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &
 }
 
 /// `departure`'s hand-on, one write: its Journey in `state` with what was
-/// tried, `outcome`, and its tries; its place let go of where it completed;
-/// its claim ended, or kept to `kept` and a lease past it. `true` where it
-/// was written, and the Journey kept on `departure` — and, kept, its claim
-/// surely held to `kept` and a lease from when the write was asked; `false`
-/// where the claim was no longer this node's; in words where Xmip Storage
-/// did not take it.
+/// tried, `outcome`, and its tries; its place let go of where it completed,
+/// or, Failed, entered in its queue's index of failed Journeys with
+/// `outcome` as why, or, waiting, its due time `kept` from now kept at its
+/// place; its claim ended. `true` where it was written, and the Journey
+/// kept on `departure`; `false` where the claim was no longer this node's;
+/// in words where Xmip Storage did not take it.
 fn written(
     runtime: &Runtime<'_>,
     departure: &mut Departure,
@@ -138,6 +149,12 @@ fn written(
     outcome: String,
     kept: Option<Duration>,
 ) -> Result<bool, String> {
+    // Failed, it waits in its queue for an operator, entered in the queue's
+    // index of failed Journeys in this same write, with why.
+    let failed = (state == JourneyState::Failed).then(|| Failure {
+        queue: departure.queue,
+        reason: outcome.clone(),
+    });
     let mut journey = departure.work.journey.clone().append(
         JourneyEntry {
             execution_id: ExecutionId::new(runtime.ids.next_u128()),
@@ -149,7 +166,6 @@ fn written(
         state,
     );
     journey.attempts = departure.progress.attempts();
-    let lease = runtime.send.lease();
     let hand_on = HandOn {
         claim: departure.claim.clone(),
         result: crate::ledger::journey_record(&journey),
@@ -162,15 +178,17 @@ fn written(
         },
         queued: Vec::new(),
         requeued: Vec::new(),
-        kept_for_nanos: kept.map(|after| nanos(after + lease)),
+        failed,
+        cleared: Vec::new(),
+        waits: kept.map(|after| Wait {
+            queue: departure.queue,
+            after_nanos: nanos(after),
+        }),
+        kept_for_nanos: None,
     };
-    let asked = Instant::now();
     match runtime.storage.hand_on(&hand_on) {
         Ok(true) => {
             departure.work.journey = journey;
-            if let Some(after) = kept {
-                departure.until = asked + after + lease;
-            }
             Ok(true)
         }
         Ok(false) => Ok(false),

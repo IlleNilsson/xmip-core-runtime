@@ -119,6 +119,9 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             body: body.clone(),
         }],
         requeued: Vec::new(),
+        failed: None,
+        cleared: Vec::new(),
+        waits: None,
         kept_for_nanos: sent_here
             .then(|| u64::try_from(step.lease().as_nanos()).unwrap_or(u64::MAX)),
     };

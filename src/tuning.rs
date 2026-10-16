@@ -24,6 +24,7 @@
 //! send_idle = "1m"                            # send_step::SEND_IDLE
 //! send_lease = "30s"                          # send_step::SEND_LEASE
 //! send_scan = "1s"                            # send_step::SEND_SCAN
+//! failed_window = 100                         # send_step::FAILED_WINDOW
 //! storage_timeout = "5s"                      # persist's client::TIMEOUT
 //! storage_pass_over = "5s"                    # persist's client::PASS_OVER
 //! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
@@ -40,7 +41,9 @@ use crate::ledger::SEGMENTS;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
 use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL};
-use crate::send_step::{SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD};
+use crate::send_step::{
+    FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
+};
 
 /// The longest any `[tuning]` duration may be: an hour.
 pub const LONGEST: Duration = Duration::from_secs(3600);
@@ -144,6 +147,16 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         Setting {
+            name: "failed_window",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 10_000,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(FAILED_WINDOW))),
+            meaning: "The oldest failed Journeys of each Send Port the node keeps and publishes.",
+            applies: Applies::Both,
+        },
+        Setting {
             name: "storage_timeout",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(client::TIMEOUT)),
@@ -187,6 +200,7 @@ pub struct Tuning {
     pub send_idle: Duration,
     pub send_lease: Duration,
     pub send_scan: Duration,
+    pub failed_window: usize,
     pub storage_timeout: Duration,
     pub storage_pass_over: Duration,
     pub local_timeout: Duration,
@@ -241,6 +255,7 @@ impl Tuning {
             send_idle: duration("send_idle"),
             send_lease: duration("send_lease"),
             send_scan: duration("send_scan"),
+            failed_window: count("failed_window"),
             storage_timeout: duration("storage_timeout"),
             storage_pass_over: duration("storage_pass_over"),
             local_timeout: duration("local_timeout"),
@@ -313,6 +328,7 @@ mod tests {
             (tuning.send_idle, tuning.send_lease, tuning.send_scan),
             (SEND_IDLE, SEND_LEASE, SEND_SCAN)
         );
+        assert_eq!(tuning.failed_window, FAILED_WINDOW);
     }
 
     #[test]
@@ -322,9 +338,10 @@ mod tests {
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
              send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n\
-             receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\n",
+             receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n",
         )
         .expect("reads");
+        assert_eq!(tuning.failed_window, 12);
         assert_eq!(tuning.local_timeout, Duration::from_millis(500));
         assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
         assert_eq!(tuning.send_lease, Duration::from_secs(5));

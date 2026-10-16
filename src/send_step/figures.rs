@@ -1,26 +1,38 @@
 //! What a node's send step counts per Send Port, the last Journey that
-//! failed there with its reason, and every Journey that failed waiting in
+//! failed there with its reason, and the Journeys that failed waiting in
 //! its queue for an operator: what its snapshot publishes at the Port's
 //! scope (`crate::running::publication`), so every surface shows it.
 //!
 //! **Now, and what was.** `failing`, `oldest_failing` and `blocked` are the
-//! queue as it stands, from the Journeys a scan of the Ledger read Failed
-//! in it; `sent`, `failed` and `last_failure` are history since the node
-//! started. Until 2026-10-06 `last_failure` was filled from the queue where
-//! the node had seen none fail, so history and now were one figure.
+//! queue as it stands, as Xmip Storage keeps it: the count and the oldest
+//! of the queue's index of failed Journeys in the Ledger, written with each
+//! failure and each act on one, whichever node failed it
+//! (`persist::storage::FailedQueue`); `sent`, `failed` and `last_failure`
+//! are history since the node started. Until 2026-10-06 `last_failure` was
+//! filled from the queue where the node had seen none fail, so history and
+//! now were one figure.
+//!
+//! **The node keeps a window, not the backlog.** Of each Port's index it
+//! keeps how many wait and the oldest `[tuning] failed_window` of them, read
+//! again only where the index's places moved since the last read; the rest
+//! are read from Xmip Storage a page at a time ([`SendStep::failed_journeys`]).
+//! Until 2026-10-16 the node kept every one a scan had read Failed, so its
+//! memory grew with the failures (open problem 34).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use observe::{FailedJourneys, LastFailure};
+use persist::storage::Failed;
 use xcore::{Clock, JourneyId, SystemClock};
 
 use super::SendStep;
 
-/// The most failed Journeys of one Send Port a publication carries, the
-/// oldest first; the rest are read from Xmip Storage a page at a time
+/// The oldest failed Journeys of one Send Port the node keeps and its
+/// publication carries, where `[tuning] failed_window` does not say: a
+/// hundred; the rest are read from Xmip Storage a page at a time
 /// ([`super::SendStep::failed_journeys`]).
-pub const PUBLISHED_FAILED: usize = 100;
+pub const FAILED_WINDOW: usize = 100;
 
 /// One Send Port's figures.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -30,19 +42,20 @@ pub struct PortFigures {
     /// Journeys whose every Send Location failed its tries since the node
     /// started: written Failed.
     pub failed: u64,
-    /// Journeys waiting now for a retry's due time.
+    /// Journeys waiting now for a retry's due time, as the last read of its
+    /// queue found them in the Ledger, whichever node they wait for.
     pub waiting: u64,
     /// The last that failed here since the node started: its Journey and
     /// why, in words. History: it may since have been retried or dismissed.
     pub last_failure: Option<(String, String)>,
     /// How many Journeys that failed wait in its queue for an operator now,
-    /// as the node's scans of the Ledger found them — those that failed
-    /// before a restart, or on another node, among them.
+    /// as Xmip Storage counts them — those that failed before a restart, or
+    /// on another node, among them.
     pub failing: u64,
     /// Whether one of them blocks its sequence now: a Sequential Send Port
     /// whose `on_failure` is `block`.
     pub blocked: bool,
-    /// The oldest of them, at most [`PUBLISHED_FAILED`].
+    /// The oldest of them, at most `[tuning] failed_window`.
     pub oldest_failing: Vec<FailedJourney>,
     /// Claims of its Journeys this node holds whose renewal Xmip Storage
     /// has not answered, now: the Port is Done while any is.
@@ -143,6 +156,16 @@ impl PortFigures {
 }
 
 impl FailedJourney {
+    /// The Journey as its queue's index of failed Journeys keeps it.
+    #[must_use]
+    pub fn of(failed: &Failed) -> Self {
+        Self {
+            journey: failed.journey,
+            place: failed.place,
+            reason: failed.reason.clone(),
+        }
+    }
+
     /// The Journey as a publication, and every list of failed Journeys,
     /// says it.
     #[must_use]
@@ -164,9 +187,8 @@ impl SendStep {
         for port in state.ports.keys() {
             figures.entry(port.clone()).or_default();
         }
-        for (_, waiting) in &state.due {
-            let port = waiting.to.name().to_string();
-            figures.entry(port).or_default().waiting += 1;
+        for due in state.due.values() {
+            figures.entry(due.port.clone()).or_default().waiting += due.waiting;
         }
         let (now, wall) = (Instant::now(), SystemClock.unix_timestamp_nanos());
         for owned in state.owned.values() {
@@ -179,59 +201,50 @@ impl SendStep {
                     Some(figures.unanswered_since.map_or(since, |was| was.min(since)));
             }
         }
-        for (port, failing) in &state.failing {
+        for (port, window) in &state.failing {
             let figures = figures.entry(port.clone()).or_default();
-            figures.failing = failing.len() as u64;
-            figures.oldest_failing = failing
-                .by_place
-                .values()
-                .take(PUBLISHED_FAILED)
-                .cloned()
-                .collect();
-            figures.blocked = failing.len() > 0 && state.ports.get(port) == Some(&true);
+            figures.failing = window.count;
+            figures.oldest_failing.clone_from(&window.oldest);
+            figures.blocked = window.count > 0 && state.ports.get(port) == Some(&true);
         }
         figures
     }
 
-    /// The Journey at `place` in `port`'s queue, read Failed with `reason`.
-    pub(crate) fn found_failing(&self, port: &str, place: u64, journey: JourneyId, reason: String) {
-        let mut state = self.lock();
-        let failing = state.failing.entry(port.to_string()).or_default();
-        failing.forget(journey);
-        failing.place_of.insert(journey, place);
-        failing.by_place.insert(
-            place,
-            FailedJourney {
-                journey,
-                place,
-                reason,
-            },
-        );
+    /// `port`'s window on its queue's index of failed Journeys, `queue`,
+    /// read again from Xmip Storage where the index moved since the last
+    /// read — one read of its places where it did not — or, with `afresh`,
+    /// whatever it last read. Where Xmip Storage does not answer, the last
+    /// read stands: the read of the queue itself says it is unanswered.
+    pub(crate) fn read_failed(&self, (port, queue): (&str, u128), afresh: bool) {
+        let Ok(places) = self.storage.read_failed(queue, 0, 0) else {
+            return;
+        };
+        let at = (places.next, places.count);
+        let unchanged = |state: &super::State| {
+            state
+                .failing
+                .get(port)
+                .is_some_and(|w| w.read_at == Some(at))
+        };
+        if !afresh && unchanged(&self.lock()) {
+            return;
+        }
+        let most = u32::try_from(self.window).unwrap_or(u32::MAX);
+        let Ok(read) = self.storage.read_failed(queue, 0, most) else {
+            return;
+        };
+        let window = Window {
+            count: read.count,
+            read_at: Some((read.next, read.count)),
+            oldest: read.failed.iter().map(FailedJourney::of).collect(),
+        };
+        self.lock().failing.insert(port.to_string(), window);
     }
 
-    /// The Journey `journey` of `port`'s queue, read and found not Failed:
-    /// sent again, finished, or not readable.
-    pub(crate) fn not_failing(&self, port: &str, journey: JourneyId) {
-        if let Some(failing) = self.lock().failing.get_mut(port) {
-            failing.forget(journey);
-        }
-    }
-
-    /// A whole read of `port`'s queue, `queue`, found only `present`, by
-    /// Journey and place: what failed there and is gone — dismissed, or sent
-    /// again, by another node — forgotten, and every place passed over that
-    /// is gone with it.
-    pub(crate) fn read_whole(&self, (port, queue): (&str, u128), present: &Present) {
-        let mut state = self.lock();
-        if let Some(failing) = state.failing.get_mut(port) {
-            failing
-                .by_place
-                .retain(|place, failed| present.contains(&(failed.journey, *place)));
-            failing
-                .place_of
-                .retain(|journey, place| present.contains(&(*journey, *place)));
-        }
-        if let Some(passed) = state.passed.get_mut(&queue) {
+    /// A whole read of `queue` found only `present`, by Journey and place:
+    /// every place passed over that is gone from it forgotten.
+    pub(crate) fn read_whole(&self, queue: u128, present: &Present) {
+        if let Some(passed) = self.lock().passed.get_mut(&queue) {
             passed.retain(|place| present.contains(place));
         }
     }
@@ -261,24 +274,14 @@ impl SendStep {
 /// Journeys by their place in a queue.
 pub(super) type Present = HashSet<(JourneyId, u64)>;
 
-/// Every Journey that failed waiting in one Send Port's queue: by its place,
-/// oldest first, and the place of each by its Journey, so a Journey read
-/// again is found at once however long the backlog.
+/// What the node keeps of one Send Port's queue's index of failed Journeys:
+/// how many wait and the oldest, at most its window, as Xmip Storage last
+/// answered — however many failed, never more.
 #[derive(Debug, Default)]
-pub(super) struct Failing {
-    by_place: BTreeMap<u64, FailedJourney>,
-    place_of: HashMap<JourneyId, u64>,
-}
-
-impl Failing {
-    /// How many wait.
-    pub(super) fn len(&self) -> usize {
-        self.by_place.len()
-    }
-
-    fn forget(&mut self, journey: JourneyId) {
-        if let Some(place) = self.place_of.remove(&journey) {
-            self.by_place.remove(&place);
-        }
-    }
+pub(super) struct Window {
+    count: u64,
+    /// The index's next place and count as that answer had them: while they
+    /// stand, nothing failed there or left it since.
+    read_at: Option<(u64, u64)>,
+    oldest: Vec<FailedJourney>,
 }

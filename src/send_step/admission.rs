@@ -4,14 +4,20 @@
 //!
 //! **What the node holds is bounded by the pool's threads.** A Journey is
 //! claimed and taken into memory only under a place the pool has room for:
-//! its most threads, less every Journey this node owns — handed, queued,
-//! sending, or waiting for a retry's due time — and every place admitted
-//! and not yet owned. What has no place stays durable and unclaimed in its
-//! queue, and its queue is read again the moment a place frees, so a slow
-//! far end leaves its backlog in the Ledger, never in memory. Until
-//! 2026-10-06 only a scan asked for room: a Publication claimed every
-//! Journey it opened for a Port this node sends and handed it on, and the
-//! pool queued whatever came, however much.
+//! its most threads, less every Journey this node owns — handed, queued or
+//! sending — and every place admitted and not yet owned. What has no place
+//! stays durable and unclaimed in its queue, and its queue is read again
+//! the moment a place frees, so a slow far end leaves its backlog in the
+//! Ledger, never in memory. Until 2026-10-06 only a scan asked for room: a
+//! Publication claimed every Journey it opened for a Port this node sends
+//! and handed it on, and the pool queued whatever came, however much.
+//!
+//! **A Journey waiting for a retry holds no place** (the owner,
+//! 2026-10-16; open problem 43). Its hand-on releases its claim and keeps
+//! its due time at its place in its queue, and its place in the pool frees
+//! with it, so one far end that fails cannot fill the places every Port
+//! shares: a scan takes it up again once it is due. Until 2026-10-16 it
+//! stayed owned, its claim kept to its due time, and counted here.
 //!
 //! **What it owns, it owns under a claim** ([`Owned`]): each Journey's
 //! claim, its Send Port, and where the claim stands
@@ -23,8 +29,8 @@ use xcore::JourneyId;
 
 use super::{Departure, LinedUp, SendStep, State, renewal};
 
-/// A Journey this node holds claimed: in flight on the Send pool, or
-/// waiting for its due time — its Send Port, and where its claim stands.
+/// A Journey this node holds claimed, in flight on the Send pool: its Send
+/// Port, and where its claim stands.
 #[derive(Clone, Debug)]
 pub(super) struct Owned {
     pub(super) claim: Claim,
