@@ -18,6 +18,9 @@
 //!   and its Stream kept — and lets go of its place, so on a Sequential
 //!   Send Port the next of its order key goes.
 //!
+//! Either takes it out of its queue's index of failed Journeys in the same
+//! write (`HandOn::cleared`).
+//!
 //! An act is taken by a node that sends the Journey's Send Port, the one
 //! whose figures showed it failed: that node knows whether the Port blocks.
 //! Who may act is the surface's to decide by role; the node applies what
@@ -90,6 +93,9 @@ impl SendStep {
             } else {
                 Vec::new()
             },
+            failed: None,
+            cleared: vec![queue],
+            waits: None,
             kept_for_nanos: None,
         };
         match self.storage.hand_on(&hand_on) {
@@ -162,13 +168,14 @@ impl SendStep {
     }
 
     /// An operator's act on `journey`, of `port`, written: it is read again
-    /// at its place, and no longer failing.
+    /// at its place, and the Port's window on its failed Journeys read
+    /// again, without it.
     fn acted_on(&self, journey: JourneyId, port: &str) {
         let queue = self.queue(&Subscriber::SendPort(port.to_string()));
         if let Some(passed) = self.lock().passed.get_mut(&queue) {
             passed.retain(|(passed, _)| *passed != journey);
         }
-        self.not_failing(port, journey);
+        self.read_failed((port, queue), true);
     }
 
     fn audited(&self, act: Act, id: JourneyId, (who, port): (&str, &str), said: &str) {

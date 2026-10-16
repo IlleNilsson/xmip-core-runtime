@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, HandOn,
-    HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay, Replayed,
-    StreamChunk, StreamRecord, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, FailedQueue,
+    HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay,
+    Replayed, StreamChunk, StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -19,6 +19,7 @@ use xcore::{AuditId, JourneyId, MessageId, StreamId};
 pub enum Operation {
     Publish,
     ReadHeld,
+    ReadFailed,
     HandOn,
     Claim,
     Renew,
@@ -178,6 +179,11 @@ impl XmipStorage for Failing {
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         self.asked(Operation::ReadHeld)?;
         self.beneath.read_held(queue, from, most)
+    }
+
+    fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
+        self.asked(Operation::ReadFailed)?;
+        self.beneath.read_failed(queue, from, most)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {

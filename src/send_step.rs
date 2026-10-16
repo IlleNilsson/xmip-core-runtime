@@ -10,7 +10,8 @@
 //! -> hand on      one write: the outcome on the Journey — Completed and
 //!                 out of its queue, or Failed with its reason and kept
 //!                 there — its tries, the claim released; or Recovering,
-//!                 its tries and the claim kept to its due time
+//!                 its tries, its due time kept at its place, the claim
+//!                 released
 //! ```
 //!
 //! **One Journey per Send Port.** A Send Port Group's Journeys are opened
@@ -31,17 +32,20 @@
 //! none stays durable and unclaimed in its queue, read again the moment a
 //! place frees.
 //!
-//! **A retry waiting for its backoff holds no thread.** Its due time is in
-//! the Ledger — its claim kept until then, written in the hand-on — and the
-//! node keeps when it is due only to start it again; a node that dies lets
-//! the claim lapse, and another takes it up.
+//! **A retry waiting for its backoff holds nothing** (the owner,
+//! 2026-10-16; open problem 43). Its hand-on keeps its due time at its
+//! place in its queue, on Xmip Storage's clock, and releases its claim and
+//! its place in the Send pool; a scan passes over it until it is due and
+//! then takes it up like any other, on whichever node. The node keeps only
+//! the earliest due time each queue's last read showed, and wakes for it,
+//! so one far end that fails cannot fill the pool every Port shares.
 //!
 //! **Recovery is a scan.** As the node starts, and every `[tuning]
 //! send_scan` after, each queue this node sends is read oldest first, and
-//! every Journey in it no live claim holds is claimed and sent: one a node
-//! left when it died, one whose send was cut short, one no node sending its
-//! Port held. Claims of work in flight are renewed while it runs; a stop
-//! gives back the claims of what waits ([`SendStep::close`]).
+//! every Journey in it no live claim holds, and due, is claimed and sent:
+//! one a node left when it died, one whose send was cut short, one whose
+//! retry is due, one no node sending its Port held. Claims of work in
+//! flight are renewed while it runs.
 //!
 //! **A claim found lost is not sent on** ([`renewal`]). A renewal that
 //! finds the claim another's stops every further attempt from this node;
@@ -60,7 +64,11 @@
 //! sends it again, Dismiss ends it Dismissed, each an act through the
 //! node's orders, audited ([`SendStep::act`], `runtime-model.md` section
 //! 13). A retry's count is the Journey's `attempts`, kept with its every
-//! hand-on, so it survives a restart and another node taking it up.
+//! hand-on, so it survives a restart and another node taking it up. The
+//! hand-on that fails it enters it in its queue's index of failed Journeys
+//! in the Ledger and the act takes it out, so how many wait is Xmip
+//! Storage's count, and the node keeps a bounded window of the oldest
+//! ([`figures`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -81,6 +89,7 @@ use crate::tuning::Tuning;
 
 mod admission;
 mod dispatch;
+mod due;
 mod failed;
 mod figures;
 mod journey_act;
@@ -92,7 +101,7 @@ mod scan;
 use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
-pub use figures::{FailedJourney, PUBLISHED_FAILED, PortFigures};
+pub use figures::{FAILED_WINDOW, FailedJourney, PortFigures};
 pub use pass::{Ended, Found, read, send, sequence};
 
 /// The Send pool's threads for each of the machine's hardware threads,
@@ -131,9 +140,8 @@ pub struct Departure {
     /// Its order key's value, on a Sequential Send Port.
     pub sequence: Option<String>,
     /// The latest this node is sure its claim holds, on its own clock: a
-    /// lease — waiting for a retry, its due time and a lease — from when
-    /// the request that last confirmed the claim was asked, so no two
-    /// clocks are ever compared.
+    /// lease from when the request that last confirmed the claim was asked,
+    /// so no two clocks are ever compared.
     pub until: Instant,
 }
 
@@ -153,14 +161,17 @@ pub struct LinedUp {
     asked: Option<Instant>,
 }
 
-/// A node's send step: what it sends, what it holds claimed, what waits for
-/// its due time, and its figures per Send Port.
+/// A node's send step: what it sends, what it holds claimed, when each of
+/// its queues next has a retry due, and its figures per Send Port.
 pub struct SendStep {
     cluster: String,
     node: String,
     storage: Arc<dyn XmipStorage>,
     lease: Duration,
     scan: Duration,
+    /// The oldest failed Journeys of each Send Port it keeps and publishes:
+    /// `[tuning] failed_window`.
+    window: usize,
     limits: Limits,
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
@@ -171,8 +182,10 @@ pub struct SendStep {
 struct State {
     /// Claimed and ready to send.
     handed: VecDeque<Departure>,
-    /// Waiting for their due time, retries.
-    due: Vec<(Instant, Departure)>,
+    /// By queue, when its earliest retry is due and how many wait for one,
+    /// as its last read of the Ledger showed: one entry per queue, however
+    /// many wait ([`due::Due`]).
+    due: HashMap<u128, due::Due>,
     owned: HashMap<JourneyId, Owned>,
     /// Places in the Send pool admitted for Journeys not yet owned.
     admitted: usize,
@@ -183,10 +196,11 @@ struct State {
     /// place frees.
     starved: Vec<u128>,
     /// Read at their place in a queue and found not to be sent —
-    /// unreadable, failed and set aside, or finished though still in a
-    /// queue — passed over by every scan after. A Retry moves a Journey to
-    /// a new place, where it is read again. By queue, so a whole read of
-    /// one forgets what has left it.
+    /// unreadable, or finished though still in a queue — passed over by
+    /// every scan after; one that failed is passed over by its place's mark
+    /// in the Ledger instead (`persist::storage::Held::failed`). A Retry
+    /// moves a Journey to a new place, where it is read again. By queue, so
+    /// a whole read of one forgets what has left it.
     passed: HashMap<u128, HashSet<(JourneyId, u64)>>,
     /// The Send Ports this node sends, each with whether a Journey of it
     /// that failed blocks its sequence: what an operator's act on one of
@@ -195,11 +209,11 @@ struct State {
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
     figures: BTreeMap<String, PortFigures>,
-    /// Every Journey that failed waiting in a queue this node sends, by
-    /// its Send Port and its place: what a scan of the Ledger read Failed,
-    /// so the evidence outlives a restart and covers what another node
-    /// failed.
-    failing: BTreeMap<String, figures::Failing>,
+    /// By Send Port, how many failed Journeys wait in its queue and the
+    /// oldest of them, at most its `window`: read from the queue's
+    /// index of them in the Ledger, so the evidence outlives a restart,
+    /// covers what another node failed, and is bounded however many fail.
+    failing: BTreeMap<String, figures::Window>,
     closed: bool,
 }
 
@@ -220,6 +234,7 @@ impl SendStep {
             storage,
             lease: tuning.send_lease,
             scan: tuning.send_scan,
+            window: tuning.failed_window,
             limits: tuning.send(),
             audit,
             state: Mutex::new(State::default()),
@@ -347,9 +362,9 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// Stop taking work: what is handed is sent, and the claims of what
-    /// waits for its due time are given back (ADR-0018 clause 12), once the
-    /// step's dispatching ends.
+    /// Stop taking work: what is handed is sent, once the step's
+    /// dispatching ends. What waits for a retry holds no claim to give back
+    /// (ADR-0018 clause 12): it waits in its queue, its due time there.
     pub fn close(&self) {
         self.lock().closed = true;
         self.wake.notify_all();

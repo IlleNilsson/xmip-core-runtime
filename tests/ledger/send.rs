@@ -6,9 +6,10 @@
 //!   the receive was acknowledged all the same: the receive cycle completed
 //!   before anything was sent;
 //! - a send that succeeds is written Completed;
-//! - a retry waiting for its backoff holds no thread: its due time is the
-//!   claim kept in the Ledger, a stop does not wait it out and gives the
-//!   claim back, and a short one is tried again and sent;
+//! - a retry waiting for its backoff holds no thread, no claim and no
+//!   place: its due time is kept at its place in its queue, a stop does not
+//!   wait it out, and a short one is tried again and sent; a restart keeps
+//!   its due time and its count of tries;
 //! - a Sequential Send Port keeps its order, and a Journey of it that
 //!   failed blocks its sequence, or is set aside, as `on_failure` says.
 
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use configure::{ExecutionStyle, OnFailure, Retry};
 use journey::JourneyState;
+use route::Subscriber;
 use transport::TransportError;
 use xcore::JourneyId;
 use xmip_core_runtime::fixture::FarEnd;
@@ -91,7 +93,7 @@ fn a_send_that_succeeds_is_written_completed_and_leaves_its_queue() {
 }
 
 #[test]
-fn a_retry_waiting_for_its_backoff_holds_no_thread_and_a_stop_gives_its_claim_back() {
+fn a_retry_waiting_for_its_backoff_holds_no_thread_no_claim_and_no_place() {
     let storage = memory();
     let (far, _) = FarEnd::answering(refusing("the far end is down", true));
     let retrying = out(|port| {
@@ -101,7 +103,7 @@ fn a_retry_waiting_for_its_backoff_holds_no_thread_and_a_stop_gives_its_claim_ba
         });
     });
     let sending = sender(node(), far, retrying);
-    let mut id = None;
+    let (mut id, mut queue) = (None, None);
     on_node(
         &storage,
         (CHUNK, &onward()),
@@ -117,13 +119,11 @@ fn a_retry_waiting_for_its_backoff_holds_no_thread_and_a_stop_gives_its_claim_ba
                 assert!(said.contains("tried again in"), "{said}");
                 assert_eq!(runtime.send.figures()["Out"].waiting, 1);
                 assert_eq!(waiting(runtime), [waits], "still in its queue");
+                queue = Some(runtime.send.queue(&Subscriber::SendPort("Out".to_string())));
                 let other = configure::fixture::test_cluster().node_scope(1);
                 let taken = storage.claim(waits, &other, 7, Duration::from_secs(30));
-                assert_eq!(
-                    taken.expect("asked"),
-                    None,
-                    "its claim kept to the due time"
-                );
+                let taken = taken.expect("asked").expect("its claim released at once");
+                assert!(storage.release(&taken).expect("asked"), "given back");
                 id = Some(waits);
             });
             assert!(
@@ -132,10 +132,18 @@ fn a_retry_waiting_for_its_backoff_holds_no_thread_and_a_stop_gives_its_claim_ba
             );
         },
     );
-    let other = configure::fixture::test_cluster().node_scope(1);
     let id = id.expect("waited");
-    let taken = storage.claim(id, &other, 8, Duration::from_secs(30));
-    assert!(taken.expect("asked").is_some(), "given back at the stop");
+    let queue = storage
+        .read_held(queue.expect("its queue"), 0, 8)
+        .expect("read");
+    let waits = queue.held.iter().find(|held| held.hold.journey == id);
+    let left = queue
+        .due_in(waits.expect("in its queue"))
+        .expect("its due time kept");
+    assert!(
+        left > Duration::from_secs(1800),
+        "an hour from its try: {left:?}"
+    );
 }
 
 #[test]
@@ -273,7 +281,7 @@ fn a_retry_count_is_kept_in_the_ledger_and_survives_a_restart() {
     on_node(
         &storage,
         (CHUNK, &onward()),
-        sender(node(), far, retried(2, "1h")),
+        sender(node(), far, retried(2, "300ms")),
         |runtime, pickup, gate| {
             dispatching(runtime, |told| {
                 let waits = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
@@ -289,7 +297,8 @@ fn a_retry_count_is_kept_in_the_ledger_and_survives_a_restart() {
         "in the Ledger"
     );
 
-    // The node restarted: two tries of three are left, not three again.
+    // The node restarted: two tries of three are left, not three again,
+    // the first at the due time the Ledger kept, not this node's backoff.
     let tries = Arc::new(AtomicU32::new(0));
     let counted = Arc::clone(&tries);
     let (far, _) = FarEnd::answering(Box::new(move |_| {

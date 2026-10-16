@@ -21,7 +21,6 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use abi::ffi::{Str, status};
 use abi::operate::audit::kept;
@@ -122,7 +121,7 @@ pub unsafe extern "C" fn xmip_audit_v1(
     status::OK
 }
 
-/// `xmip_audit_read_v1`: [`audit_store::read`] and [`AuditQuery::ask`], as
+/// `xmip_audit_read_v1`: [`audit_store::ask`] with an [`AuditQuery`], as
 /// the header's JSON.
 ///
 /// # Safety
@@ -177,18 +176,13 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
             "severities": Severity::ALL.map(Severity::word)});
         return (status::OK, none.to_string());
     };
-    // A verification walks the file's bytes as they are now (ADR-0070 clause 5),
-    // and says the bytes no write finished apart from the chains.
-    let read = if asked.verify {
-        audit_store::read_whole(&file).map(|whole| (Arc::new(whole.entries), whole.fragments))
-    } else {
-        audit_store::read(&file).map(|entries| (entries, Vec::new()))
-    };
-    let (entries, fragments) = match read {
-        Ok(read) => read,
+    // A page is read from the file a page at a time; a verification walks the
+    // file's bytes as they are now (ADR-0070 clause 5), and says the bytes no
+    // write finished apart from the chains.
+    let page = match audit_store::ask(&file, &asked) {
+        Ok(page) => page,
         Err(error) => return (status::IO, error.to_string()),
     };
-    let page = asked.ask(&entries);
     let answer = json!({
         "file": file.display().to_string(),
         "read": page.read,
@@ -199,7 +193,7 @@ fn answer(directory: &str, query: &[(String, String)]) -> (i32, String) {
         "groups": page.groups.iter().map(group).collect::<Vec<_>>(),
         "actions": page.actions,
         "chains": page.chains.iter().map(chain).collect::<Vec<_>>(),
-        "fragments": fragments.iter().map(fragment).collect::<Vec<_>>(),
+        "fragments": page.fragments.iter().map(fragment).collect::<Vec<_>>(),
         "columns": Column::ALL.map(Column::word),
         "severities": Severity::ALL.map(Severity::word),
     });

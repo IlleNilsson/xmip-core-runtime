@@ -9,8 +9,10 @@
 //!   and unclaimed, never in memory, and is sent once a place frees;
 //! - Journeys another node holds keep no place from those behind them;
 //! - claims in flight are renewed while a scan is held up, however long;
-//! - a Journey that failed before a restart is the Port's evidence again
-//!   once a scan reads it, and is let go of when an operator acts on it.
+//! - a Journey that failed before a restart is the Port's evidence again,
+//!   as Xmip Storage keeps it, and is let go of when an operator acts on it;
+//! - however many fail, the node keeps its window of the oldest and Xmip
+//!   Storage's count, the same after a restart, and every one is paged.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -272,6 +274,70 @@ fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on()
             });
         },
     );
+}
+
+/// Every failed Journey of `Out`, a page of `most` at a time from the start.
+fn paged(runtime: &xmip_core_runtime::message_path::Runtime<'_>, most: u32) -> Vec<JourneyId> {
+    let (mut all, mut from) = (Vec::new(), Some(0));
+    while let Some(at) = from {
+        let page = runtime.send.failed_journeys("Out", at, most).expect("read");
+        assert!(page.journeys.len() <= most as usize, "a page at most");
+        all.extend(page.journeys.iter().map(|failed| failed.journey));
+        from = page.next;
+    }
+    all
+}
+
+#[test]
+fn a_backlog_of_failures_keeps_the_node_to_its_window_and_counts_across_a_restart() {
+    const FAILING: u32 = 40;
+    const WINDOW: usize = 5;
+    let storage = memory();
+    let (far, _) = FarEnd::answering(refusing("the far end refused it", false));
+    let mut sending = sender(node(), far, out(|_| {}));
+    sending.tuning.failed_window = WINDOW;
+    let ids = on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sending,
+        |runtime, pickup, gate| {
+            let (ids, _) = dispatching(runtime, |told| {
+                let ids: Vec<JourneyId> = (1..=FAILING)
+                    .map(|n| carry(runtime, pickup, gate, order(n)).journeys[0].journey_id())
+                    .collect();
+                for id in &ids {
+                    told.wait_for(*id, "failed");
+                }
+                let figures = runtime.send.figures()["Out"].clone();
+                assert_eq!(figures.failing, u64::from(FAILING), "Xmip Storage's count");
+                assert_eq!(figures.oldest_failing.len(), WINDOW, "the window, no more");
+                let oldest = runtime.send.failed_journeys("Out", 0, 5).expect("read");
+                let first: Vec<JourneyId> = oldest.journeys.iter().map(|f| f.journey).collect();
+                let kept: Vec<JourneyId> =
+                    figures.oldest_failing.iter().map(|f| f.journey).collect();
+                assert_eq!(kept, first, "the oldest that failed");
+                ids
+            });
+            ids
+        },
+    );
+    // The node restarted: nothing of the backlog is in its memory.
+    let (far, _) = FarEnd::answering(taking());
+    let mut sending = sender(node(), far, out(|_| {}));
+    sending.tuning.failed_window = WINDOW;
+    on_node(&storage, (CHUNK, &onward()), sending, |runtime, _, _| {
+        dispatching(runtime, |_| {
+            let failing = || runtime.send.figures().get("Out").map(|f| f.failing);
+            until(|| failing() == Some(u64::from(FAILING)), "counted again");
+            assert_eq!(runtime.send.figures()["Out"].oldest_failing.len(), WINDOW);
+            let mut all = paged(runtime, 7);
+            assert_eq!(all.len(), ids.len(), "each once: {all:?}");
+            all.sort_unstable();
+            let mut carried = ids.clone();
+            carried.sort_unstable();
+            assert_eq!(all, carried, "every one that failed, paged");
+        });
+    });
 }
 
 #[test]

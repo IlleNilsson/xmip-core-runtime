@@ -27,7 +27,8 @@
 //! **The Journeys that failed** at every Send Port the node sends are
 //! published beside the records (`observe::FailedJourneys`): how many wait
 //! in its queue now — zero where none — whether they block its sequence,
-//! and the oldest hundred with why, so a surface offers Retry and Dismiss
+//! and the oldest with why — `[tuning] failed_window` of them, a hundred
+//! by default — so a surface offers Retry and Dismiss
 //! on each at the Port's scope; apart from them, the last that failed there
 //! since the node started, as history. The rest are read from Xmip Storage
 //! a page at a time (`xmip_failed_journeys_v1`).

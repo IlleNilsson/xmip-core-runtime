@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, HandOn,
-    HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay, Replayed,
-    StreamChunk, StreamRecord, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, FailedQueue,
+    HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay,
+    Replayed, StreamChunk, StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -62,6 +62,10 @@ impl XmipStorage for HaltsAtPublication {
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         self.0.read_held(queue, from, most)
+    }
+
+    fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
+        self.0.read_failed(queue, from, most)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {

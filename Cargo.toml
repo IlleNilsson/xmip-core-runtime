@@ -190,7 +190,8 @@ node = [
 # (`xmip_remote_*`, the kept open too) and section 19's request
 # (`xmip_operator_request_v1`, a person's key and request, and its two
 # halves around a keeper's signature, `xmip_operator_information_v1` and
-# `xmip_operator_assemble_v1`). Built alone with
+# `xmip_operator_assemble_v1`, and the chain and anchors kept whole,
+# `xmip_operator_keep_v1`). Built alone with
 # `--no-default-features --features remote`.
 remote = []
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with

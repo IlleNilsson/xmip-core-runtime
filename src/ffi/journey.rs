@@ -22,7 +22,7 @@ use crate::ffi::rule::refuse;
 #[cfg(feature = "node")]
 use crate::ffi::text::scope_text;
 #[cfg(feature = "node")]
-use crate::send_step::{PUBLISHED_FAILED, PortFigures, SendStep};
+use crate::send_step::{FAILED_WINDOW, PortFigures, SendStep};
 
 /// A list of failed Journeys as the header writes it: each Port's, with the
 /// place its next page reads from, where there is one.
@@ -63,7 +63,8 @@ fn listed<'a>(
 
 /// The Journeys that failed at `port` (empty: every Port) of every node in
 /// this process at or beneath `node` (empty: all), read from Xmip Storage
-/// from `from` on, at most `most` (0: a hundred) of each Port, as
+/// from the place `from` on in each Port's index of failed Journeys, at
+/// most `most` (0: `send_step::FAILED_WINDOW`, a hundred) of each Port, as
 /// `crate::send_step::SendStep::failed_journeys` reads them.
 ///
 /// # Safety
@@ -86,7 +87,7 @@ pub unsafe extern "C" fn xmip_failed_journeys_v1(
         return status::MALFORMED;
     };
     let most = if most == 0 {
-        u32::try_from(PUBLISHED_FAILED).unwrap_or(u32::MAX)
+        u32::try_from(FAILED_WINDOW).unwrap_or(u32::MAX)
     } else {
         most
     };

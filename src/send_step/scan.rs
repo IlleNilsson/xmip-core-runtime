@@ -2,9 +2,11 @@
 //! holds, claimed oldest first — on a Sequential Send Port only the oldest
 //! of each sequence nothing is in flight or blocked before — each under a
 //! place the Send pool admits, and none past the last place it has. A
-//! Journey that failed stays in its queue for an operator, passed over at
-//! its place and kept as its Port's evidence; a Retry moves it to a new
-//! one, or, where it blocks its sequence, makes it one to send where it is.
+//! Journey that failed stays in its queue for an operator, passed over by
+//! its place's mark in the Ledger without its Journey being read — unless
+//! it blocks its sequence, which is read to know which — and counted in the
+//! queue's index of failed Journeys; a Retry moves it to a new place, or,
+//! where it blocks its sequence, makes it one to send where it is.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -15,6 +17,7 @@ use persist::storage::Claim;
 use route::Subscriber;
 use xcore::JourneyId;
 
+use super::due::Due;
 use super::pass::{Found, read, sequence};
 use super::{Departure, Owned};
 use crate::departure::Progress;
@@ -29,11 +32,26 @@ const PAGE: u32 = 64;
 /// each under a place its Send pool admits, and where none is left the
 /// queue starved until one frees — read oldest first, each that no live
 /// claim holds claimed. On a Sequential Send Port only the
-/// oldest of each sequence that nothing is in flight or blocked before it,
-/// read before it is claimed and again once it is. Every Journey read
-/// Failed is kept as its Port's evidence; a read of the whole queue forgets
-/// what failed there and is gone from it.
+/// oldest of each sequence that nothing is in flight, waiting or blocked
+/// before it, read before it is claimed and again once it is. A place
+/// marked failed is passed over unread, unless it blocks its sequence; a
+/// place whose retry is not yet due is passed over unclaimed, its due time
+/// noted for the queue ([`Due`]); a read of the whole queue forgets every
+/// place passed over that is gone from it.
 pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Ready> {
+    let mut waits = Due::of(to.name());
+    let (found, whole) = scanning(runtime, (to, queue), &mut waits);
+    runtime.send.waited(queue, waits, whole);
+    found
+}
+
+/// [`scan`]'s reading, the retries it found not yet due kept in `waits`:
+/// what it found to send, and whether it read the whole queue.
+fn scanning(
+    runtime: &Runtime<'_>,
+    (to, queue): (&Subscriber, u128),
+    waits: &mut Due,
+) -> (Vec<Ready>, bool) {
     let step = runtime.send;
     let ordered = match runtime.sends.to(to) {
         Destination::Ports(ports) => ports.iter().find_map(|port| {
@@ -42,6 +60,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
         }),
         Destination::Process | Destination::Nowhere => None,
     };
+    let blocking = matches!(ordered, Some((_, OnFailure::Block)));
     let mut busy: HashSet<String> = step
         .lock()
         .owned
@@ -53,20 +72,40 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
     let mut found = Vec::new();
     let mut from = 0;
     loop {
+        let asked = Instant::now();
         let page = match step.storage.read_held(queue, from, PAGE) {
             Ok(page) => page,
             Err(why) => {
                 step.queue_read(to.name(), Some(why.to_string()));
-                return found;
+                return (found, false);
             }
         };
         step.queue_read(to.name(), None);
         let read_all = page.held.len() < PAGE as usize;
-        for held in page.held {
+        for held in &page.held {
             from = held.sequence + 1;
             let id = held.hold.journey;
             let place = (id, held.sequence);
             present.insert(place);
+            if held.failed && !blocking {
+                continue;
+            }
+            if let Some(left) = page.due_in(held) {
+                // Its retry is not due: nothing claims it, and on a
+                // Sequential Port its sequence waits behind it.
+                waits.waits(asked + left);
+                let Some((key, _)) = &ordered else {
+                    continue;
+                };
+                match read(runtime, id, &held.hold.body) {
+                    Ok(Found::Waiting(waiting)) => {
+                        busy.insert(sequence(&waiting.0.message, key.as_deref()));
+                    }
+                    Ok(_) => {}
+                    Err(_) => return (found, false),
+                }
+                continue;
+            }
             let known = {
                 let state = step.lock();
                 state.owned.contains_key(&id)
@@ -84,7 +123,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
                 // once a place frees, so nothing claimed lapses behind a
                 // backlog and nothing waits in memory.
                 step.starve(queue);
-                return found;
+                return (found, false);
             }
             let body = &held.hold.body;
             let Some((key, on_failure)) = &ordered else {
@@ -101,7 +140,7 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
             };
             let taken = in_sequence(
                 runtime,
-                (to, queue),
+                queue,
                 (place, body),
                 (key.as_deref(), *on_failure),
                 &mut busy,
@@ -113,13 +152,13 @@ pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<R
                 Taken::Passed => step.withdraw(1),
                 Taken::Unanswered => {
                     step.withdraw(1);
-                    return found;
+                    return (found, false);
                 }
             }
         }
         if read_all {
-            step.read_whole((to.name(), queue), &present);
-            return found;
+            step.read_whole(queue, &present);
+            return (found, true);
         }
     }
 }
@@ -159,7 +198,7 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
         place,
         body,
     } = unclaimed;
-    match claimed_first(runtime, (to, *queue), *place, body) {
+    match claimed_first(runtime, *queue, *place, body) {
         Taken::One(one) => Some(owned(runtime.send, to, *queue, *one)),
         Taken::Passed | Taken::Unanswered => None,
     }
@@ -205,31 +244,11 @@ enum Taken {
     Unanswered,
 }
 
-/// What a scan read of the Journey at `place` bound for `to`, kept as its
-/// Port's evidence: Failed with why, or no longer failing.
-fn noted(runtime: &Runtime<'_>, to: &Subscriber, place: (JourneyId, u64), found: &Found) {
-    let step = runtime.send;
-    match found {
-        Found::Failed(work) => {
-            let reason = work
-                .journey
-                .entries()
-                .last()
-                .map(|entry| entry.outcome.clone())
-                .unwrap_or_default();
-            step.found_failing(to.name(), place.1, place.0, reason);
-        }
-        Found::Waiting(_) | Found::Finished | Found::Unreadable(_) => {
-            step.not_failing(to.name(), place.0);
-        }
-    }
-}
-
 /// An entry of a queue that is not ordered, at its `place`: claimed, then
 /// read.
 fn claimed_first(
     runtime: &Runtime<'_>,
-    (to, queue): (&Subscriber, u128),
+    queue: u128,
     place: (JourneyId, u64),
     body: &[u8],
 ) -> Taken {
@@ -242,11 +261,7 @@ fn claimed_first(
         Ok(None) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
-    let found = read(runtime, id, body);
-    if let Ok(found) = &found {
-        noted(runtime, to, place, found);
-    }
-    match found {
+    match read(runtime, id, body) {
         Ok(Found::Waiting(found)) => {
             let (work, facts) = *found;
             Taken::One(Box::new((work, facts, claim, None, asked)))
@@ -276,23 +291,20 @@ fn claimed_first(
 /// its place between the first read and the claim.
 fn in_sequence(
     runtime: &Runtime<'_>,
-    (to, queue): (&Subscriber, u128),
+    queue: u128,
     (place, body): ((JourneyId, u64), &[u8]),
     (key, on_failure): (Option<&str>, OnFailure),
     busy: &mut HashSet<String>,
 ) -> Taken {
     let step = runtime.send;
     let id = place.0;
-    let found = read(runtime, id, body);
-    if let Ok(found) = &found {
-        noted(runtime, to, place, found);
-    }
-    let work = match found {
+    let work = match read(runtime, id, body) {
         Ok(Found::Waiting(found)) => {
             let (work, _) = *found;
             work
         }
-        // Blocking, it is read at every scan: a Retry keeps its place.
+        // Blocking, it is read at every scan, its place marked failed or
+        // not: a Retry keeps its place.
         Ok(Found::Failed(work)) if on_failure == OnFailure::Block => {
             busy.insert(sequence(&work.message, key));
             return Taken::Passed;

@@ -1,7 +1,10 @@
 //! `xmip_operate.h` section 19: a person's certificate (ADR-0034,
 //! amendment 2026-10-15). An operator's request made — a fresh key and the
-//! request naming the person, `provision::operator::request`, which the
-//! phone's build carries too — its two halves around a keeper's signature
+//! request naming the person, written into a folder as private files,
+//! `provision::operator::request_into`, which the phone's build carries
+//! too — the chain and anchors a surface keeps, written whole
+//! (`provision::operator::keep`), every build too — its two halves around a
+//! keeper's signature
 //! for a key that never leaves its platform's keeper
 //! (`provision::operator::information` and `assemble`, every build too) —
 //! and, on a node's build, one signed by the
@@ -15,35 +18,73 @@ use serde_json::json;
 use crate::ffi::rule::{hand, refuse};
 use crate::ffi::text::{scope_text, slice_bytes};
 
-/// A fresh P-256 key and an operator's request for `person`, as one JSON
-/// document `{"key","request"}`, each PEM; `XMIP_E_INVALID` with the
-/// refusal where `person` is not a person's name.
+/// A fresh P-256 key and an operator's request for `person`, written into
+/// the folder `folder` as private files, `provision::operator::request_into`:
+/// the key never crosses this boundary. The answer is one JSON document
+/// `{"key","request"}`, the two files' paths; `XMIP_E_INVALID` with the
+/// refusal where `person` is not a person's name or a file is there already.
 ///
 /// # Safety
-/// `person` points at its stated length of readable bytes; `out` has room
-/// for `cap` bytes and `out_len` is writable.
+/// `person` and `folder` point at their stated lengths of readable bytes;
+/// `out` has room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operator_request_v1(
     person: Str,
+    folder: Str,
     out: *mut u8,
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: the caller upholds the header's contract on `person`.
-    let Some(person) = (unsafe { scope_text(person) }) else {
+    // SAFETY: the caller upholds the header's contract on both strings.
+    let (Some(person), Some(folder)) =
+        (unsafe { scope_text(person) }, unsafe { scope_text(folder) })
+    else {
         return status::MALFORMED;
     };
-    let (code, text) = match provision::operator::request(person) {
-        Ok(made) => (
+    let folder = std::path::Path::new(folder);
+    let (code, text) = match provision::operator::request_into(person, folder) {
+        Ok(written) => (
             status::OK,
-            zeroize::Zeroizing::new(
-                json!({ "key": made.key.as_str(), "request": made.request }).to_string(),
-            ),
+            json!({
+                "key": written.key.display().to_string(),
+                "request": written.request.display().to_string(),
+            })
+            .to_string(),
         ),
-        Err(refused) => (status::INVALID, zeroize::Zeroizing::new(refused.message)),
+        Err(refused) => (status::INVALID, refused.message),
     };
     // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
-    unsafe { refuse(text.as_str(), out, cap, out_len) };
+    unsafe { refuse(&text, out, cap, out_len) };
+    code
+}
+
+/// The text `text` — a chain the authority signed, or the anchors a surface
+/// trusts, PEM — kept whole at the file `path`, `provision::operator::keep`:
+/// written beside it, synced and renamed over what was there. An empty
+/// answer where kept; `XMIP_E_INVALID` with the refusal where not.
+///
+/// # Safety
+/// Both strings point at their stated lengths of readable bytes; `out` has
+/// room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_operator_keep_v1(
+    path: Str,
+    text: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract on both strings.
+    let (Some(path), Some(text)) = (unsafe { scope_text(path) }, unsafe { scope_text(text) })
+    else {
+        return status::MALFORMED;
+    };
+    let (code, said) = match provision::operator::keep(std::path::Path::new(path), text) {
+        Ok(()) => (status::OK, String::new()),
+        Err(refused) => (status::INVALID, refused.message),
+    };
+    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
+    unsafe { refuse(&said, out, cap, out_len) };
     code
 }
 
@@ -151,27 +192,51 @@ mod tests {
     }
 
     #[test]
-    fn a_request_is_made_for_a_person_and_a_distinguished_name_is_refused() {
+    fn a_request_is_written_for_a_person_and_a_distinguished_name_is_refused() {
+        let base = std::env::temp_dir().join(format!("xmip-ffi-request-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let folder = base.join("phone").display().to_string();
         // SAFETY: every pointer is to live, writable storage of its size.
         let (code, text) = answer(|out, cap, len| unsafe {
-            xmip_operator_request_v1(borrow("alice@example.org"), out, cap, len)
+            xmip_operator_request_v1(borrow("alice@example.org"), borrow(&folder), out, cap, len)
         });
         assert_eq!(code, status::OK, "{text}");
         let made: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert!(made["key"].as_str().expect("key").contains("PRIVATE KEY"));
-        assert!(
-            made["request"]
-                .as_str()
-                .expect("request")
-                .contains("CERTIFICATE REQUEST")
-        );
+        let key = std::fs::read_to_string(made["key"].as_str().expect("key")).expect("read");
+        assert!(key.contains("PRIVATE KEY"));
+        assert!(!text.contains("PRIVATE KEY"), "the key never crosses");
+        let request = made["request"].as_str().expect("request");
+        let request = std::fs::read_to_string(request).expect("read");
+        assert!(request.contains("CERTIFICATE REQUEST"));
 
         // SAFETY: as above.
         let (code, text) = answer(|out, cap, len| unsafe {
-            xmip_operator_request_v1(borrow("CN=alice"), out, cap, len)
+            xmip_operator_request_v1(borrow("alice@example.org"), borrow(&folder), out, cap, len)
+        });
+        assert_eq!(code, status::INVALID);
+        assert!(text.contains("nothing is overwritten"), "{text}");
+        let other = base.join("other").display().to_string();
+        // SAFETY: as above.
+        let (code, text) = answer(|out, cap, len| unsafe {
+            xmip_operator_request_v1(borrow("CN=alice"), borrow(&other), out, cap, len)
         });
         assert_eq!(code, status::INVALID);
         assert!(text.contains("person"), "{text}");
+
+        let chain = base
+            .join("phone")
+            .join("operator.pem")
+            .display()
+            .to_string();
+        for pem in ["first", "second"] {
+            // SAFETY: as above.
+            let (code, said) = answer(|out, cap, len| unsafe {
+                xmip_operator_keep_v1(borrow(&chain), borrow(pem), out, cap, len)
+            });
+            assert_eq!(code, status::OK, "{said}");
+        }
+        assert_eq!(std::fs::read_to_string(&chain).expect("kept"), "second");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn lent(bytes: &[u8]) -> Slice {
