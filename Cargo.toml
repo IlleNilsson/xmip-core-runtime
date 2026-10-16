@@ -121,6 +121,9 @@ xmip-core-runtime = { path = ".", default-features = false, features = ["test-su
 # The test cluster's names, from its `xmip.toml` (`configure::fixture`;
 # ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", features = ["test-support"] }
+# A loopback address no one holds, for a node a test starts to bind
+# (`net::fixture::unheld`).
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", features = ["test-support"] }
 # A runtime store in memory, sealed under a key held in memory, so a test
 # stops and starts a node over the same records without a machine's key store.
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }

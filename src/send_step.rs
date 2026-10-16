@@ -37,8 +37,9 @@
 //! place in its queue, on Xmip Storage's clock, and releases its claim and
 //! its place in the Send pool; a scan passes over it until it is due and
 //! then takes it up like any other, on whichever node. The node keeps only
-//! the earliest due time each queue's last read showed, and wakes for it,
-//! so one far end that fails cannot fill the pool every Port shares.
+//! the earliest due time each queue's last read showed, and each hand-on
+//! since that read began noted, and wakes for it at that time, so one far
+//! end that fails cannot fill the pool every Port shares.
 //!
 //! **Recovery is a scan.** As the node starts, and every `[tuning]
 //! send_scan` after, each queue this node sends is read oldest first, and
@@ -92,6 +93,8 @@ mod dispatch;
 mod due;
 mod failed;
 mod figures;
+#[cfg(test)]
+mod fixture;
 mod journey_act;
 mod pass;
 mod registered;

@@ -182,9 +182,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
 #[test]
 fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
     let authority = Authority::new();
-    let free = TcpListener::bind("127.0.0.1:0").expect("a free port");
-    let address = free.local_addr().expect("its address");
-    drop(free);
+    let address = net::fixture::unheld();
     let surface = Remote::retrying(
         &address.to_string(),
         &authority.identity("surface"),

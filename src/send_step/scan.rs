@@ -40,6 +40,7 @@ const PAGE: u32 = 64;
 /// place passed over that is gone from it.
 pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
+    runtime.send.reading(queue);
     let (found, whole) = scanning(runtime, (to, queue), &mut waits);
     runtime.send.waited(queue, waits, whole);
     found
