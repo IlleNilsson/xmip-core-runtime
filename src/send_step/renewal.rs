@@ -115,11 +115,7 @@ impl SendStep {
                 state = self.lock();
                 continue;
             }
-            state = self
-                .wake
-                .wait_timeout(state, next - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            state = self.wake.wait_until(&self.state, state, next).0;
         }
     }
 

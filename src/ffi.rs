@@ -2,8 +2,9 @@
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
 //! sections 5 to 19, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
 //! ADR-0034) and the loader that opens a module's library and calls through
-//! its table (ADR-0057), and the two Windows calls the local operate endpoint makes
-//! (`system`; ADR-0014, amendment 2026-10-13). Unsafe
+//! its table (ADR-0057), the two Windows calls the local operate endpoint makes
+//! (`system`; ADR-0014, amendment 2026-10-13) and those a directory watch
+//! makes (`directory_watch`; ADR-0018, amendment 2026-10-17). Unsafe
 //! code is allowed in these files and nowhere else in the runtime; each file
 //! lowers the crate's `deny` at its top, and `test/Unsafe.Test.ps1` holds the
 //! folder.
@@ -25,6 +26,8 @@ pub mod curve;
 pub mod dead_message;
 #[cfg(feature = "node")]
 pub mod design;
+#[cfg(all(windows, feature = "node"))]
+pub(crate) mod directory_watch;
 #[cfg(feature = "remote")]
 pub mod event;
 #[cfg(feature = "remote")]

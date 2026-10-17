@@ -13,9 +13,11 @@
 
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::Duration;
+
+use xcore::wake::Wake;
 
 /// How far a pool may grow, and how long a thread with nothing to do waits
 /// before it ends.
@@ -75,7 +77,7 @@ struct State<'env> {
 
 struct Shared<'env> {
     state: Mutex<State<'env>>,
-    ready: Condvar,
+    ready: Wake,
     idle: Duration,
 }
 
@@ -105,7 +107,7 @@ impl<'scope, 'env> Pool<'scope, 'env> {
                     waiting: 0,
                     closed: false,
                 }),
-                ready: Condvar::new(),
+                ready: Wake::new(),
                 idle: limits.idle,
             }),
             most: limits.most.max(1),
@@ -170,13 +172,10 @@ fn serve(shared: &Shared<'_>) {
             break;
         }
         state.waiting += 1;
-        let (waited, timeout) = shared
-            .ready
-            .wait_timeout(state, shared.idle)
-            .unwrap_or_else(PoisonError::into_inner);
+        let (waited, timed_out) = shared.ready.wait_timeout(&shared.state, state, shared.idle);
         state = waited;
         state.waiting -= 1;
-        if timeout.timed_out() && state.queued.is_empty() && state.threads > 1 {
+        if timed_out && state.queued.is_empty() && state.threads > 1 {
             break;
         }
     }

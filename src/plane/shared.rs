@@ -4,8 +4,10 @@
 //! what ends a read either of its lines waits in.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
+
+use xcore::wake::Wake;
 
 use crate::plane::deadline::Deadline;
 use crate::plane::line::{Ending, Reach};
@@ -23,7 +25,7 @@ pub(crate) struct Shared {
     pub(crate) deadline: Deadline,
     pub(crate) retry: Vec<Duration>,
     pub(crate) state: Mutex<State>,
-    pub(crate) told: Condvar,
+    pub(crate) told: Wake,
     pub(crate) ending: Arc<AtomicBool>,
     /// In a connect, which nothing cuts short.
     pub(crate) connecting: AtomicBool,

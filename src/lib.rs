@@ -32,6 +32,8 @@ pub mod departure;
 #[cfg(feature = "node")]
 pub mod design;
 #[cfg(feature = "node")]
+pub mod directory_watch;
+#[cfg(feature = "node")]
 pub mod execution_tree;
 pub mod ffi;
 #[cfg(all(feature = "node", any(test, feature = "test-support")))]

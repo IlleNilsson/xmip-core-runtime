@@ -98,5 +98,5 @@ fn pause(shared: &Shared, delay: Duration) {
     let state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
     let _ = shared
         .told
-        .wait_timeout_while(state, delay, |_| !shared.ending());
+        .wait_timeout_while(&shared.state, state, delay, |_| !shared.ending());
 }

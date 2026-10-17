@@ -10,8 +10,10 @@
 //! arms it, and ends with its surface.
 
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+use xcore::wake::Wake;
 
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::plane::shared::Shared;
@@ -26,7 +28,7 @@ struct Armed {
 #[derive(Default)]
 pub(crate) struct Deadline {
     armed: Mutex<Armed>,
-    changed: Condvar,
+    changed: Wake,
 }
 
 impl Deadline {
@@ -122,19 +124,11 @@ fn watch(shared: &Arc<Shared>) {
         .unwrap_or_else(PoisonError::into_inner);
     while !shared.ending() {
         let Some(until) = armed.until else {
-            armed = deadline
-                .changed
-                .wait(armed)
-                .unwrap_or_else(PoisonError::into_inner);
+            armed = deadline.changed.wait(&deadline.armed, armed);
             continue;
         };
-        let now = Instant::now();
-        if now < until {
-            armed = deadline
-                .changed
-                .wait_timeout(armed, until - now)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+        if Instant::now() < until {
+            armed = deadline.changed.wait_until(&deadline.armed, armed, until).0;
             continue;
         }
         armed.until = None;
@@ -184,10 +178,17 @@ mod tests {
         assert!(asked.elapsed() < within * 4, "{:?}", asked.elapsed());
         assert!(said.ends_with(&not_answered(within)), "{said}");
         assert!(!surface.state().reachable);
-        // Said at once from now on, while the follow recovers it.
-        let again = Instant::now();
-        assert!(surface.publication().is_err());
-        assert!(again.elapsed() < Duration::from_millis(10));
+        // Said at once from now on, while the follow recovers it: the
+        // fastest of five under the millisecond, and no more than that of
+        // the caller's processor time in any (xcore::latency::at_once).
+        let (again, fastest, spent) =
+            xcore::latency::at_once("a hung node, asked again", || surface.publication());
+        assert!(again.is_err());
+        assert!(fastest < Duration::from_millis(1), "said in {fastest:?}");
+        assert!(
+            spent < Duration::from_millis(1),
+            "{spent:?} of processor time"
+        );
         drop(surface);
         drop(held.join());
     }

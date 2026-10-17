@@ -175,7 +175,7 @@ impl Running {
             });
         }
         // The oldest of its Dead Message Queue; one that cannot be read now
-        // is published at the next look.
+        // is published in the next publication.
         if let Ok((_, dead)) = self.pickup.dead_messages(PUBLISHED) {
             for entry in dead {
                 snapshot.record_dead_message(entry);

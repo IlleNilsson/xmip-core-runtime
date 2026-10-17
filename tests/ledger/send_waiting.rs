@@ -152,6 +152,63 @@ fn a_far_end_that_always_fails_holds_no_place_a_healthy_port_needs() {
 }
 
 #[test]
+fn a_scan_that_read_its_queue_before_a_retry_was_handed_on_never_sends_it_again() {
+    // A scan reads `Out`'s queue while the Journey's first pass is under
+    // way, so the read shows no due time at its place; the pass's hand-on
+    // lands — Recovering, its due time an hour off, its claim released — and
+    // only then does the scan go on with what it read. Its claim is granted,
+    // for none is held; what it read under that claim decides.
+    let (interleaved, storage) = interleaving();
+    let (far, _) = FarEnd::answering(refusing("the far end is down", true));
+    let retried = out(|port| {
+        port.retry = Some(Retry {
+            attempts: 3,
+            backoff: "1h".to_string(),
+        });
+    });
+    let id = on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, retried),
+        |runtime, pickup, gate| {
+            let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+            let (read, was_read) = std::sync::mpsc::channel::<()>();
+            let (settled, was_settled) = std::sync::mpsc::channel::<()>();
+            let patience = Duration::from_secs(30);
+            let reading = std::sync::Arc::clone(&interleaved);
+            // Before the first pass's hand-on lands, a scan reads the queue,
+            // and holds what it read until that pass is settled.
+            interleaved.before(
+                Operation::HandOn,
+                Box::new(move || {
+                    reading.after(
+                        Operation::ReadHeld,
+                        Box::new(move || {
+                            read.send(()).expect("told");
+                            was_settled.recv_timeout(patience).expect("settled");
+                        }),
+                    );
+                    was_read.recv_timeout(patience).expect("the queue read");
+                }),
+            );
+            dispatching(runtime, |told| {
+                told.wait_for(id, "waiting");
+                settled.send(()).expect("told");
+            });
+            id
+        },
+    );
+    let tried = journey(storage.as_ref(), id);
+    let sends = tried
+        .entries()
+        .iter()
+        .filter(|e| e.action == "send")
+        .count();
+    assert_eq!(sends, 1, "tried once, not again before it is due");
+    assert_eq!(tried.attempts.tries, 1, "one try");
+}
+
+#[test]
 fn a_pass_whose_claim_is_not_surely_held_writes_nothing_and_is_taken_up_again() {
     let (interleaved, storage) = interleaving();
     let id = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {

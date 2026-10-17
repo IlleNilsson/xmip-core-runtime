@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use xaudit::program_audit::ProgramAudit;
+use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::absent_node;
 use xmip_core_runtime::plane::{Board, Listener, Outcome, Published, Remote, Role};
 
@@ -67,21 +68,22 @@ fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() 
     assert!(reached.reachable, "{}", reached.reason);
 
     // The millisecond rule: a follow notification on the local endpoint,
-    // measured from the post to the follower told, over many rounds.
+    // measured from the post to the follower told, over many rounds, each
+    // beside a plain wake (super::hold says what is held).
     let mut seen = reached.told;
-    let mut took = Vec::new();
+    let mut rounds = super::Rounds::default();
     for round in 2..=201u64 {
         let posted = Instant::now();
+        let from = ProcessorTime::process();
         board.post(format!("source = \"{round}\"\n"));
         let told = surface.wait(seen, Duration::from_secs(5));
-        took.push(posted.elapsed());
+        rounds.took.push(posted.elapsed());
+        rounds.worked.push(from.elapsed());
         assert_eq!(told.revision, round);
         seen = told.told;
+        rounds.beside();
     }
-    took.sort();
-    let (median, p99) = (took[took.len() / 2], took[took.len() * 99 / 100]);
-    println!("follow notification on the local endpoint: median {median:?}, p99 {p99:?}");
-    assert!(median < Duration::from_millis(1), "median {median:?}");
+    rounds.hold("follow notification on the local endpoint");
 }
 
 #[test]

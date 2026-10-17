@@ -210,17 +210,16 @@ pub unsafe extern "C" fn xmip_wait_change_v1(
         return status::INVALID;
     }
 
-    let (revision, changed) = change_clock();
-    let revision = revision
+    let (mutex, changed) = change_clock();
+    let revision = mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (revision, _) = changed
-        .wait_timeout_while(
-            revision,
-            Duration::from_millis(u64::from(timeout_ms)),
-            |current| *current <= after_revision,
-        )
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (revision, _) = changed.wait_timeout_while(
+        mutex,
+        revision,
+        Duration::from_millis(u64::from(timeout_ms)),
+        |current| *current <= after_revision,
+    );
 
     // SAFETY: checked for null above; the caller promises writable storage.
     unsafe { out_revision.write(*revision) };
