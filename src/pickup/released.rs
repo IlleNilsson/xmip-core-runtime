@@ -36,8 +36,7 @@ impl Pickup {
         if !state.ready() && !timeout.is_zero() {
             state = self
                 .wake
-                .wait_timeout_while(state, timeout, |state| !state.ready())
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .wait_timeout_while(&self.state, state, timeout, |state| !state.ready())
                 .0;
         }
         let now = Instant::now();

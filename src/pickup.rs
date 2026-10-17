@@ -39,13 +39,14 @@
 //! runtime's library lists and acts on it (`xmip_operate.h` section 14).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use observe::{Act, Noun, Subscription as Published, now_unix_nanos};
 use persist::storage::{AdministrationKind, AdministrationRecord, XmipStorage, named};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
+use xcore::wake::Wake;
 use xcore::{ExecutionPhase, Severity};
 
 use crate::configured_subscription::ConfiguredSubscription;
@@ -70,7 +71,7 @@ pub struct Pickup {
     storage: Arc<dyn XmipStorage>,
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
-    wake: Condvar,
+    wake: Wake,
 }
 
 /// Every node's pickup in this process.
@@ -134,7 +135,7 @@ impl Pickup {
             storage,
             audit,
             state: Mutex::new(State { entries }),
-            wake: Condvar::new(),
+            wake: Wake::new(),
         });
         let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
         registered.retain(|held| held.strong_count() > 0);

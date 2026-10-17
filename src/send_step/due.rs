@@ -42,7 +42,15 @@ impl Due {
     /// One more waiting, due at `at`, as its hand-on noted it once Xmip
     /// Storage took it: kept across the read under way.
     pub(super) fn noted(&mut self, at: Instant) {
-        self.waits(at);
+        self.waiting += 1;
+        self.wakes(at);
+    }
+
+    /// Woken for at `at`, kept across the read under way, and not counted:
+    /// a retry a scan's claim found not yet due, which the queue's read
+    /// counts (`runtime-model.md` section 10, corrected 2026-10-17).
+    pub(super) fn wakes(&mut self, at: Instant) {
+        self.at = Some(earlier(self.at, at));
         self.noted = Some(earlier(self.noted, at));
     }
 }
@@ -70,6 +78,17 @@ impl super::SendStep {
         if let Some(due) = self.lock().due.get_mut(&queue) {
             due.noted = None;
         }
+    }
+
+    /// The retry at a place of `queue`, the queue of the Send Port `port`,
+    /// found not yet due under a scan's claim: woken for at `at`.
+    pub(super) fn not_due(&self, (port, queue): (&str, u128), at: Instant) {
+        self.lock()
+            .due
+            .entry(queue)
+            .or_insert_with(|| Due::of(port))
+            .wakes(at);
+        self.wake.notify_all();
     }
 
     /// What a scan of `queue` found waiting, `waits`: the queue's due time
@@ -131,6 +150,43 @@ mod tests {
         assert_eq!(asked, vec![queue], "the queue is read again");
         assert!(woke >= due, "not before it is due");
         assert!(woke < scan, "nor at the next scan");
+    }
+
+    /// A queue's retry is woken for within a millisecond of its due time,
+    /// apart from load: held to `std::thread::sleep` measured beside it.
+    /// Until 2026-10-17 the wait ended on Windows' system tick, 9-14 ms
+    /// late (`xcore::wake`).
+    #[test]
+    fn a_due_time_is_woken_for_within_a_millisecond() {
+        const DUE: Duration = Duration::from_millis(2);
+        const ROUNDS: usize = 200;
+        let step = step();
+        let queue = 1;
+        let (mut late, mut control) = (Vec::new(), Vec::new());
+        for _ in 0..ROUNDS {
+            let due = Instant::now() + DUE;
+            step.lock()
+                .due
+                .entry(queue)
+                .or_insert_with(|| Due::of("Out"))
+                .at = Some(due);
+            let (_, _, asked) = step.next(Instant::now() + Duration::from_secs(10));
+            late.push(Instant::now().saturating_duration_since(due));
+            assert_eq!(asked, vec![queue], "woken for the retry");
+            let slept = Instant::now();
+            std::thread::sleep(DUE);
+            control.push(slept.elapsed().saturating_sub(DUE));
+        }
+        // The fastest of five: this suite's two hundred tests run beside
+        // it, and their load moves the tail by milliseconds either way. The
+        // tail is held where nothing runs beside it, in `xcore::wake`'s tests.
+        let late = xcore::latency::spread("a retry woken after its due time", late);
+        let usual = xcore::latency::spread("a sleep beside it", control).fastest_of_five;
+        assert!(
+            late.fastest_of_five < Duration::from_millis(1) + usual,
+            "the fastest of five {:?} late, the machine's own {usual:?}",
+            late.fastest_of_five
+        );
     }
 
     /// What a hand-on noted before a read began, the read finds: a read of

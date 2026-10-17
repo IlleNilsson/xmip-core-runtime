@@ -19,11 +19,13 @@
 //! on a second try.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::json;
+
+use xcore::wake::Wake;
 
 use crate::plane::call::{ACT, PUBLICATION};
 use crate::plane::deadline::{self, Deadline};
@@ -175,7 +177,7 @@ impl Remote {
                     reason: "not connected yet".to_string(),
                     ..State::default()
                 }),
-                told: Condvar::new(),
+                told: Wake::new(),
                 ending: Arc::new(AtomicBool::new(false)),
                 connecting: AtomicBool::new(false),
                 following: Mutex::new(None),
@@ -248,10 +250,9 @@ impl Remote {
             .unwrap_or_else(PoisonError::into_inner);
         self.shared
             .told
-            .wait_timeout_while(state, within, |state| {
+            .wait_timeout_while(&self.shared.state, state, within, |state| {
                 state.told <= seen && !self.shared.ending()
             })
-            .unwrap_or_else(PoisonError::into_inner)
             .0
             .clone()
     }

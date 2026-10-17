@@ -6,7 +6,8 @@
 //! its entries and the exports are `ffi/operate.rs`.
 
 use observe::{Count, HealthRecord, Snapshot};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use xcore::wake::Wake;
 
 use crate::start::unconfigured;
 
@@ -99,10 +100,10 @@ static PUBLISHED: Mutex<Option<Arc<Snapshot>>> = Mutex::new(None);
 /// The monotonic publication revision and the wake-up primitive shared by all
 /// operator surfaces in this process. It is separate from PUBLISHED so a
 /// sleeping observer never holds the snapshot lock a publisher needs.
-static CHANGE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
+static CHANGE: (Mutex<u64>, Wake) = (Mutex::new(0), Wake::new());
 
-pub(crate) fn change_clock() -> &'static (Mutex<u64>, Condvar) {
-    CHANGE.get_or_init(|| (Mutex::new(0), Condvar::new()))
+pub(crate) fn change_clock() -> &'static (Mutex<u64>, Wake) {
+    &CHANGE
 }
 
 pub(crate) fn announce_change() {

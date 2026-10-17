@@ -45,8 +45,11 @@
 //! send_scan` after, each queue this node sends is read oldest first, and
 //! every Journey in it no live claim holds, and due, is claimed and sent:
 //! one a node left when it died, one whose send was cut short, one whose
-//! retry is due, one no node sending its Port held. Claims of work in
-//! flight are renewed while it runs.
+//! retry is due, one no node sending its Port held. What a scan read may be
+//! older than its claim, so every claim it takes reads the Journey's place
+//! again, its due time with it, and sends only what is still there, due
+//! and to be sent (2026-10-17). Claims of work in flight are renewed while
+//! it runs.
 //!
 //! **A claim found lost is not sent on** ([`renewal`]). A renewal that
 //! finds the claim another's stops every further attempt from this node;
@@ -72,7 +75,7 @@
 //! ([`figures`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use context::IdentityFacts;
@@ -80,6 +83,7 @@ use journey::Journey;
 use persist::storage::{Claim, Hold, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
+use xcore::wake::Wake;
 use xcore::{IdGenerator, JourneyId};
 
 use crate::departure::Progress;
@@ -100,6 +104,7 @@ mod pass;
 mod registered;
 mod renewal;
 mod scan;
+mod under_claim;
 
 use admission::Owned;
 pub use dispatch::dispatch;
@@ -178,7 +183,7 @@ pub struct SendStep {
     limits: Limits,
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
-    wake: Condvar,
+    wake: Wake,
 }
 
 #[derive(Default)]
@@ -241,7 +246,7 @@ impl SendStep {
             limits: tuning.send(),
             audit,
             state: Mutex::new(State::default()),
-            wake: Condvar::new(),
+            wake: Wake::new(),
         }
     }
 

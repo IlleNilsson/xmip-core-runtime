@@ -9,8 +9,10 @@
 //! publication to as it writes it — `xmip-service`, or a program hosting a
 //! node through the C ABI (`xmip_operate_post_v1`).
 
-use std::sync::{Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+use xcore::wake::Wake;
 
 /// What an operate listener answers from.
 pub trait Published: Send + Sync {
@@ -25,13 +27,18 @@ pub trait Published: Send + Sync {
 
     /// Wake every wait, so it looks at `stopped`.
     fn wake(&self);
+
+    /// An operator's act was taken on a node of this process: the program
+    /// running it is told, so it publishes what changed at once rather
+    /// than at its next round. Nothing where it is not told.
+    fn acted(&self) {}
 }
 
 /// A publication posted by the program running the node.
 #[derive(Default)]
 pub struct Board {
     held: Mutex<(u64, String)>,
-    changed: Condvar,
+    changed: Wake,
 }
 
 impl Board {
@@ -58,7 +65,12 @@ impl Published for Board {
 
     fn wait(&self, after: u64, within: Duration, stopped: &dyn Fn() -> bool) -> u64 {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        waited(&self.changed, held, |held| held.0, after, within, stopped)
+        let (held, _) = self
+            .changed
+            .wait_timeout_while(&self.held, held, within, |held| {
+                held.0 <= after && !stopped()
+            });
+        held.0
     }
 
     fn wake(&self) {
@@ -67,32 +79,10 @@ impl Published for Board {
     }
 }
 
-/// Wait on `changed` while the revision `held` holds is not past `after`,
-/// for at most `within`, and not once `stopped` says so.
-fn waited<T>(
-    changed: &Condvar,
-    mut held: std::sync::MutexGuard<'_, T>,
-    revision: impl Fn(&T) -> u64,
-    after: u64,
-    within: Duration,
-    stopped: &dyn Fn() -> bool,
-) -> u64 {
-    let until = Instant::now() + within;
-    loop {
-        let now = Instant::now();
-        if revision(&held) > after || stopped() || now >= until {
-            return revision(&held);
-        }
-        held = changed
-            .wait_timeout(held, until - now)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Instant;
 
     use super::*;
 

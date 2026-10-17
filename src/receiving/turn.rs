@@ -1,14 +1,16 @@
 //! The turn a receive's ordered arrivals tell their far ends in: one
 //! after another, in the order they came, however their carries end.
 
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use xcore::wake::Wake;
 
 /// Whose turn it is to tell its far end: the place, among one receive's
 /// arrivals, of the next to be told.
 #[derive(Default)]
 pub(super) struct Turn {
     next: Mutex<usize>,
-    moved: Condvar,
+    moved: Wake,
 }
 
 /// One arrival's place in its receive's turn. Its turn passes when it has
@@ -39,8 +41,7 @@ impl Ticket {
         drop(
             self.turn
                 .moved
-                .wait_while(next, |next| *next != self.place)
-                .unwrap_or_else(PoisonError::into_inner),
+                .wait_while(&self.turn.next, next, |next| *next != self.place),
         );
     }
 

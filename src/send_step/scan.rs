@@ -6,7 +6,9 @@
 //! its place's mark in the Ledger without its Journey being read — unless
 //! it blocks its sequence, which is read to know which — and counted in the
 //! queue's index of failed Journeys; a Retry moves it to a new place, or,
-//! where it blocks its sequence, makes it one to send where it is.
+//! where it blocks its sequence, makes it one to send where it is. Every
+//! claim a scan takes reads the Journey's place again under it, its due
+//! time with it, and sends only what is still there, due and to be sent.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -19,6 +21,7 @@ use xcore::JourneyId;
 
 use super::due::Due;
 use super::pass::{Found, read, sequence};
+use super::under_claim::{Under, under_claim};
 use super::{Departure, Owned};
 use crate::departure::Progress;
 use crate::generation::ReceivedWork;
@@ -141,7 +144,7 @@ fn scanning(
             };
             let taken = in_sequence(
                 runtime,
-                queue,
+                (to, queue),
                 (place, body),
                 (key.as_deref(), *on_failure),
                 &mut busy,
@@ -199,7 +202,7 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
         place,
         body,
     } = unclaimed;
-    match claimed_first(runtime, *queue, *place, body) {
+    match claimed_first(runtime, (to, *queue), *place, body) {
         Taken::One(one) => Some(owned(runtime.send, to, *queue, *one)),
         Taken::Passed | Taken::Unanswered => None,
     }
@@ -245,11 +248,11 @@ enum Taken {
     Unanswered,
 }
 
-/// An entry of a queue that is not ordered, at its `place`: claimed, then
-/// read.
+/// An entry of a queue that is not ordered, at its `place`, bound for `to`:
+/// claimed, then read with its place ([`under_claim`]).
 fn claimed_first(
     runtime: &Runtime<'_>,
-    queue: u128,
+    (to, queue): (&Subscriber, u128),
     place: (JourneyId, u64),
     body: &[u8],
 ) -> Taken {
@@ -262,37 +265,40 @@ fn claimed_first(
         Ok(None) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
-    match read(runtime, id, body) {
-        Ok(Found::Waiting(found)) => {
-            let (work, facts) = *found;
-            Taken::One(Box::new((work, facts, claim, None, asked)))
-        }
-        Ok(Found::Failed(_) | Found::Finished) => {
-            let _ = step.storage.release(&claim);
-            step.passed(queue, place);
+    let under = under_claim(runtime, queue, place, body);
+    if let Under::Waiting(found) = under {
+        let (work, facts) = *found;
+        return Taken::One(Box::new((work, facts, claim, None, asked)));
+    }
+    let _ = step.storage.release(&claim);
+    match under {
+        Under::Waiting(_) | Under::Moved => Taken::Passed,
+        Under::NotDue(at) => {
+            step.not_due((to.name(), queue), at);
             Taken::Passed
         }
-        Ok(Found::Unreadable(why)) => {
-            let _ = step.storage.release(&claim);
+        Under::Not(Found::Unreadable(why)) => {
             step.passed(queue, place);
             step.failed(&format!("the Journey {id} is not sent: {why}"));
             Taken::Passed
         }
-        Err(_) => {
-            let _ = step.storage.release(&claim);
-            Taken::Unanswered
+        Under::Not(_) => {
+            step.passed(queue, place);
+            Taken::Passed
         }
+        Under::Unanswered => Taken::Unanswered,
     }
 }
 
 /// An entry of a Sequential Send Port's queue: read, its sequence told,
 /// and claimed only where nothing of its sequence before it is in flight,
 /// held by another, or failed and blocking (`busy`) — and, once claimed,
-/// read again with its place: another node may have sent it and let go of
-/// its place between the first read and the claim.
+/// read again with its place ([`under_claim`]): another node may have sent
+/// it and let go of its place between the first read and the claim, or
+/// handed it on to wait for a retry.
 fn in_sequence(
     runtime: &Runtime<'_>,
-    queue: u128,
+    (to, queue): (&Subscriber, u128),
     (place, body): ((JourneyId, u64), &[u8]),
     (key, on_failure): (Option<&str>, OnFailure),
     busy: &mut HashSet<String>,
@@ -332,43 +338,20 @@ fn in_sequence(
         Ok(None) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
-    match still_waiting(runtime, queue, place, body) {
-        Some(Ok(found)) => {
-            let (work, facts) = found;
-            Taken::One(Box::new((work, facts, claim, Some(told), asked)))
-        }
-        // Moved meanwhile: read afresh at the next scan, its sequence held
-        // until then.
-        Some(Err(())) => {
-            let _ = step.storage.release(&claim);
+    let under = under_claim(runtime, queue, place, body);
+    if let Under::Waiting(found) = under {
+        let (work, facts) = *found;
+        return Taken::One(Box::new((work, facts, claim, Some(told), asked)));
+    }
+    let _ = step.storage.release(&claim);
+    match under {
+        // Moved or settled meanwhile: read afresh at the next scan, its
+        // sequence held until then.
+        Under::Waiting(_) | Under::Moved | Under::Not(_) => Taken::Passed,
+        Under::NotDue(at) => {
+            step.not_due((to.name(), queue), at);
             Taken::Passed
         }
-        None => {
-            let _ = step.storage.release(&claim);
-            Taken::Unanswered
-        }
-    }
-}
-
-/// The Journey at `place` in `queue`, read under this node's claim: still
-/// at its place and still to be sent, or not (`Err`); `None` where Xmip
-/// Storage did not answer.
-fn still_waiting(
-    runtime: &Runtime<'_>,
-    queue: u128,
-    (id, at): (JourneyId, u64),
-    body: &[u8],
-) -> Option<Result<(ReceivedWork, IdentityFacts), ()>> {
-    let page = runtime.send.storage.read_held(queue, at, 1).ok()?;
-    let held = page
-        .held
-        .first()
-        .is_some_and(|held| held.sequence == at && held.hold.journey == id);
-    if !held {
-        return Some(Err(()));
-    }
-    match read(runtime, id, body).ok()? {
-        Found::Waiting(found) => Some(Ok(*found)),
-        Found::Failed(_) | Found::Finished | Found::Unreadable(_) => Some(Err(())),
+        Under::Unanswered => Taken::Unanswered,
     }
 }

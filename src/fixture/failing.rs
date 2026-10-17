@@ -41,13 +41,15 @@ pub type Interleaved = Box<dyn FnOnce() + Send>;
 /// answer: each operation told to fail does so the number of times it was
 /// told, as `PersistError::Unreachable`, and every other call passes
 /// through to the Storage beneath. An operation can also be told to let
-/// another writer in first, once ([`Failing::before`]), so a race is a
-/// test's order rather than its luck; and a Publication's answer can be
-/// lost, once ([`Failing::lose_answer`]).
+/// another writer in first, once ([`Failing::before`]), or once it was
+/// answered and before the caller has the answer ([`Failing::after`]), so a
+/// race is a test's order rather than its luck; and a Publication's answer
+/// can be lost, once ([`Failing::lose_answer`]).
 pub struct Failing {
     beneath: Arc<dyn XmipStorage>,
     failing: Mutex<BTreeMap<Operation, u32>>,
     before: Mutex<BTreeMap<Operation, Interleaved>>,
+    after: Mutex<BTreeMap<Operation, Interleaved>>,
     lost: Mutex<Option<Interleaved>>,
 }
 
@@ -59,6 +61,7 @@ impl Failing {
             beneath,
             failing: Mutex::new(BTreeMap::new()),
             before: Mutex::new(BTreeMap::new()),
+            after: Mutex::new(BTreeMap::new()),
             lost: Mutex::new(None),
         })
     }
@@ -79,6 +82,16 @@ impl Failing {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(operation, first);
+    }
+
+    /// Run `then` once, the next time `operation` is answered by the Storage
+    /// beneath, before the caller has the answer: another writer's step,
+    /// landed between the caller's read and what it does with it.
+    pub fn after(&self, operation: Operation, then: Interleaved) {
+        self.after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(operation, then);
     }
 
     /// Fail `operation` the next `times` it is asked; `u32::MAX` until
@@ -119,6 +132,20 @@ impl Failing {
             reason: format!("{operation:?} told to fail"),
         })
     }
+
+    /// `answer`, what the Storage beneath answered `operation`, given once
+    /// whatever was told to run after it ran.
+    fn answered<T>(&self, operation: Operation, answer: T) -> T {
+        let then = self
+            .after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&operation);
+        if let Some(then) = then {
+            then();
+        }
+        answer
+    }
 }
 
 impl XmipStorage for Failing {
@@ -132,7 +159,8 @@ impl XmipStorage for Failing {
         index: u32,
     ) -> Result<Option<StreamChunk>, PersistError> {
         self.asked(Operation::ReadChunk)?;
-        self.beneath.read_chunk(stream, index)
+        let answer = self.beneath.read_chunk(stream, index);
+        self.answered(Operation::ReadChunk, answer)
     }
 
     fn write_stream(&self, last: &StreamChunk, stream: &StreamRecord) -> Result<(), PersistError> {
@@ -149,17 +177,20 @@ impl XmipStorage for Failing {
 
     fn read_message(&self, message: MessageId) -> Result<Option<MessageRecord>, PersistError> {
         self.asked(Operation::ReadMessage)?;
-        self.beneath.read_message(message)
+        let answer = self.beneath.read_message(message);
+        self.answered(Operation::ReadMessage, answer)
     }
 
     fn write_journey(&self, journey: &JourneyRecord) -> Result<(), PersistError> {
         self.asked(Operation::WriteJourney)?;
-        self.beneath.write_journey(journey)
+        let answer = self.beneath.write_journey(journey);
+        self.answered(Operation::WriteJourney, answer)
     }
 
     fn read_journey(&self, journey: JourneyId) -> Result<Option<JourneyRecord>, PersistError> {
         self.asked(Operation::ReadJourney)?;
-        self.beneath.read_journey(journey)
+        let answer = self.beneath.read_journey(journey);
+        self.answered(Operation::ReadJourney, answer)
     }
 
     fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
@@ -173,22 +204,26 @@ impl XmipStorage for Failing {
             self.beneath.publish(publication)?;
             meanwhile();
         }
-        self.beneath.publish(publication)
+        let answer = self.beneath.publish(publication);
+        self.answered(Operation::Publish, answer)
     }
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         self.asked(Operation::ReadHeld)?;
-        self.beneath.read_held(queue, from, most)
+        let answer = self.beneath.read_held(queue, from, most);
+        self.answered(Operation::ReadHeld, answer)
     }
 
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
         self.asked(Operation::ReadFailed)?;
-        self.beneath.read_failed(queue, from, most)
+        let answer = self.beneath.read_failed(queue, from, most);
+        self.answered(Operation::ReadFailed, answer)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
         self.asked(Operation::ReadDead)?;
-        self.beneath.read_dead(queue, from, most)
+        let answer = self.beneath.read_dead(queue, from, most);
+        self.answered(Operation::ReadDead, answer)
     }
 
     fn read_dead_message(
@@ -197,12 +232,14 @@ impl XmipStorage for Failing {
         message: MessageId,
     ) -> Result<DeadEntry, PersistError> {
         self.asked(Operation::ReadDead)?;
-        self.beneath.read_dead_message(queue, message)
+        let answer = self.beneath.read_dead_message(queue, message);
+        self.answered(Operation::ReadDead, answer)
     }
 
     fn replay(&self, replay: &Replay) -> Result<Replayed, PersistError> {
         self.asked(Operation::Replay)?;
-        self.beneath.replay(replay)
+        let answer = self.beneath.replay(replay);
+        self.answered(Operation::Replay, answer)
     }
 
     fn claim(
@@ -213,12 +250,14 @@ impl XmipStorage for Failing {
         lease: Duration,
     ) -> Result<Option<Claim>, PersistError> {
         self.asked(Operation::Claim)?;
-        self.beneath.claim(journey, holder, token, lease)
+        let answer = self.beneath.claim(journey, holder, token, lease);
+        self.answered(Operation::Claim, answer)
     }
 
     fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
         self.asked(Operation::Renew)?;
-        self.beneath.renew(claims, lease)
+        let answer = self.beneath.renew(claims, lease);
+        self.answered(Operation::Renew, answer)
     }
 
     fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
@@ -227,7 +266,8 @@ impl XmipStorage for Failing {
 
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
         self.asked(Operation::HandOn)?;
-        self.beneath.hand_on(hand_on)
+        let answer = self.beneath.hand_on(hand_on);
+        self.answered(Operation::HandOn, answer)
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
@@ -261,7 +301,8 @@ impl XmipStorage for Failing {
 
     fn write_administration(&self, record: &AdministrationRecord) -> Result<(), PersistError> {
         self.asked(Operation::WriteAdministration)?;
-        self.beneath.write_administration(record)
+        let answer = self.beneath.write_administration(record);
+        self.answered(Operation::WriteAdministration, answer)
     }
 
     fn read_administration(

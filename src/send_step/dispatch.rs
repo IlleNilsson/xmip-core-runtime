@@ -94,12 +94,7 @@ impl SendStep {
             if ready {
                 break;
             }
-            let wait = wakes - now;
-            state = self
-                .wake
-                .wait_timeout(state, wait)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            state = self.wake.wait_until(&self.state, state, wakes).0;
         }
         let now = Instant::now();
         let handed = state.handed.drain(..).collect();

@@ -178,7 +178,10 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
         who: who.to_string(),
     };
     match apply(&order) {
-        Applied::Taken(said) => outcome("taken", &said),
+        Applied::Taken(said) => {
+            serve.published.acted();
+            outcome("taken", &said)
+        }
         Applied::Refused(said) => outcome("refused", &said),
         Applied::Failed(said) => outcome("failed", &said),
     }

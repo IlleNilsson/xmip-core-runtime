@@ -5,15 +5,17 @@
 //! (`runtime-model.md` section 5, *How a receive runs*).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
+
+use xcore::wake::Wake;
 
 /// A node's stop: lowered until [`Stopping::raise`], raised for good.
 #[derive(Debug, Default)]
 pub struct Stopping {
     raised: AtomicBool,
     lock: Mutex<()>,
-    wake: Condvar,
+    wake: Wake,
 }
 
 impl Stopping {
@@ -42,8 +44,7 @@ impl Stopping {
         let held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = self
             .wake
-            .wait_timeout_while(held, rest, |()| !self.raised())
-            .unwrap_or_else(PoisonError::into_inner);
+            .wait_timeout_while(&self.lock, held, rest, |()| !self.raised());
         self.raised()
     }
 }

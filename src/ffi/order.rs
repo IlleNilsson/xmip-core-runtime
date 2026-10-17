@@ -1,6 +1,6 @@
 //! `xmip_operate.h` section 14, an operator's order: an act on an Event
 //! subscription or a Subscription left where a publication says its
-//! publisher takes orders, for the node to take at its next look
+//! publisher takes orders, for the node to take and apply
 //! (ADR-0065, amendment 2026-09-29; ADR-0013, amendment 2026-09-30).
 //!
 //! One order for both: the file, its place, its shape and which acts each
