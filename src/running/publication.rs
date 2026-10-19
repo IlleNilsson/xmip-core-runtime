@@ -44,11 +44,12 @@
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
 //! drawing every publisher calls: the cluster, the node, its stages with an
 //! endpoint per Location, and the Party on each side (ADR-0052, amendment
-//! 2026-09-29). A node's configuration names its Parties (`[[parties]]`)
-//! but no Location says which it serves (`configure`'s `Accept` refuses a
-//! `party` list), so whoever its Receive Locations accept and its Send Ports
-//! deliver to is drawn as one Party per side, over every endpoint,
-//! [`ANY_PARTY`].
+//! 2026-09-29). A node's configuration names its Parties (`[[parties]]`),
+//! and a Receive Location the Parties it takes (`accept.party`), but its
+//! publication does not yet say which a Location takes and an endpoint is
+//! labelled by its transport alone, so whoever its Receive Locations accept
+//! and its Send Ports deliver to is drawn as one Party per side, over every
+//! endpoint, [`ANY_PARTY`] (open problem 33).
 
 use node::{Capability, Stage};
 use observe::topology::{draw, party};

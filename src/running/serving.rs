@@ -20,6 +20,7 @@ use crate::message_path::{Parties, Runtime};
 use crate::outcome::Tally;
 use crate::pickup::Pickup;
 use crate::receiving::Receiving;
+use crate::recognized::Recognized;
 use crate::send_step::{self, SendStep};
 use crate::sending::Sends;
 use crate::stopping::Stopping;
@@ -32,6 +33,9 @@ pub(super) struct Served {
     pub(super) linked: Linked,
     pub(super) gathering: Gathering,
     pub(super) subscriptions: Vec<route::Subscription>,
+    /// The Parties the configuration recognizes, which a verified identity
+    /// resolves to.
+    pub(super) parties: Recognized,
     pub(super) pickup: Arc<Pickup>,
     pub(super) send: Arc<SendStep>,
     pub(super) budget: NodeBudget,
@@ -52,6 +56,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             linked,
             gathering,
             subscriptions,
+            parties,
             pickup,
             sends,
             send,
@@ -71,13 +76,15 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             .iter()
             .map(AsRef::as_ref)
             .collect();
-        let parties = Parties::default();
+        // The send side's directory reads a Party's identities per direction
+        // and mechanism, which `[[parties]]` does not say yet: it holds none.
+        let directory = Parties::default();
 
         let runtime = Runtime {
             ids: &UuidV7Generator,
             authenticators: &authenticators,
             parties: &parties,
-            directory: &parties,
+            directory: &directory,
             subscriptions: &subscriptions,
             gathering: &gathering,
             treatment: MessageTreatment::default(),
