@@ -35,6 +35,7 @@ use configure::{ConfiguredLocation, Declarations};
 use xaudit::origin::Origin;
 use xaudit::program_audit::ProgramAudit;
 
+use crate::budget::NodeBudget;
 use crate::capability_registry::CapabilityRegistry;
 use crate::configured_subscription::ConfiguredSubscription;
 use crate::execution_tree::build_execution_tree;
@@ -210,6 +211,7 @@ impl Running {
                 pickup: Arc::clone(&pickup),
                 sends,
                 send: Arc::clone(&send),
+                budget: NodeBudget::of(&tree.tuning),
                 receiving,
             },
             Arc::clone(&stopping),

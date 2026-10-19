@@ -14,9 +14,11 @@ use persist::storage::XmipStorage;
 use xcore::{Layer, Mechanism, mechanism};
 
 pub mod authority;
+mod drain;
 mod failing;
 
 pub use authority::Authority;
+pub use drain::Drain;
 pub use failing::{Failing, Interleaved, Operation};
 
 /// Verifies every claim of its mechanism with the verdict it was given.
@@ -123,7 +125,7 @@ impl transport::Transport for FarEnd {
         transport::Directions::SEND
     }
 
-    fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<transport::Arrived>> {
         Ok(Vec::new())
     }
 
@@ -135,15 +137,16 @@ impl transport::Transport for FarEnd {
         transport::Waiting::Polled("it looks and finds nothing")
     }
 
-    fn send(&self, target: &str, bytes: &[u8]) -> transport::Result<()> {
-        self.send_keyed(target, bytes, "")
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered("a test's far end keeps every body it takes whole")
     }
 
-    fn send_keyed(&self, _target: &str, bytes: &[u8], key: &str) -> transport::Result<()> {
+    fn send_from(&self, _target: &str, outgoing: transport::Outgoing<'_>) -> transport::Result<()> {
         self.keys
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(key.to_string());
+            .push(outgoing.key().unwrap_or_default().to_string());
+        let bytes: &[u8] = &outgoing.gather()?;
         (self.answer)(bytes)?;
         self.taken
             .lock()
@@ -160,6 +163,15 @@ impl transport::Transport for FarEnd {
 pub fn absent_node() -> String {
     let cluster = configure::fixture::test_cluster();
     format!("{}/node/{}", cluster.scope(), cluster.absent())
+}
+
+/// The node budget the default `[tuning]` gives, for a test's Runtime to
+/// borrow for the test's length.
+#[must_use]
+pub fn node_budget() -> &'static crate::budget::NodeBudget {
+    Box::leak(Box::new(crate::budget::NodeBudget::of(
+        &crate::tuning::Tuning::default(),
+    )))
 }
 
 /// A send step over `storage` of the test cluster's first node, run by the

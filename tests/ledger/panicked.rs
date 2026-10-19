@@ -51,7 +51,7 @@ impl Transport for Once {
         transport::Waiting::Polled("it hands back what it holds at once")
     }
 
-    fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<transport::Arrived>> {
         if self.given.swap(true, Ordering::AcqRel) {
             return Ok(Vec::new());
         }
@@ -67,7 +67,11 @@ impl Transport for Once {
         )])
     }
 
-    fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed("it sends nothing")
+    }
+
+    fn send_from(&self, _: &str, _: transport::Outgoing<'_>) -> transport::Result<()> {
         Ok(())
     }
 }

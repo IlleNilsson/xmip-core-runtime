@@ -62,7 +62,7 @@ impl Transport for Idle {
         self.waiting
     }
 
-    fn receive(&self) -> transport::Result<Vec<transport::Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<transport::Arrived>> {
         let asked = self.asked.fetch_add(1, Ordering::AcqRel) + 1;
         if let Some(first) = self.first.lock().expect("lock").take() {
             let _ = first.send(());
@@ -77,7 +77,11 @@ impl Transport for Idle {
         }
     }
 
-    fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed("it sends nothing")
+    }
+
+    fn send_from(&self, _: &str, _: transport::Outgoing<'_>) -> transport::Result<()> {
         Ok(())
     }
 }

@@ -32,16 +32,33 @@
 //! node's; where it is not — found another's, or unconfirmed for longer
 //! than its lease — the pass stops, and no Location is tried again from
 //! here (section 10, *Corrected 2026-10-06*). It is asked again once the
-//! Message is authorized and read, the last thing before the transport's
-//! I/O, so a claim lost while a large payload was read starts no send. A
-//! send already under way goes on: its Journey's identifier lets the far
-//! end deduplicate it.
+//! Message is authorized and its bytes have room, before the transport is
+//! called, and once more as its first byte would go — after a transport that
+//! gathers has read the Message whole (`transport::Outgoing::checked`) — so
+//! a claim lost while a send waited, or while a large payload was read,
+//! starts no send. A send already under way goes on: its Journey's
+//! identifier lets the far end deduplicate it.
+//!
+//! **The Message is never read whole here** (open problem 38, 2026-10-19).
+//! The transport is handed it as the Ledger keeps it, a chunk at a time
+//! (`transport::Outgoing`), each chunk read once for every departure of
+//! the same Stream on this node keeping up (`crate::stream_share`); a
+//! transport that streams writes it on as it reads, one whose protocol
+//! needs the whole body gathers it and says so (`transport::Sending`). What
+//! the send holds, by that, is held within the node's byte budget for sends
+//! (`crate::budget`), beside the Send pool's count of Journeys: a send with
+//! no room waits for one, its claim renewed. Until 2026-10-19 each
+//! departure read its Message whole before its transport sent it.
+
+use std::cell::Cell;
+use std::io::Read;
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
 use journey::Attempts;
 use route::Subscriber;
 use send::SendLevel;
+use transport::Outgoing;
 use xcore::Purpose;
 
 use crate::generation::ReceivedWork;
@@ -261,39 +278,53 @@ fn depart_one(
             .map(|identity| identity.value.clone())
     });
 
-    // Read whole from the Ledger here, where a transport's send takes it
-    // whole; a send that streams reads it a chunk at a time
-    // (`runtime-model.md` section 10).
-    let bytes = match work.message.sections()[0].stream.load() {
-        Ok(bytes) => bytes,
-        Err(unread) => {
-            return Some(Departed::Failed {
-                to,
-                retryable: true,
-                detail: unread.to_string(),
-            });
-        }
-    };
+    // What the send holds, within the node's byte budget for sends: the
+    // whole Message where its transport gathers it, a chunk or two where it
+    // streams. A send with no room waits here for one.
+    let stream = &work.message.sections()[0].stream;
+    let (id, length) = (stream.id(), stream.length());
+    let gathered = sending.transport.sending().gathered();
+    let held = runtime
+        .budget
+        .sent
+        .hold(runtime.budget.send(length, gathered));
 
-    // Asked again at the edge: the read above may have outlasted the claim.
+    // Asked again at the edge: the wait above may have outlasted the claim.
     if !owned() {
         return None;
     }
     let key = work.journey.journey_id().to_string();
-    Some(
-        match sending.transport.send_keyed(&location.address, bytes, &key) {
-            Ok(()) => Departed::Sent {
-                to,
-                presented_from: resolved.map(|(_, level)| level),
-                presented,
-            },
-            Err(failure) => Departed::Failed {
-                to,
-                retryable: failure.retryable,
-                detail: failure.message,
-            },
+    let share = runtime.send.share();
+    let let_go = Cell::new(false);
+    let still = || {
+        let still = owned();
+        let_go.set(!still);
+        still
+    };
+    let outgoing = Outgoing::new(length, || {
+        Ok(Box::new(share.reader(id, length)) as Box<dyn Read + '_>)
+    })
+    .keyed(&key)
+    .checked(&still);
+    let sent = sending.transport.send_from(&location.address, outgoing);
+    drop(held);
+    // The claim lost while the Message was read, before its first byte
+    // went: nothing was sent, and nothing more is tried from here.
+    if let_go.get() {
+        return None;
+    }
+    Some(match sent {
+        Ok(()) => Departed::Sent {
+            to,
+            presented_from: resolved.map(|(_, level)| level),
+            presented,
         },
-    )
+        Err(failure) => Departed::Failed {
+            to,
+            retryable: failure.retryable,
+            detail: failure.message,
+        },
+    })
 }
 
 /// What departures came to, in words, as a Journey records it.

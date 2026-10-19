@@ -51,6 +51,8 @@ pub struct Failing {
     before: Mutex<BTreeMap<Operation, Interleaved>>,
     after: Mutex<BTreeMap<Operation, Interleaved>>,
     lost: Mutex<Option<Interleaved>>,
+    /// How often each operation was asked.
+    counted: Mutex<BTreeMap<Operation, u64>>,
 }
 
 impl Failing {
@@ -63,6 +65,7 @@ impl Failing {
             before: Mutex::new(BTreeMap::new()),
             after: Mutex::new(BTreeMap::new()),
             lost: Mutex::new(None),
+            counted: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -100,6 +103,18 @@ impl Failing {
         self.lock().insert(operation, times);
     }
 
+    /// How often `operation` was asked so far: what a test counts a read
+    /// by, a Stream's chunks read once for several readers among them.
+    #[must_use]
+    pub fn asked_times(&self, operation: Operation) -> u64 {
+        self.counted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&operation)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Fail nothing any more.
     pub fn heal(&self) {
         self.lock().clear();
@@ -110,6 +125,12 @@ impl Failing {
     }
 
     fn asked(&self, operation: Operation) -> Result<(), PersistError> {
+        *self
+            .counted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(operation)
+            .or_default() += 1;
         let first = self
             .before
             .lock()

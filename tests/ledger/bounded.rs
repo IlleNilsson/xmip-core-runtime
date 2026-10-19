@@ -49,19 +49,42 @@ static COUNTED: Counted = Counted;
 /// The Stream's length: 64 MiB, four thousand chunks of the smallest size.
 const LENGTH: u64 = 64 * 1024 * 1024;
 
-/// A body that makes its bytes as they are read: byte `n` is `n % 251`.
-struct Made(u64);
+/// A body that makes its bytes as they are read, `length` of them: byte
+/// `n` is `n % 251`. What the tests of what is held carry and send.
+pub(super) struct Made {
+    at: u64,
+    length: u64,
+}
+
+impl Made {
+    /// `length` bytes, made as they are read.
+    pub(super) const fn of(length: u64) -> Self {
+        Self { at: 0, length }
+    }
+}
 
 impl Read for Made {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        let left = LENGTH - self.0;
+        let left = self.length - self.at;
         let taken = out.len().min(usize::try_from(left).unwrap_or(usize::MAX));
         for byte in &mut out[..taken] {
-            *byte = u8::try_from(self.0 % 251).unwrap_or_default();
-            self.0 += 1;
+            *byte = u8::try_from(self.at % 251).unwrap_or_default();
+            self.at += 1;
         }
         Ok(taken)
     }
+}
+
+/// What `run` returns, and the most this process held at once while it
+/// ran, beyond what it held as it began: the allocator's count, measured.
+pub(super) fn measured<T>(run: impl FnOnce() -> T) -> (T, usize) {
+    let before = HELD.load(Ordering::Relaxed);
+    MOST.store(before, Ordering::Relaxed);
+    let returned = run();
+    (
+        returned,
+        MOST.load(Ordering::Relaxed).saturating_sub(before),
+    )
 }
 
 #[test]
@@ -71,7 +94,7 @@ fn a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory() {
     let (carried, most) = receiving(&node, CHUNK, |carry| {
         MOST.store(HELD.load(Ordering::Relaxed), Ordering::Relaxed);
         let before = HELD.load(Ordering::Relaxed);
-        let carried = carry(ReceivedStream::new(Made(0), "tcp://127.0.0.1:1"));
+        let carried = carry(ReceivedStream::new(Made::of(LENGTH), "tcp://127.0.0.1:1"));
         (carried, MOST.load(Ordering::Relaxed) - before)
     });
     assert_eq!(
