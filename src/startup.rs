@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use authenticate::Authenticator;
 use configure::ConfiguredLocation;
 use route::{CONTEXT, Gathering, Source, split};
-use transport::NodeLocation;
+use transport::{Guard, NodeLocation};
 use xcore::settings::Applies;
 
 use crate::capability_registry::{CapabilityRegistry, Load};
@@ -28,7 +28,8 @@ pub(crate) struct Checked {
 
 /// Startup phase 3's checks of what only the program can answer: that every
 /// started Location's transport, every accepted mechanism and every name a
-/// filter uses is one this node was built with.
+/// filter uses is one this node was built with, and every accepted Party
+/// one the configuration declares.
 pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Vec<String>> {
     let mut problems = Vec::new();
 
@@ -52,7 +53,7 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
         linked.authenticators.iter().map(AsRef::as_ref).collect();
     let mut gates = Vec::new();
     for location in &tree.receive_locations_to_start {
-        match ReceiveGate::of(location, &authenticators) {
+        match ReceiveGate::of(location, &authenticators, &tree.parties) {
             Ok(gate) => gates.push(gate),
             Err(refused) => problems.extend(refused),
         }
@@ -192,12 +193,13 @@ pub(crate) fn load(
 /// Startup phase 9's first half: each started Location's transport built
 /// once, from its address and settings, given the node's location (the
 /// owner's *Option A*, 2026-10-03: the runtime gives every transport its
-/// node's identity once, as it builds it), and held to the direction it
+/// node's identity once, as it builds it) and the guard its receives
+/// terminate TLS with where the node has one, and held to the direction it
 /// serves.
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
-    gates: Vec<ReceiveGate>,
+    (gates, guard): (Vec<ReceiveGate>, Option<&Guard>),
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
     let node = NodeLocation::new(location(
         &tree.service.cluster_name,
@@ -206,7 +208,7 @@ pub(crate) fn open(
     let mut problems = Vec::new();
     let mut built = |location: &ConfiguredLocation, side: Applies| {
         let technology = linked.transport(&location.transport)?;
-        match technology.open(location, side, &node) {
+        match technology.open(location, side, (&node, guard)) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),

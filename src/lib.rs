@@ -67,7 +67,11 @@ pub mod plane;
 #[cfg(feature = "node")]
 pub mod pool;
 #[cfg(feature = "node")]
+pub mod receive_certificate;
+#[cfg(feature = "node")]
 pub mod receiving;
+#[cfg(feature = "node")]
+pub mod recognized;
 #[cfg(feature = "node")]
 pub mod registration;
 #[cfg(feature = "node")]

@@ -58,6 +58,10 @@ pub struct ExecutionTree {
     /// What the node runs by, `[tuning]` read with its defaults
     /// (ADR-0031, amendment 2026-10-03).
     pub tuning: Tuning,
+    /// The Parties the cluster recognizes, `[[parties]]`: what a verified
+    /// identity resolves to, and what a Receive Location's `accept.party`
+    /// names (ADR-0019 clauses 1 and 4).
+    pub parties: Vec<configure::PartyConfiguration>,
 }
 
 impl ExecutionTree {
@@ -174,6 +178,7 @@ pub fn build_execution_tree(
             subscriptions: bound.subscriptions,
             send_port_groups: bound.send_port_groups,
             tuning,
+            parties: document.parties,
         },
         report,
     ))

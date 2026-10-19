@@ -23,7 +23,9 @@ use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, NodeLocation, Transport};
+use transport::{Configured, Guard, NodeLocation, Transport};
+
+use crate::receiving::ReceiveGate;
 use xaudit::program_audit::ProgramAudit;
 use xcore::settings::{Applies, Given, Settings};
 
@@ -31,9 +33,14 @@ use xcore::settings::{Applies, Given, Settings};
 /// sends go through.
 pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 
+/// The node a Location's transport is built on: its location, and the
+/// guard its receives terminate TLS with, where its configuration gives
+/// one (`crate::receive_certificate`).
+pub type OnNode<'a> = (&'a NodeLocation, Option<&'a Guard>);
+
 /// How a Location's transport is built: its address, the side it serves,
 /// what its settings table gave, and the node it is built on.
-pub type Open = fn(&str, Applies, &[(String, Given)], &NodeLocation) -> Opened;
+pub type Open = fn(&str, Applies, &[(String, Given)], OnNode<'_>) -> Opened;
 
 /// A transport technology linked into the program: its declaration, and the
 /// one way a Location builds it (`transport::Configured::open`).
@@ -67,30 +74,32 @@ impl LinkedTransport {
         self.settings
     }
 
-    /// Build it for `location`, on `side`, on the node at `node`.
+    /// Build it for `location`, on `side`, on the node `on`.
     ///
     /// # Errors
     /// What the technology refuses of the Location's address or settings,
-    /// or of returning what the node held before it last stopped.
-    pub fn open(
-        &self,
-        location: &ConfiguredLocation,
-        side: Applies,
-        node: &NodeLocation,
-    ) -> Opened {
-        (self.open)(&location.address, side, &location.settings.given(), node)
+    /// of returning what the node held before it last stopped, or of the
+    /// guard: a Location terminating TLS on a node with no `receive`
+    /// certificate.
+    pub fn open(&self, location: &ConfiguredLocation, side: Applies, on: OnNode<'_>) -> Opened {
+        (self.open)(&location.address, side, &location.settings.given(), on)
     }
 }
 
 /// `T` built from a Location and given its node, once, as it is built (the
-/// owner, 2026-10-03; `transport::Configured::on_node`).
+/// owner, 2026-10-03; `transport::Configured::on_node`), and the guard its
+/// receives terminate TLS with (`transport::Configured::guarded_by`).
 fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
-    node: &NodeLocation,
+    (node, guard): OnNode<'_>,
 ) -> Opened {
-    Ok(Box::new(T::open(address, side, given)?.on_node(node)?))
+    Ok(Box::new(
+        T::open(address, side, given)?
+            .on_node(node)?
+            .guarded_by(guard)?,
+    ))
 }
 
 /// How an engine opens its store at a place: a directory for `RocksDB`, a
@@ -160,13 +169,21 @@ impl LinkedKeyStore {
     }
 }
 
+/// How an authorization policy is set up from the Receive Locations a node
+/// starts, each as its gate declares it (`crate::receiving::ReceiveGate`):
+/// what the `location` policy admits is what each Location declares it
+/// accepts (ADR-0050 section 5).
+pub type ReceivePolicy = fn(&[ReceiveGate]) -> Box<dyn Authorizer>;
+
 /// Everything a program linked that a node may use.
 ///
 /// Each list is what the program was built with, not what the node runs: the
 /// node takes the transports its Locations name, the route technologies its
 /// filters name and the authenticators its Receive Locations accept. The
 /// policies and identifiers are each consulted at every gate, so every one
-/// linked is taken — no configuration selects among them yet.
+/// linked is taken — no configuration selects among them yet — and each of
+/// [`Linked::receive_policies`] is set up from the Receive Locations the
+/// node starts.
 #[derive(Default)]
 pub struct Linked {
     pub transports: Vec<LinkedTransport>,
@@ -175,6 +192,9 @@ pub struct Linked {
     pub sources: Vec<Box<dyn Source>>,
     pub authenticators: Vec<Box<dyn Authenticator>>,
     pub policies: Vec<Box<dyn Authorizer>>,
+    /// Policies set up from the Receive Locations the node starts, added
+    /// to [`Linked::policies`] as it starts.
+    pub receive_policies: Vec<ReceivePolicy>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
     /// The runtime database's engine, where the program was built with

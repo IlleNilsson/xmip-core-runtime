@@ -43,6 +43,7 @@ use crate::host::{self, HostService};
 use crate::linked::Linked;
 use crate::outcome::{Outcomes, Tally};
 use crate::pickup::Pickup;
+use crate::recognized::Recognized;
 use crate::send_step::SendStep;
 use crate::service::StartupPhase;
 use crate::start::read;
@@ -50,6 +51,8 @@ use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
 use crate::storage::Reached;
 
+#[cfg(test)]
+mod accepted;
 mod operate;
 pub mod publication;
 mod serving;
@@ -121,6 +124,8 @@ impl Running {
         let data = document.service.data_directory(Path::new(path));
         let operate = document.operate.clone();
         let reaching = crate::storage::plan(&document, path, &linked)?;
+        let guard = crate::receive_certificate::guard(&document, Path::new(path))
+            .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
 
         let declared: Declarations = linked
             .transports
@@ -131,6 +136,14 @@ impl Running {
             .map_err(|report| Refusal::at(StartupPhase::ValidateStartup, report.errors))?;
         let Checked { gates, gathering } = check(&tree, &linked)
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
+        // Set up from the Receive Locations the node starts, before the
+        // capabilities are registered, so each is registered as the rest.
+        let set_up: Vec<_> = linked
+            .receive_policies
+            .iter()
+            .map(|policy| policy(&gates))
+            .collect();
+        linked.policies.extend(set_up);
 
         let mut host_services = host::plan(
             &tree
@@ -152,7 +165,7 @@ impl Running {
         let capabilities = load(&tree, &linked, &gathering)
             .map_err(|problems| Refusal::at(StartupPhase::RegisterCapabilities, problems))?;
 
-        let (receiving, sends) = open(&tree, &linked, gates)
+        let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref()))
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
@@ -167,7 +180,8 @@ impl Running {
 
         // Only what the configuration named goes on: the authenticators its
         // Receive Locations accept. Policies and identifiers are consulted at
-        // every gate, and no configuration selects among them yet.
+        // every gate, and no configuration selects among them yet; the
+        // receive policies were set up from the Locations above.
         let accepted: BTreeSet<String> = receiving
             .iter()
             .flat_map(|receiving| receiving.configured.accept.mechanism.clone())
@@ -208,6 +222,7 @@ impl Running {
                 linked,
                 gathering,
                 subscriptions: tree.subscriptions,
+                parties: Recognized(tree.parties),
                 pickup: Arc::clone(&pickup),
                 sends,
                 send: Arc::clone(&send),
@@ -375,12 +390,14 @@ mod tests {
         address: &str,
         side: Applies,
         given: &[(String, Given)],
-        node: &transport::NodeLocation,
+        (node, guard): crate::linked::OnNode<'_>,
     ) -> Opened {
         OPENED.with(|opened| opened.set(opened.get() + 1));
         GIVEN.with(|nodes| nodes.borrow_mut().push(node.to_string()));
         Ok(Box::new(
-            TcpTransport::open(address, side, given)?.on_node(node)?,
+            TcpTransport::open(address, side, given)?
+                .on_node(node)?
+                .guarded_by(guard)?,
         ))
     }
 

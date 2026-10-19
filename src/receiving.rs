@@ -10,7 +10,7 @@ use std::thread::Scope;
 use std::time::Instant;
 
 use authenticate::{Acceptance, Authenticator};
-use configure::ConfiguredLocation;
+use configure::{ConfiguredLocation, PartyConfiguration};
 use receive::IdentityPolicy;
 use transport::Transport;
 use xaudit::program_audit::ProgramAudit;
@@ -37,9 +37,9 @@ use telling::Telling;
 use turn::{Ticket, Turn};
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
-/// the closed set of mechanisms it accepts (ADR-0019 clause 1) and what it
-/// does when the two identity layers disagree (clause 7). Read from the
-/// Location's configuration once, as the node starts.
+/// the closed set of mechanisms and Parties it accepts (ADR-0019 clause 1)
+/// and what it does when the two identity layers disagree (clause 7). Read
+/// from the Location's configuration once, as the node starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReceiveGate {
     /// The Location's name, what an authorization attempt names.
@@ -50,18 +50,30 @@ pub struct ReceiveGate {
 
 impl ReceiveGate {
     /// The gate `configured` declares, each accepted mechanism taken from the
-    /// authenticator that verifies it.
+    /// authenticator that verifies it, and each accepted Party by the
+    /// identifier the node knows it by among `parties`.
     ///
     /// # Errors
     /// Every accepted mechanism no authenticator in `authenticators`
-    /// verifies, one sentence each: a Location that accepts what nothing can
-    /// verify is refused as the node starts, not at its first Stream.
+    /// verifies, and every accepted Party `parties` does not declare, one
+    /// sentence each: a Location that accepts what nothing can verify, or
+    /// whom nobody is, is refused as the node starts, not at its first
+    /// Stream.
     pub fn of(
         configured: &ConfiguredLocation,
         authenticators: &[&dyn Authenticator],
+        parties: &[PartyConfiguration],
     ) -> Result<Self, Vec<String>> {
         let mut accept = Acceptance::closed();
-        let mut problems = Vec::new();
+        let mut problems = configure::party::accepted_problems(parties, configured);
+        for party in configured
+            .accept
+            .party
+            .iter()
+            .filter_map(|name| configure::party::named(parties, name))
+        {
+            accept = accept.from_party(party);
+        }
 
         for name in &configured.accept.mechanism {
             match authenticators
