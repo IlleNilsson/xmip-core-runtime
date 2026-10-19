@@ -15,6 +15,7 @@ use receive::ReceivedStream;
 use route::{Gathering, Subscriber, Subscription};
 use xaudit::program_audit::ProgramAudit;
 use xcore::{SystemClock, UuidV7Generator, mechanism};
+use xmip_core_runtime::budget::NodeBudget;
 use xmip_core_runtime::configured_subscription::ConfiguredSubscription;
 use xmip_core_runtime::fixture::{Always, Open};
 use xmip_core_runtime::ledger::CHUNK;
@@ -128,6 +129,7 @@ pub fn on_node<T>(
         treatment: MessageTreatment::default(),
         sends: &sends,
         send: &step,
+        budget: &NodeBudget::of(&tuning),
         transport_identifiers: &[],
         message_identifiers: &[],
         policies: &policies,

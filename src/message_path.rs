@@ -24,6 +24,7 @@ use xaudit::origin::Origin;
 use xcore::{Clock, IdGenerator, PartyId, Purpose};
 
 use crate::arrival::arrive;
+use crate::budget::NodeBudget;
 use crate::dead_message::Unmatched;
 use crate::ledger::{self, Published};
 use crate::outcome::Arrived;
@@ -95,6 +96,11 @@ pub struct Runtime<'a> {
     /// it sends every Journey this node sends from the Ledger
     /// ([`crate::send_step`]).
     pub send: &'a SendStep,
+
+    /// What the node holds at once beside each pool's own bound: the
+    /// arrivals its Receive Locations carry and their bytes, and the bytes
+    /// its sends hold ([`crate::budget`]).
+    pub budget: &'a NodeBudget,
 
     /// The first gate, before a Message exists.
     pub transport_identifiers: &'a [&'a dyn TransportIdentifier],

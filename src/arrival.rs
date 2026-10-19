@@ -447,7 +447,7 @@ mod tests {
             Directions::SEND
         }
 
-        fn receive(&self) -> transport::Result<Vec<Delivered>> {
+        fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<Delivered>> {
             Ok(Vec::new())
         }
 
@@ -459,7 +459,15 @@ mod tests {
             transport::Waiting::Polled("it looks and finds nothing")
         }
 
-        fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
+        fn sending(&self) -> transport::Sending {
+            transport::Sending::Streamed("it reads nothing of what it is sent")
+        }
+
+        fn send_from(
+            &self,
+            _target: &str,
+            _outgoing: transport::Outgoing<'_>,
+        ) -> transport::Result<()> {
             match self.fail {
                 Some((retryable, message)) => Err(TransportError {
                     message: message.to_string(),
@@ -556,6 +564,7 @@ mod tests {
             treatment: MessageTreatment::default(),
             sends,
             send: crate::fixture::send_step(crate::ledger::in_memory()),
+            budget: crate::fixture::node_budget(),
             transport_identifiers: &[],
             message_identifiers: &[],
             policies,

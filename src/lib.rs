@@ -20,6 +20,8 @@ pub mod applied;
 #[cfg(feature = "node")]
 pub mod arrival;
 #[cfg(feature = "node")]
+pub mod budget;
+#[cfg(feature = "node")]
 pub mod capability_registry;
 #[cfg(feature = "node")]
 pub mod catalogue;
@@ -86,6 +88,8 @@ mod startup;
 pub mod stopping;
 #[cfg(feature = "node")]
 pub mod storage;
+#[cfg(feature = "node")]
+pub mod stream_share;
 #[cfg(feature = "node")]
 pub mod tuning;
 #[cfg(feature = "remote")]

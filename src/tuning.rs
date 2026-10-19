@@ -20,11 +20,14 @@
 //! receive_poll = "1s"                         # receiving::RECEIVE_POLL
 //! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
 //! receive_drain = "1s"                        # receiving::RECEIVE_DRAIN
+//! node_receive_threads_per_hardware_thread = 4  # budget::NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD
+//! receive_chunks_per_thread = 8               # budget::RECEIVE_CHUNKS_PER_THREAD
 //! send_threads_per_hardware_thread = 2        # send_step::SEND_THREADS_PER_HARDWARE_THREAD
 //! send_idle = "1m"                            # send_step::SEND_IDLE
 //! send_lease = "30s"                          # send_step::SEND_LEASE
 //! send_scan = "1s"                            # send_step::SEND_SCAN
 //! failed_window = 100                         # send_step::FAILED_WINDOW
+//! send_chunks_per_thread = 16                 # budget::SEND_CHUNKS_PER_THREAD
 //! storage_timeout = "5s"                      # persist's client::TIMEOUT
 //! storage_pass_over = "5s"                    # persist's client::PASS_OVER
 //! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
@@ -37,6 +40,9 @@ use persist::storage::client;
 use serde::{Deserialize, Serialize};
 use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
+use crate::budget::{
+    NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD, RECEIVE_CHUNKS_PER_THREAD, SEND_CHUNKS_PER_THREAD,
+};
 use crate::ledger::SEGMENTS;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
@@ -114,6 +120,30 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         Setting {
+            name: "node_receive_threads_per_hardware_thread",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 256,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(
+                NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD,
+            ))),
+            meaning: "The most arrivals the node carries at once across all its Receive \
+                      Locations, per hardware thread.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_chunks_per_thread",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 4096,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(RECEIVE_CHUNKS_PER_THREAD))),
+            meaning: "The chunks of Streams the node's carries hold at once, per arrival the \
+                      node carries at once.",
+            applies: Applies::Both,
+        },
+        Setting {
             name: "send_threads_per_hardware_thread",
             kind: Kind::Integer {
                 minimum: 1,
@@ -157,6 +187,17 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         Setting {
+            name: "send_chunks_per_thread",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 65_536,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(SEND_CHUNKS_PER_THREAD))),
+            meaning: "The chunks of Messages the node's sends hold at once, per thread of the \
+                      Send pool.",
+            applies: Applies::Both,
+        },
+        Setting {
             name: "storage_timeout",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(client::TIMEOUT)),
@@ -196,11 +237,14 @@ pub struct Tuning {
     pub receive_poll: Duration,
     pub receive_backoff: Duration,
     pub receive_drain: Duration,
+    pub node_receive_threads_per_hardware_thread: usize,
+    pub receive_chunks_per_thread: usize,
     pub send_threads_per_hardware_thread: usize,
     pub send_idle: Duration,
     pub send_lease: Duration,
     pub send_scan: Duration,
     pub failed_window: usize,
+    pub send_chunks_per_thread: usize,
     pub storage_timeout: Duration,
     pub storage_pass_over: Duration,
     pub local_timeout: Duration,
@@ -251,11 +295,16 @@ impl Tuning {
             receive_poll: duration("receive_poll"),
             receive_backoff: duration("receive_backoff"),
             receive_drain: duration("receive_drain"),
+            node_receive_threads_per_hardware_thread: count(
+                "node_receive_threads_per_hardware_thread",
+            ),
+            receive_chunks_per_thread: count("receive_chunks_per_thread"),
             send_threads_per_hardware_thread: count("send_threads_per_hardware_thread"),
             send_idle: duration("send_idle"),
             send_lease: duration("send_lease"),
             send_scan: duration("send_scan"),
             failed_window: count("failed_window"),
+            send_chunks_per_thread: count("send_chunks_per_thread"),
             storage_timeout: duration("storage_timeout"),
             storage_pass_over: duration("storage_pass_over"),
             local_timeout: duration("local_timeout"),
@@ -278,6 +327,17 @@ impl Tuning {
     #[must_use]
     pub fn receive(&self) -> Limits {
         Limits::per_hardware_thread(self.receive_threads_per_hardware_thread, self.receive_idle)
+    }
+
+    /// The arrivals the node carries at once across all its Receive
+    /// Locations, beside each Location's own pool: its most is the node's
+    /// carry budget (`crate::budget::NodeBudget`).
+    #[must_use]
+    pub fn node_receive(&self) -> Limits {
+        Limits::per_hardware_thread(
+            self.node_receive_threads_per_hardware_thread,
+            self.receive_idle,
+        )
     }
 
     /// How a Receive Location rests before it asks a polled transport
@@ -329,6 +389,17 @@ mod tests {
             (SEND_IDLE, SEND_LEASE, SEND_SCAN)
         );
         assert_eq!(tuning.failed_window, FAILED_WINDOW);
+        assert_eq!(
+            tuning.node_receive().most,
+            NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
+        );
+        assert_eq!(
+            (
+                tuning.receive_chunks_per_thread,
+                tuning.send_chunks_per_thread
+            ),
+            (RECEIVE_CHUNKS_PER_THREAD, SEND_CHUNKS_PER_THREAD)
+        );
     }
 
     #[test]
@@ -338,10 +409,23 @@ mod tests {
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
              send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n\
-             receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n",
+             receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n\
+             node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
+             send_chunks_per_thread = 9\n",
         )
         .expect("reads");
         assert_eq!(tuning.failed_window, 12);
+        assert_eq!(
+            tuning.node_receive().most,
+            5 * crate::pool::hardware_threads()
+        );
+        assert_eq!(
+            (
+                tuning.receive_chunks_per_thread,
+                tuning.send_chunks_per_thread
+            ),
+            (3, 9)
+        );
         assert_eq!(tuning.local_timeout, Duration::from_millis(500));
         assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
         assert_eq!(tuning.send_lease, Duration::from_secs(5));

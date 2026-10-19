@@ -90,6 +90,7 @@ use crate::departure::Progress;
 use crate::generation::ReceivedWork;
 use crate::pool::Limits;
 use crate::sending::{Destination, Sends, queue};
+use crate::stream_share::StreamShare;
 use crate::tuning::Tuning;
 
 mod admission;
@@ -184,6 +185,9 @@ pub struct SendStep {
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
     wake: Wake,
+    /// The Streams its departures read now, each chunk read once for every
+    /// departure of a Stream keeping up.
+    share: StreamShare,
 }
 
 #[derive(Default)]
@@ -239,6 +243,7 @@ impl SendStep {
         Self {
             cluster: cluster.to_string(),
             node: node.to_string(),
+            share: StreamShare::new(Arc::clone(&storage)),
             storage,
             lease: tuning.send_lease,
             scan: tuning.send_scan,
@@ -386,6 +391,13 @@ impl SendStep {
     #[must_use]
     pub fn ports(&self) -> Vec<String> {
         self.lock().ports.keys().cloned().collect()
+    }
+
+    /// The Streams its departures read now, each read once for every
+    /// departure of it keeping up (`crate::stream_share`).
+    #[must_use]
+    pub const fn share(&self) -> &StreamShare {
+        &self.share
     }
 
     /// The node it sends for: `xmip:///<cluster>/node/<name>`.

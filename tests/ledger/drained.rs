@@ -77,7 +77,7 @@ impl Transport for Backlogged {
         self.tcp.waiting()
     }
 
-    fn receive(&self) -> transport::Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<Arrived>> {
         if self.filled.swap(true, Ordering::AcqRel) {
             return self.tcp.receive();
         }
@@ -98,7 +98,11 @@ impl Transport for Backlogged {
         Ok(taken)
     }
 
-    fn send(&self, _target: &str, _bytes: &[u8]) -> transport::Result<()> {
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed("it sends nothing")
+    }
+
+    fn send_from(&self, _: &str, _: transport::Outgoing<'_>) -> transport::Result<()> {
         Ok(())
     }
 }

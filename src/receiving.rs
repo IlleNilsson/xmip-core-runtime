@@ -12,7 +12,7 @@ use std::time::Instant;
 use authenticate::{Acceptance, Authenticator};
 use configure::ConfiguredLocation;
 use receive::IdentityPolicy;
-use transport::{Acknowledgement, Transport, Verdict};
+use transport::Transport;
 use xaudit::program_audit::ProgramAudit;
 
 use crate::message_path::{Carried, Runtime, carry};
@@ -21,18 +21,19 @@ mod drain;
 mod pace;
 mod received;
 mod refusal;
+mod telling;
 mod turn;
 
 pub use drain::RECEIVE_DRAIN;
 pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
 
-use crate::outcome::Arrived;
+use crate::budget::Held;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
 use crate::stopping::Stopping;
 use drain::Drain;
 use pace::Ended;
-use refusal::verdict;
+use telling::Telling;
 use turn::{Ticket, Turn};
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
@@ -147,7 +148,7 @@ impl Receiving {
     /// (`runtime-model.md` section 3, *Threads, pools and chunks*; section
     /// 5, *How a receive runs*): one thread carries one arrival through the
     /// whole receive cycle and gives its far end the verdict, one to one
-    /// with how the cycle ended ([`verdict`]) — accepted, refused for good,
+    /// with how the cycle ended (`refusal::verdict`) — accepted, refused for good,
     /// or failed so the far end sends it again. The pool is the Location's,
     /// within its [`Receiving::limits`], and its threads are in `scope`.
     ///
@@ -161,6 +162,17 @@ impl Receiving {
     /// senders never wait on each other and their Ledger writes share a
     /// disk sync. What is still being carried when the node stops is
     /// carried to its end and told.
+    ///
+    /// **No more is taken than there is room for** (open problem 38,
+    /// 2026-10-19). A receive asks its transport for at most as many
+    /// arrivals as the Location's pool has threads free and the node's carry
+    /// budget has places (`crate::budget`), waiting for a place where the
+    /// node has none; what it does not take stays at its far end — a file
+    /// unclaimed in its directory, a message on its broker. Each carry holds
+    /// its place until it is told, and the bytes a carry holds from the
+    /// node's byte budget while it carries. Until then a receive took every
+    /// arrival the transport handed over, and queued what the pool had no
+    /// thread for.
     ///
     /// **A telling that failed in a way asking again may mend** — the far
     /// end not told now, what it sent kept for it to send again — does not
@@ -184,11 +196,8 @@ impl Receiving {
         // Ordered: nothing may be carrying when the transport is asked
         // again. Unordered: up to one less than the pool's most, so the
         // next receive's arrival has a thread.
-        let room = if self.transport.arrivals().ordered() {
-            0
-        } else {
-            limits.most.max(1) - 1
-        };
+        let ordered = self.transport.arrivals().ordered();
+        let busy = if ordered { 0 } else { limits.most.max(1) - 1 };
         let polled = self.transport.waiting().polled();
         let (tell, told) = mpsc::channel();
         let mut carrying = Carrying {
@@ -207,19 +216,26 @@ impl Receiving {
                     Err(_) => break,
                 }
             }
-            while ended.is_ok() && carrying.count > room {
+            while ended.is_ok() && carrying.count > busy {
                 ended = self.settle(&mut each, &told, &mut carrying);
             }
             if ended.is_err() {
                 break;
             }
+            // No more arrivals are taken than this Location's pool and the
+            // node's carry budget both have room for; the rest stay at the
+            // far end. With none at the node, this waits for a carry to end.
+            let room = limits.most.max(1) - carrying.count;
+            let places = runtime.budget.carries.hold_up_to(room as u64);
             let began = Instant::now();
-            let outcome = match self.transport.receive() {
+            let most = usize::try_from(places.charge()).unwrap_or(1);
+            let outcome = match self.transport.receive_up_to(most) {
                 Ok(arrivals) if arrivals.is_empty() => Ended::Nothing,
                 Ok(arrivals) => {
                     drain.handed(arrivals.iter().any(|arrived| !arrived.defers()));
                     carrying.count += arrivals.len();
-                    self.carry_all(&pool, runtime, pickup, arrivals, room == 0, &tell);
+                    let carried = (arrivals, places, ordered);
+                    self.carry_all(&pool, runtime, pickup, carried, &tell);
                     Ended::Found
                 }
                 Err(failure) if failure.retryable => Ended::Mendable,
@@ -297,14 +313,16 @@ impl Receiving {
 
     /// Every one of `arrivals` carried on `pool` and its far end told —
     /// in the order they came where `in_order` says so — each reported on
-    /// `tell` once told.
+    /// `tell` once told. Each holds one of the node's carry places, from
+    /// `places`, until it is told, and the bytes a carry holds from the
+    /// node's byte budget while it carries — let go of before its turn to
+    /// tell, so an arrival waiting to tell never holds back one carrying.
     fn carry_all<'env>(
         &'env self,
         pool: &Pool<'_, 'env>,
         runtime: &'env Runtime<'env>,
         pickup: &'env Pickup,
-        arrivals: Vec<transport::Arrived>,
-        in_order: bool,
+        (arrivals, mut places, in_order): (Vec<transport::Arrived>, Held<'env>, bool),
         tell: &mpsc::Sender<(Carried, transport::Result<()>)>,
     ) {
         let turn = Arc::new(Turn::default());
@@ -315,6 +333,7 @@ impl Receiving {
                 passed: false,
             });
             let tell = tell.clone();
+            let held = places.split(1);
             pool.run(Box::new(move || {
                 let (received, acknowledgement) = received::received(arrived);
                 let telling = Telling {
@@ -322,9 +341,12 @@ impl Receiving {
                     ticket,
                     acknowledgement: Some(acknowledgement),
                 };
+                let bytes = runtime.budget.received.hold(runtime.budget.carry());
                 let carried = carry(runtime, pickup, &self.gate, received);
+                drop(bytes);
                 self.audit_refused(&carried);
                 telling.told(carried);
+                drop(held);
             }));
         }
     }
@@ -344,57 +366,4 @@ struct Carrying<'a> {
     node: &'a str,
     count: usize,
     heard: BTreeSet<String>,
-}
-
-/// One arrival's far end and the Location's settling, told once however
-/// its carry ends. Carried to its end, it tells the cycle's verdict. A
-/// carry that panicked tells it on the way out: the far end hears
-/// [`Verdict::Failed`] and keeps the Stream to send again, and the
-/// Location settles the arrival as failed — never left waiting for a
-/// telling that will not come, which held its receives and its node's
-/// stop for good until 2026-10-03.
-struct Telling {
-    tell: Option<mpsc::Sender<(Carried, transport::Result<()>)>>,
-    ticket: Option<Ticket>,
-    acknowledgement: Option<Acknowledgement>,
-}
-
-impl Telling {
-    /// The cycle `carried` ended, its far end told and its settling sent.
-    fn told(mut self, carried: Carried) {
-        let told = self.acknowledge(verdict(&carried));
-        if let Some(tell) = self.tell.take() {
-            let _ = tell.send((carried, told));
-        }
-    }
-
-    /// The far end told `verdict` in its turn, once: the acknowledgement is
-    /// taken before it is given, so one that panics is not given again.
-    fn acknowledge(&mut self, verdict: Verdict) -> transport::Result<()> {
-        let Some(acknowledgement) = self.acknowledgement.take() else {
-            return Ok(());
-        };
-        match self.ticket.take() {
-            Some(ticket) => ticket.in_turn(|| acknowledgement.acknowledge(verdict)),
-            None => acknowledgement.acknowledge(verdict),
-        }
-    }
-}
-
-impl Drop for Telling {
-    fn drop(&mut self) {
-        let Some(tell) = self.tell.take() else {
-            return;
-        };
-        let told = self.acknowledge(Verdict::Failed);
-        let reason = "its carrying thread panicked before the receive cycle ended";
-        let carried = Carried {
-            arrived: Arrived::Failed {
-                reason: reason.to_string(),
-            },
-            held: 0,
-            journeys: Vec::new(),
-        };
-        let _ = tell.send((carried, told));
-    }
 }

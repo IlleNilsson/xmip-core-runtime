@@ -13,6 +13,7 @@ use route::Gathering;
 use xaudit::origin::Origin;
 use xcore::{SystemClock, UuidV7Generator};
 
+use crate::budget::NodeBudget;
 use crate::held_work::pick_up_released;
 use crate::linked::Linked;
 use crate::message_path::{Parties, Runtime};
@@ -33,6 +34,7 @@ pub(super) struct Served {
     pub(super) subscriptions: Vec<route::Subscription>,
     pub(super) pickup: Arc<Pickup>,
     pub(super) send: Arc<SendStep>,
+    pub(super) budget: NodeBudget,
     pub(super) sends: Sends,
     pub(super) receiving: Vec<Receiving>,
 }
@@ -53,6 +55,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             pickup,
             sends,
             send,
+            budget,
             receiving,
         } = served;
         let authenticators: Vec<&dyn Authenticator> =
@@ -80,6 +83,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             treatment: MessageTreatment::default(),
             sends: &sends,
             send: &send,
+            budget: &budget,
             transport_identifiers: &transport_identifiers,
             message_identifiers: &message_identifiers,
             policies: &policies,

@@ -40,8 +40,12 @@
 //! `send_claim.rs` a claim found another's, or unconfirmed past its lease,
 //! stopping a send's further attempts; `send_waiting.rs` retries that wait
 //! in the Ledger holding no claim and no place, a healthy Port sent past
-//! them, and a pass that tried nothing writing nothing; `sending.rs` the
-//! test node that sends they run, and its far end;
+//! them, and a pass that tried nothing writing nothing; `send_streamed.rs`
+//! a fan-out of a Message far larger than a chunk sent in bounded memory,
+//! each chunk read once, and sends that gather waiting for room in the
+//! node's byte budget; `roomed.rs` receives taking no more than their pool
+//! and the node have room for, and the bytes carries hold within the node's
+//! budget; `sending.rs` the test node that sends they run, and its far end;
 //! `untold.rs` a far end that could not be told, audited once per reason;
 //! `audited.rs` a Publication's audit record carrying its Message and its
 //! Stream's bytes, verified when read (ADR-0070).
@@ -58,6 +62,7 @@ mod killed;
 mod paced;
 mod panicked;
 mod receive_cycle;
+mod roomed;
 mod searched;
 mod send;
 mod send_bounded;
@@ -65,6 +70,7 @@ mod send_claim;
 mod send_group;
 mod send_killed;
 mod send_raced;
+mod send_streamed;
 mod send_waiting;
 mod sending;
 mod untold;
