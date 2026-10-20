@@ -1,6 +1,6 @@
 //! The runtime's C boundary, in one folder (ADR-0050, refined 2026-09-25):
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
-//! sections 5 to 19, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
+//! sections 5 to 20, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
 //! ADR-0034) and the loader that opens a module's library and calls through
 //! its table (ADR-0057), the two Windows calls the local operate endpoint makes
 //! (`system`; ADR-0014, amendment 2026-10-13) and those a directory watch
@@ -22,6 +22,8 @@ pub mod catalogue;
 pub mod certificate;
 #[cfg(feature = "remote")]
 pub mod curve;
+#[cfg(feature = "node")]
+pub mod database;
 #[cfg(feature = "remote")]
 pub mod dead_message;
 #[cfg(feature = "node")]

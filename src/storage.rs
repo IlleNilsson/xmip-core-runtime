@@ -37,7 +37,7 @@ use configure::XmipConfigurationDocument;
 use node::NodeRole;
 use persist::Engine;
 use persist::storage::database::{self, Domain, Technology};
-use persist::storage::schema::Database;
+use persist::storage::schema::{Database, DatabaseVersion};
 use persist::storage::{Embedded, XmipStorage};
 use secret::KekName;
 
@@ -52,6 +52,10 @@ pub const KEK: &str = "storage";
 /// Where an embedded Storage node keeps its databases, under the node's
 /// data directory.
 pub const PLACE: &str = "storage";
+
+/// The leaf beneath a node its databases are published at, one record to
+/// each data domain beneath it ([`Reached::published`]).
+pub const DATABASES: &str = "storage";
 
 /// Where each data domain's database is in [`PLACE`] where its table is
 /// left out: the runtime, the administration and the audit database.
@@ -78,6 +82,7 @@ pub struct Reached {
     storage: Arc<dyn XmipStorage>,
     chunk: usize,
     said: String,
+    versions: Vec<DatabaseVersion>,
 }
 
 impl Reached {
@@ -97,6 +102,24 @@ impl Reached {
     #[must_use]
     pub fn said(&self) -> &str {
         &self.said
+    }
+
+    /// The schema version each database the node keeps itself holds, as
+    /// they opened; none where it reaches the program's own or other
+    /// Storage nodes, which say their own.
+    #[must_use]
+    pub fn versions(&self) -> &[DatabaseVersion] {
+        &self.versions
+    }
+
+    /// What the node beneath `node` publishes of each database it keeps:
+    /// at `<node>/storage/<domain>`, the schema version it holds and what
+    /// it is kept on (open problem 41).
+    pub fn published(&self, node: &str) -> impl Iterator<Item = (String, String)> {
+        self.versions.iter().map(move |held| {
+            let scope = format!("{node}/{DATABASES}/{}", held.database.word());
+            (scope, held.evidence())
+        })
     }
 }
 
@@ -230,8 +253,12 @@ impl Planned {
     /// another process holding it among the reasons — or a key does not
     /// unwrap.
     pub fn open(self, linked: &Linked, chunk: usize) -> Result<Reached, Refusal> {
-        let (storage, said) = match self {
-            Self::Given(storage) => (storage, "the Xmip Storage its program opened".to_string()),
+        let (storage, said, versions) = match self {
+            Self::Given(storage) => (
+                storage,
+                "the Xmip Storage its program opened".to_string(),
+                Vec::new(),
+            ),
             Self::Embedded {
                 places,
                 key_store,
@@ -249,8 +276,14 @@ impl Planned {
                         )],
                     )
                 })?;
-                let said = format!("its own Storage node, {at}, sealed under {key_store}");
-                (opened, said)
+                let (opened, versions) = opened;
+                let held: Vec<String> = versions
+                    .iter()
+                    .map(|held| format!("{} {}", held.database.word(), held.evidence()))
+                    .collect();
+                let held = held.join(", ");
+                let said = format!("its own Storage node, {at}, sealed under {key_store}: {held}");
+                (opened, said, versions.to_vec())
             }
         };
         let said = format!("{said}, Streams in chunks of {} KiB", chunk / 1024);
@@ -258,6 +291,7 @@ impl Planned {
             storage,
             chunk,
             said,
+            versions,
         })
     }
 }
@@ -267,7 +301,7 @@ fn embedded(
     [runtime_at, administration_at, audit_at]: &[PathBuf; 3],
     key_store: &str,
     keys: &Path,
-) -> Result<Arc<dyn XmipStorage>, String> {
+) -> Result<(Arc<dyn XmipStorage>, [DatabaseVersion; 3]), String> {
     let (Some(runtime), Some(administration), Some(key_store)) = (
         linked.engine.as_ref(),
         linked.administration.as_ref(),
@@ -289,7 +323,8 @@ fn embedded(
     let audit: Box<dyn Engine> = opened(administration, audit_at)?;
     let node = Embedded::open(runtime, administration_store, audit, keys.as_ref(), &kek)
         .map_err(|error| error.to_string())?;
-    Ok(Arc::new(node))
+    let versions = *node.versions();
+    Ok((Arc::new(node), versions))
 }
 
 #[cfg(test)]
@@ -419,6 +454,17 @@ mod tests {
             assert!(said.contains(&beside.display().to_string()), "{said}");
         }
         assert_eq!(reached.chunk(), CHUNK);
+        let version = persist::storage::schema::VERSION;
+        let held = format!("runtime schema version {version} on memory");
+        assert!(said.contains(&held), "{said}");
+        let node = &configure::fixture::test_cluster().node_scope(0);
+        let published: Vec<(String, String)> = reached.published(node).collect();
+        let at = |word: &str| format!("{node}/storage/{word}");
+        assert_eq!(
+            published,
+            ["runtime", "administration", "audit"]
+                .map(|word| (at(word), format!("schema version {version} on memory")))
+        );
         let _ = std::fs::remove_dir_all(&directory);
     }
 
