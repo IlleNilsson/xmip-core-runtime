@@ -47,7 +47,7 @@
 //! 2026-09-29). A node's configuration names its Parties (`[[parties]]`),
 //! and a Receive Location the Parties it takes (`accept.party`), but its
 //! publication does not yet say which a Location takes and an endpoint is
-//! labelled by its transport alone, so whoever its Receive Locations accept
+//! labeled by its transport alone, so whoever its Receive Locations accept
 //! and its Send Ports deliver to is drawn as one Party per side, over every
 //! endpoint, [`ANY_PARTY`] (open problem 33).
 

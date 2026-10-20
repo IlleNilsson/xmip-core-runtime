@@ -28,7 +28,7 @@ use crate::ffi::system::user_name;
 /// administrators, each fully; nobody else. No ACE for anyone else is
 /// a refusal of everyone else.
 #[cfg(feature = "node")]
-const OPENERS: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)";
+const OPENERS: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)"; // spellchecker:disable-line
 
 /// What each direction of the pipe holds before a write waits on the
 /// reader: room for a call and its answer's frames.

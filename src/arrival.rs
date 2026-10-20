@@ -3,7 +3,7 @@
 //! **Not an entity.** A Xmip Service, a Host Service and a Work Process each
 //! have identity, lifecycle and configuration. This has none of them — nobody
 //! authors one, nothing has one, and there is never more than one of it. It is
-//! behaviour, and it lives here because the Host Service is what executes it.
+//! behavior, and it lives here because the Host Service is what executes it.
 //!
 //! A Stream gets in three ways — something pushes it, Xmip is watching and it
 //! appears, or a timer fires and Xmip goes and fetches it. All three are
@@ -899,7 +899,7 @@ filter = "xmip.party = '{party}'"
             panic!("expected a route, got {arrived:?}");
         };
 
-        // Recognised by nothing, authenticated anyway, and routed. A Party is a
+        // Recognized by nothing, authenticated anyway, and routed. A Party is a
         // shortcut, not a permission.
         assert_eq!(facts.accountable().party_id, None);
         assert_eq!(facts.transport.mechanism.name(), "circumstance");

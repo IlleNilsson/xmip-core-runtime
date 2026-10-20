@@ -494,12 +494,12 @@ address = "C:/out"
         let source = node().replace(
             "transport = \"file\"\naddress = \"C:/in\"",
             "transport = \"xmip-core-transport-drop\"\naddress = \"C:/in\"\n\
-             [receive_locations.settings]\ncolour = \"lime\"",
+             [receive_locations.settings]\ncolor = \"lime\"",
         );
         let document = configure::parse_toml(&source).expect("parses");
         let report = build_execution_tree(document, &[], &declared).expect_err("refused");
         assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
-        assert!(report.errors.iter().any(|e| e.contains("\"colour\"")));
+        assert!(report.errors.iter().any(|e| e.contains("\"color\"")));
         assert!(
             report
                 .errors

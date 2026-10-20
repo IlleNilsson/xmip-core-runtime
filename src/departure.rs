@@ -16,7 +16,7 @@
 //!
 //! Authorization runs again here rather than being inherited from arrival.
 //! Time has passed — a Process may have waited days for a human — and what was
-//! true then is never a licence to act now.
+//! true then is never a license to act now.
 //!
 //! **One pass, never a wait.** [`depart_to`] tries the Port once on its
 //! active Send Location and fails over at once where the Port says so; a
