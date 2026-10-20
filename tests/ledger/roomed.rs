@@ -24,7 +24,7 @@ use xmip_core_runtime::sending::Sends;
 use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;
 
-use super::bounded::{Made, measured};
+use super::bounded::{Made, alone, measured};
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{onward, until};
 use super::{directory, test_node};
@@ -235,6 +235,13 @@ fn receives_take_no_more_than_their_pool_and_the_node_have_room_for() {
 
 #[test]
 fn what_the_carries_hold_is_held_within_the_node_byte_budget() {
+    alone(
+        "roomed::what_the_carries_hold_is_held_within_the_node_byte_budget",
+        held_within_the_node_byte_budget,
+    );
+}
+
+fn held_within_the_node_byte_budget() {
     // A carry is counted as holding eight chunks, and the node lets its
     // carries hold one chunk each: an eighth of them carry at once.
     let tuning = Tuning {
