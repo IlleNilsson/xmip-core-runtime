@@ -192,8 +192,8 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
     .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// Wake a listener waiting at `path` for a connection.
+/// Wake a listener waiting at `path` for a connection; whether it connected.
 #[cfg(feature = "node")]
-pub(crate) fn wake(path: &Path) {
-    let _ = connect(path, Duration::from_secs(1));
+pub(crate) fn wake(path: &Path) -> bool {
+    connect(path, Duration::from_secs(1)).is_ok()
 }
