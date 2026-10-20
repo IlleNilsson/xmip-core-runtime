@@ -1,7 +1,7 @@
 //! What the gates concluded, and what the transport handed over, written
 //! into the Message Context where a Subscription can read it.
 
-use context::property::PARTY;
+use context::property::{KEPT, PARTY};
 use context::{IdentityFacts, MessageContext};
 use receive::ReceivedStream;
 
@@ -15,13 +15,21 @@ use receive::ReceivedStream;
 /// The headers the transport handed over go in first, each under the name
 /// it travels by, `<protocol>.header.<name>`: the runtime writes them into
 /// the Message Context once, at arrival, and no transport writes into a
-/// context (ADR-0046, amendment 2026-09-25, later).
+/// context (ADR-0046, amendment 2026-09-25, later). Beside them, what the
+/// transport said of the arrival that the Message Context keeps
+/// (`context::property::KEPT`): a dropped file's name, which a file Send
+/// Location names the Message's file by (ADR-0024, amendment 2026-10-20).
 pub(super) fn promote_identity(facts: &IdentityFacts, received: &ReceivedStream) -> MessageContext {
     use xcore::ScalarValue;
 
     let mut context = MessageContext::new();
     for (name, value) in &received.headers {
         context = context.with_value(name.as_str(), value.clone());
+    }
+    for (name, value) in received.observed().iter() {
+        if KEPT.contains(&name.as_str()) {
+            context = context.with_value(name.as_str(), ScalarValue::Text(value.clone()));
+        }
     }
     let mut context = context
         .with_value(

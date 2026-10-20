@@ -9,14 +9,25 @@
 //! flight here takes each chunk from that read, the chunk itself lent, never
 //! copied. Until 2026-10-19 each departure read the Message whole.
 //!
-//! **No departure waits for another.** The read keeps the last [`WINDOW`]
-//! chunks it took, and no more than there are departures reading it — one
-//! alone keeps only the chunk it holds; a departure further behind — its far end slower, its
-//! send begun later, a kept session's exchange gone again from the start —
-//! reads on from Xmip Storage itself, from the chunk where it stands, so a
-//! slow Send Port never holds back the others (ADR-0018 clause 11, the
-//! bulkhead) and what is held is bounded for each Stream, however many
-//! departures read it.
+//! **No departure waits for another.** The read keeps the last chunks it
+//! took — one where a departure reads it alone, and [`KEPT_PER_READER`] for
+//! each other departure reading it, the room each one's own read of Xmip
+//! Storage would have held (`budget::STREAM_CHUNKS`) — so what is held is
+//! bounded for each Stream, and a slow Send Port never holds back the others
+//! (ADR-0018 clause 11, the bulkhead).
+//!
+//! **A departure behind the kept chunks reads on from where it is, and
+//! comes back.** One begun late, or kept from its processor on a loaded
+//! machine, or whose far end is slower, asks Xmip Storage for the chunks it
+//! missed, from the chunk it reached and never from the Stream's start
+//! (`ChunkReader::shared_from`), and takes from the one read again as soon
+//! as its place is among the chunks kept (the owner, 2026-10-20: *a
+//! departure that falls behind starts reading at the chunk it reached,
+//! catches up from Storage over only the chunks it missed, and rejoins the
+//! shared read*). Until 2026-10-20 it read the whole Stream again from its
+//! first chunk and never came back, and two chunks kept were less than a
+//! millisecond of a far end's pace: a fan-out on a loaded machine read the
+//! Stream once for each departure.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
@@ -25,9 +36,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use persist::storage::{ChunkReader, Chunked, XmipStorage};
 use xcore::StreamId;
 
-/// The chunks of one Stream kept for the departures reading behind the
-/// first, where there are several: the last one read and the one before it.
-pub const WINDOW: usize = 2;
+/// The chunks kept for each departure beside the first reading one Stream:
+/// the room its own read of Xmip Storage would have held, which a
+/// departure taking lent chunks does not hold — `budget::STREAM_CHUNKS`,
+/// but for the chunk it is lent.
+pub const KEPT_PER_READER: usize = crate::budget::STREAM_CHUNKS as usize - 1;
 
 /// The Streams this node's departures read now, each read once.
 pub struct StreamShare {
@@ -43,11 +56,20 @@ struct Shared {
 struct Source {
     reader: ChunkReader<'static>,
     window: VecDeque<Arc<Vec<u8>>>,
-    /// The place in the Stream of the window's first chunk.
+    /// The place in the Stream of the window's first chunk; the one read's
+    /// next is the window's end, `first + window.len()`.
     first: u64,
     ended: bool,
     /// Why the read failed, said to every departure of it.
     failed: Option<(io::ErrorKind, String)>,
+}
+
+impl Source {
+    /// Whether a departure at `place` takes its next chunk from the one
+    /// read: a kept chunk, or the next the read takes.
+    fn holds(&self, place: u64) -> bool {
+        place >= self.first && place <= self.first + self.window.len() as u64
+    }
 }
 
 impl StreamShare {
@@ -62,8 +84,8 @@ impl StreamShare {
 
     /// The Stream `stream`, `length` bytes as its record keeps, from its
     /// start: its chunks lent from the one read of it on this node while
-    /// this reader keeps up, read from Xmip Storage itself once it falls
-    /// behind.
+    /// this reader keeps up, read from Xmip Storage from where it stands
+    /// while it is behind.
     #[must_use]
     pub fn reader(&self, stream: StreamId, length: u64) -> Lent {
         let mut streams = lock(&self.streams);
@@ -72,11 +94,12 @@ impl StreamShare {
             .get(&stream)
             .and_then(Weak::upgrade)
             .unwrap_or_else(|| {
-                let reader = self.ledger(stream, length);
+                let reader =
+                    ChunkReader::shared(Arc::clone(&self.storage), Chunked::Ledger(stream), length);
                 let fresh = Arc::new(Shared {
                     source: Mutex::new(Source {
                         reader,
-                        window: VecDeque::with_capacity(WINDOW + 1),
+                        window: VecDeque::new(),
                         first: 0,
                         ended: false,
                         failed: None,
@@ -91,6 +114,7 @@ impl StreamShare {
             stream,
             length,
             place: 0,
+            taken: 0,
             held: None,
             at: 0,
             own: None,
@@ -105,10 +129,6 @@ impl StreamShare {
             .filter(|shared| shared.strong_count() > 0)
             .count()
     }
-
-    fn ledger(&self, stream: StreamId, length: u64) -> ChunkReader<'static> {
-        ChunkReader::shared(Arc::clone(&self.storage), Chunked::Ledger(stream), length)
-    }
 }
 
 /// One departure's read of a Stream: the chunk it holds, lent, and its place.
@@ -119,9 +139,12 @@ pub struct Lent {
     length: u64,
     /// The place of the next chunk it takes.
     place: u64,
+    /// The bytes of the chunks it took.
+    taken: u64,
     held: Option<Arc<Vec<u8>>>,
     at: usize,
-    /// Its own read, once it fell behind the window.
+    /// Its own read, from the chunk it reached, while it is behind the
+    /// chunks kept.
     own: Option<ChunkReader<'static>>,
 }
 
@@ -138,10 +161,10 @@ impl Lent {
         if let Some((kind, why)) = &source.failed {
             return Err(io::Error::new(*kind, why.clone()));
         }
-        let Some(offset) = self.place.checked_sub(source.first) else {
+        if !source.holds(self.place) {
             return Ok(Next::Behind);
-        };
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        }
+        let offset = usize::try_from(self.place - source.first).unwrap_or(usize::MAX);
         if let Some(chunk) = source.window.get(offset) {
             return Ok(Next::Chunk(Arc::clone(chunk)));
         }
@@ -152,9 +175,10 @@ impl Lent {
             Ok(Some(chunk)) => {
                 let chunk = Arc::new(chunk);
                 source.window.push_back(Arc::clone(&chunk));
-                // No more kept than there are readers to take it: one
-                // reader alone keeps only the chunk it holds.
-                let kept = WINDOW.min(Arc::strong_count(&self.shared)).max(1);
+                // One kept for a reader alone — the chunk it holds — and
+                // the room of each other's own read for each other.
+                let others = Arc::strong_count(&self.shared).saturating_sub(1);
+                let kept = (KEPT_PER_READER * others).max(1);
                 while source.window.len() > kept {
                     source.window.pop_front();
                     source.first += 1;
@@ -172,20 +196,39 @@ impl Lent {
         }
     }
 
-    /// A read of its own from Xmip Storage, past the chunks it has taken:
-    /// what a reader fallen behind the window reads on from.
-    fn caught_up(&self) -> io::Result<ChunkReader<'static>> {
-        let mut own = ChunkReader::shared(
-            Arc::clone(&self.storage),
-            Chunked::Ledger(self.stream),
-            self.length,
-        );
-        for _ in 0..self.place {
-            if own.next_chunk()?.is_none() {
-                break;
+    /// Whether its place is among what the one read holds again: it then
+    /// lets go of its own read and takes from the one.
+    fn back(&self) -> bool {
+        let source = lock(&self.shared.source);
+        source.failed.is_none() && source.holds(self.place)
+    }
+
+    /// The next chunk at its place: from the one read where it holds it,
+    /// otherwise from Xmip Storage, from the chunk it reached.
+    fn take(&mut self) -> io::Result<Option<Arc<Vec<u8>>>> {
+        loop {
+            if self.own.is_some() && self.back() {
+                self.own = None;
+            }
+            if let Some(own) = self.own.as_mut() {
+                return Ok(own.next_chunk()?.map(Arc::new));
+            }
+            match self.next()? {
+                Next::Chunk(chunk) => return Ok(Some(chunk)),
+                Next::End => return Ok(None),
+                Next::Behind => {
+                    let chunk = u32::try_from(self.place).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "a Stream past its chunks")
+                    })?;
+                    self.own = Some(ChunkReader::shared_from(
+                        Arc::clone(&self.storage),
+                        self.stream,
+                        self.length,
+                        (chunk, self.taken),
+                    ));
+                }
             }
         }
-        Ok(own)
     }
 }
 
@@ -195,9 +238,6 @@ impl Read for Lent {
             return Ok(0);
         }
         loop {
-            if let Some(own) = self.own.as_mut() {
-                return own.read(out);
-            }
             if let Some(held) = self.held.as_ref().filter(|held| self.at < held.len()) {
                 let taken = out.len().min(held.len() - self.at);
                 out[..taken].copy_from_slice(&held[self.at..self.at + taken]);
@@ -205,14 +245,12 @@ impl Read for Lent {
                 return Ok(taken);
             }
             self.held = None;
-            match self.next()? {
-                Next::Chunk(chunk) => {
-                    (self.held, self.at) = (Some(chunk), 0);
-                    self.place += 1;
-                }
-                Next::End => return Ok(0),
-                Next::Behind => self.own = Some(self.caught_up()?),
-            }
+            let Some(chunk) = self.take()? else {
+                return Ok(0);
+            };
+            self.taken += chunk.len() as u64;
+            self.place += 1;
+            (self.held, self.at) = (Some(chunk), 0);
         }
     }
 }
@@ -224,6 +262,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::{Failing, Operation};
     use persist::storage::StreamChunk;
 
     /// A Stream of `chunks` chunks of `size` patterned bytes kept in
@@ -250,12 +289,19 @@ mod tests {
             .all(|(at, byte)| usize::from(*byte) == at % 251)
     }
 
+    /// Storage that counts the chunks asked of it, over a Stream of
+    /// `chunks` chunks of `size` bytes: the share, the counter, the length.
+    fn counted(stream: StreamId, chunks: u32, size: usize) -> (StreamShare, Arc<Failing>, u64) {
+        let failing = Failing::over(Arc::clone(crate::ledger::in_memory()));
+        let length = kept(failing.as_ref(), stream, chunks, size);
+        let storage: Arc<dyn XmipStorage> = failing.clone();
+        (StreamShare::new(storage), failing, length)
+    }
+
     #[test]
     fn readers_keeping_up_take_each_chunk_from_one_read() {
-        let storage = Arc::clone(crate::ledger::in_memory());
         let stream = StreamId::new(0x5_0001);
-        let length = kept(storage.as_ref(), stream, 6, 1000);
-        let share = StreamShare::new(Arc::clone(&storage));
+        let (share, failing, length) = counted(stream, 6, 1000);
         let mut readers: Vec<Lent> = (0..4).map(|_| share.reader(stream, length)).collect();
         assert_eq!(share.reading(), 1, "one read of the Stream for all four");
         let mut read = vec![Vec::new(); 4];
@@ -275,36 +321,76 @@ mod tests {
             readers.iter().all(|reader| reader.own.is_none()),
             "none read again"
         );
-        let source = lock(&readers[0].shared.source);
-        assert!(
-            source.window.len() <= WINDOW,
-            "{} chunks kept",
-            source.window.len()
-        );
-        drop(source);
+        // Each chunk once, and the one ask that finds the Stream's end.
+        assert!(failing.asked_times(Operation::ReadChunk) <= 6 + 1);
         drop(readers);
         assert_eq!(share.reading(), 0, "let go with its last reader");
     }
 
     #[test]
-    fn a_reader_fallen_behind_reads_on_from_storage_and_misses_nothing() {
-        let storage = Arc::clone(crate::ledger::in_memory());
+    fn a_reader_alone_keeps_only_the_chunk_it_holds() {
+        let stream = StreamId::new(0x5_0004);
+        let (share, _, length) = counted(stream, 6, 1000);
+        let mut alone = share.reader(stream, length);
+        alone.read_exact(&mut [0u8; 3000]).expect("three chunks");
+        assert_eq!(lock(&alone.shared.source).window.len(), 1);
+    }
+
+    #[test]
+    fn a_reader_fallen_behind_reads_only_what_it_missed_and_comes_back() {
         let stream = StreamId::new(0x5_0002);
-        let length = kept(storage.as_ref(), stream, 8, 500);
-        let share = StreamShare::new(Arc::clone(&storage));
+        let chunks = 40;
+        let (share, failing, length) = counted(stream, chunks, 500);
         let mut ahead = share.reader(stream, length);
-        let mut first = vec![0u8; 3 * 500];
-        ahead.read_exact(&mut first).expect("three chunks ahead");
         let mut behind = share.reader(stream, length);
+        let mut piece = [0u8; 500];
+        // Side by side for two chunks.
         let mut late = Vec::new();
-        behind.read_to_end(&mut late).expect("read on");
-        assert!(behind.own.is_some(), "it read on from Xmip Storage");
+        for _ in 0..2 {
+            ahead.read_exact(&mut piece).expect("ahead");
+            behind.read_exact(&mut piece).expect("behind");
+            late.extend_from_slice(&piece);
+        }
+        // Then the one ahead goes on past what is kept for the other.
+        for _ in 0..KEPT_PER_READER + 3 {
+            ahead.read_exact(&mut piece).expect("ahead");
+        }
+        // The one behind reads what it missed from Xmip Storage, from where
+        // it stands, until it is among the kept chunks again.
+        let before = failing.asked_times(Operation::ReadChunk);
+        let mut caught = 0;
+        loop {
+            behind.read_exact(&mut piece).expect("catching up");
+            late.extend_from_slice(&piece);
+            if behind.own.is_none() {
+                break;
+            }
+            caught += 1;
+        }
+        let by_itself = failing.asked_times(Operation::ReadChunk) - before;
+        assert!(caught > 0, "it fell behind");
+        assert_eq!(
+            by_itself, caught,
+            "{by_itself} chunks asked of Xmip Storage for the {caught} it missed"
+        );
+        // Back on the one read: side by side to the end, the one ahead a
+        // few chunks ahead still.
+        loop {
+            let went = ahead.read(&mut piece).expect("ahead");
+            let taken = behind.read(&mut piece).expect("behind");
+            late.extend_from_slice(&piece[..taken]);
+            assert!(behind.own.is_none(), "it stays on the one read");
+            if went + taken == 0 {
+                break;
+            }
+        }
         assert_eq!(late.len() as u64, length);
-        assert!(patterned(&late));
-        let mut rest = Vec::new();
-        ahead.read_to_end(&mut rest).expect("the rest");
-        first.extend_from_slice(&rest);
-        assert!(patterned(&first) && first.len() as u64 == length);
+        assert!(patterned(&late), "every byte, in its place");
+        let asked = failing.asked_times(Operation::ReadChunk);
+        assert!(
+            asked <= u64::from(chunks) + 1 + by_itself,
+            "the Stream once and what was missed once: {asked} asked"
+        );
     }
 
     #[test]
