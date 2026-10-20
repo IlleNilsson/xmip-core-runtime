@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn a_query_it_does_not_take_is_refused_in_its_words() {
-        let (code, refusal) = read("", &["colour", "red"]);
+        let (code, refusal) = read("", &["color", "red"]);
         assert_eq!(code, status::INVALID);
         assert!(refusal.starts_with("REFUSED: "), "{refusal}");
 

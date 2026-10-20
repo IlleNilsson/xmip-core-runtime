@@ -103,7 +103,7 @@ impl ServiceDefinition {
     /// A Host Service, named for the work it holds.
     ///
     /// The description lists what it hosts, because that is the question an
-    /// operator has when they find it in the service list and do not recognise
+    /// operator has when they find it in the service list and do not recognize
     /// the name.
     #[must_use]
     pub fn for_host(
@@ -296,7 +296,7 @@ fn quoted(text: &str) -> String {
 /// boot — macOS empties `/var/run` as it starts, and launchd has no
 /// spelling of systemd's `RuntimeDirectory` (decided by the owner,
 /// 2026-10-13: *created by systemd / launchd for the node's account*). It
-/// runs as root, once at load, and is labelled `<name>.run`.
+/// runs as root, once at load, and is labeled `<name>.run`.
 #[must_use]
 pub fn launchd_run_directory(definition: &ServiceDefinition) -> String {
     let folder = crate::plane::local::MACOS_FOLDER.trim_end_matches('/');
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn a_host_service_says_what_it_hosts() {
         // The question an operator has when they find a name they do not
-        // recognise in the service list.
+        // recognize in the service list.
         let hosts = vec![String::from("ftp receive"), String::from("sftp send")];
         let definition = ServiceDefinition::for_host(
             &node(),

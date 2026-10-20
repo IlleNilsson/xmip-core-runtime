@@ -738,7 +738,7 @@ address = "{far}"
     #[test]
     fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
         let unsound = node(&unheld().to_string(), &unheld().to_string())
-            .replace("timeout = \"100ms\"", "timeout = 5\ncolour = \"lime\"");
+            .replace("timeout = \"100ms\"", "timeout = 5\ncolor = \"lime\"");
         let path = written("declared", &unsound);
 
         let refused = Running::start(path_text(&path), linked(&path))
@@ -747,7 +747,7 @@ address = "{far}"
 
         assert_eq!(refused.phase, StartupPhase::ValidateStartup);
         assert_eq!(refused.problems.len(), 2, "{:?}", refused.problems);
-        for setting in ["\"timeout\"", "\"colour\""] {
+        for setting in ["\"timeout\"", "\"color\""] {
             assert!(
                 refused
                     .problems
@@ -769,7 +769,7 @@ address = "{far}"
             .stop();
         let problems = crate::start::validate(&unsound);
         assert!(
-            problems.iter().any(|p| p.contains("\"colour\"")),
+            problems.iter().any(|p| p.contains("\"color\"")),
             "{problems:?}"
         );
         for written in [path, sound] {

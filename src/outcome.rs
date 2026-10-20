@@ -33,7 +33,7 @@ use route::{Promoted, Routing, SourceError};
 /// Why a Stream never became a Journey.
 #[derive(Clone, Debug)]
 pub enum Refused {
-    /// The arrival carried something this mechanism recognises and could not
+    /// The arrival carried something this mechanism recognizes and could not
     /// read — a malformed certificate, a truncated envelope.
     ///
     /// Distinct from carrying nothing, which is ordinary and reaches the

@@ -448,12 +448,12 @@ mod tests {
     #[test]
     fn an_unknown_key_a_wrong_kind_and_a_value_out_of_bounds_are_refused_in_words() {
         let refused = read(
-            "segments = 0\ntcp_segment = \"1460\"\ncolour = \"lime\"\nreceive_idle = \"0s\"\n\
+            "segments = 0\ntcp_segment = \"1460\"\ncolor = \"lime\"\nreceive_idle = \"0s\"\n\
              storage_timeout = \"2h\"\n",
         )
         .expect_err("refused");
         let said = refused.join("\n");
-        for word in ["segments", "tcp_segment", "colour", "[tuning]"] {
+        for word in ["segments", "tcp_segment", "color", "[tuning]"] {
             assert!(said.contains(word), "names {word}: {said}");
         }
         let durations = read("receive_idle = \"0s\"\nstorage_timeout = \"2h\"\n")
