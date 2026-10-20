@@ -20,6 +20,7 @@
 //! receive_poll = "1s"                         # receiving::RECEIVE_POLL
 //! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
 //! receive_drain = "1s"                        # receiving::RECEIVE_DRAIN
+//! receive_handshake = "5s"                    # transport::guard::HANDSHAKE
 //! node_receive_threads_per_hardware_thread = 4  # budget::NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_chunks_per_thread = 8               # budget::RECEIVE_CHUNKS_PER_THREAD
 //! send_threads_per_hardware_thread = 2        # send_step::SEND_THREADS_PER_HARDWARE_THREAD
@@ -117,6 +118,14 @@ pub const TUNING: &Settings = &Settings {
             presence: Presence::Default(Fixed::Duration(RECEIVE_DRAIN)),
             meaning: "How long a stopping Receive Location goes on taking what its far end \
                       already let go of.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_handshake",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(transport::guard::HANDSHAKE)),
+            meaning: "The most each read of a TLS handshake a Receive Location terminates \
+                      waits on the client, apart from the Location's own wait.",
             applies: Applies::Both,
         },
         Setting {
@@ -237,6 +246,7 @@ pub struct Tuning {
     pub receive_poll: Duration,
     pub receive_backoff: Duration,
     pub receive_drain: Duration,
+    pub receive_handshake: Duration,
     pub node_receive_threads_per_hardware_thread: usize,
     pub receive_chunks_per_thread: usize,
     pub send_threads_per_hardware_thread: usize,
@@ -295,6 +305,7 @@ impl Tuning {
             receive_poll: duration("receive_poll"),
             receive_backoff: duration("receive_backoff"),
             receive_drain: duration("receive_drain"),
+            receive_handshake: duration("receive_handshake"),
             node_receive_threads_per_hardware_thread: count(
                 "node_receive_threads_per_hardware_thread",
             ),
@@ -376,6 +387,7 @@ mod tests {
         assert_eq!(tuning.storage_timeout, client::TIMEOUT);
         assert_eq!(tuning.storage_pass_over, client::PASS_OVER);
         assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
+        assert_eq!(tuning.receive_handshake, transport::guard::HANDSHAKE);
         assert_eq!(
             tuning.receive().most,
             RECEIVE_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()

@@ -6,7 +6,7 @@
 //! admitting at the Locations it was set up from — so what is proved here
 //! is the node's: the guard handed to the transport, the Party resolved
 //! through `[[parties]]`, `accept.party` narrowing the gate, and the
-//! receive policy set up from the Locations the node starts.
+//! policy set up from the Locations the node starts.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -23,8 +23,7 @@ use xcore::{Layer, Mechanism, mechanism};
 
 use super::Running;
 use crate::fixture::{Always, Authority};
-use crate::linked::{Linked, LinkedTransport};
-use crate::receiving::ReceiveGate;
+use crate::linked::{Linked, LinkedTransport, Started};
 
 /// Claims the subject the handshake proved, as `mutual-tls`.
 struct Subject;
@@ -60,9 +59,13 @@ impl Authorizer for Admitting {
     }
 }
 
-fn admitting(gates: &[ReceiveGate]) -> Box<dyn Authorizer> {
+fn admitting(started: Started<'_>) -> Box<dyn Authorizer> {
     Box::new(Admitting(
-        gates.iter().map(|gate| gate.location.clone()).collect(),
+        started
+            .receive
+            .iter()
+            .map(|gate| gate.location.clone())
+            .collect(),
     ))
 }
 
@@ -77,12 +80,14 @@ cluster_name = "{cluster}"
 node_name = "{node}"
 
 [[parties]]
+id = "{first}"
 name = "first"
-identities = ["CN=first.example"]
+identities = [{{ mechanism = "mutual-tls", purpose = "receive", value = "CN=first.example" }}]
 
 [[parties]]
+id = "{second}"
 name = "second"
-identities = ["CN=second.example"]
+identities = [{{ mechanism = "mutual-tls", purpose = "receive", value = "CN=second.example" }}]
 
 [[receive_locations]]
 name = "In"
@@ -99,6 +104,8 @@ party = ["first"]
 {provision}"#,
         cluster = cluster.name,
         node = cluster.node(0).name,
+        first = configure::party::mint(),
+        second = configure::party::mint(),
     )
 }
 
@@ -131,7 +138,7 @@ fn linked() -> Linked {
             mechanism::mutual_tls(),
             context::Verified::Proven,
         ))],
-        receive_policies: vec![admitting],
+        location_policies: vec![admitting],
         storage: Some(Arc::clone(crate::ledger::in_memory())),
         ..Linked::default()
     }

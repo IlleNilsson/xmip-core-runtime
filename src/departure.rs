@@ -301,11 +301,15 @@ fn depart_one(
         let_go.set(!still);
         still
     };
+    // The Message's context goes with it, so a technology that names what
+    // it writes reads the name the Message carries: a file Send Location
+    // the name it was received under (ADR-0024, amendment 2026-10-20).
     let outgoing = Outgoing::new(length, || {
         Ok(Box::new(share.reader(id, length)) as Box<dyn Read + '_>)
     })
     .keyed(&key)
-    .checked(&still);
+    .checked(&still)
+    .carrying(work.message.context());
     let sent = sending.transport.send_from(&location.address, outgoing);
     drop(held);
     // The claim lost while the Message was read, before its first byte

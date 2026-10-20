@@ -136,12 +136,16 @@ impl Running {
             .map_err(|report| Refusal::at(StartupPhase::ValidateStartup, report.errors))?;
         let Checked { gates, gathering } = check(&tree, &linked)
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
-        // Set up from the Receive Locations the node starts, before the
+        // Set up from the Locations the node starts, before the
         // capabilities are registered, so each is registered as the rest.
+        let started = crate::linked::Started {
+            receive: &gates,
+            send: &tree.send_locations_to_start,
+        };
         let set_up: Vec<_> = linked
-            .receive_policies
+            .location_policies
             .iter()
-            .map(|policy| policy(&gates))
+            .map(|policy| policy(started))
             .collect();
         linked.policies.extend(set_up);
 
@@ -165,6 +169,9 @@ impl Running {
         let capabilities = load(&tree, &linked, &gathering)
             .map_err(|problems| Refusal::at(StartupPhase::RegisterCapabilities, problems))?;
 
+        // The handshake read under its own bound, `[tuning]
+        // receive_handshake`, apart from each Location's own wait.
+        let guard = guard.map(|guard| guard.handshaking_within(tree.tuning.receive_handshake));
         let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref()))
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);

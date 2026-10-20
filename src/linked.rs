@@ -169,11 +169,20 @@ impl LinkedKeyStore {
     }
 }
 
-/// How an authorization policy is set up from the Receive Locations a node
-/// starts, each as its gate declares it (`crate::receiving::ReceiveGate`):
-/// what the `location` policy admits is what each Location declares it
-/// accepts (ADR-0050 section 5).
-pub type ReceivePolicy = fn(&[ReceiveGate]) -> Box<dyn Authorizer>;
+/// The Locations a node starts, as a policy set up from them reads them:
+/// each Receive Location as its gate declares it
+/// (`crate::receiving::ReceiveGate`), and each Send Location by its name.
+#[derive(Clone, Copy, Debug)]
+pub struct Started<'a> {
+    pub receive: &'a [ReceiveGate],
+    pub send: &'a [ConfiguredLocation],
+}
+
+/// How an authorization policy is set up from the Locations a node starts
+/// ([`Started`]): what the `location` policy admits is what each Receive
+/// Location declares it accepts, and each Send Location the node starts
+/// (ADR-0050 section 5; the owner, 2026-10-19).
+pub type LocationPolicy = fn(Started<'_>) -> Box<dyn Authorizer>;
 
 /// Everything a program linked that a node may use.
 ///
@@ -182,8 +191,8 @@ pub type ReceivePolicy = fn(&[ReceiveGate]) -> Box<dyn Authorizer>;
 /// filters name and the authenticators its Receive Locations accept. The
 /// policies and identifiers are each consulted at every gate, so every one
 /// linked is taken — no configuration selects among them yet — and each of
-/// [`Linked::receive_policies`] is set up from the Receive Locations the
-/// node starts.
+/// [`Linked::location_policies`] is set up from the Locations the node
+/// starts.
 #[derive(Default)]
 pub struct Linked {
     pub transports: Vec<LinkedTransport>,
@@ -192,9 +201,9 @@ pub struct Linked {
     pub sources: Vec<Box<dyn Source>>,
     pub authenticators: Vec<Box<dyn Authenticator>>,
     pub policies: Vec<Box<dyn Authorizer>>,
-    /// Policies set up from the Receive Locations the node starts, added
-    /// to [`Linked::policies`] as it starts.
-    pub receive_policies: Vec<ReceivePolicy>,
+    /// Policies set up from the Locations the node starts, added to
+    /// [`Linked::policies`] as it starts.
+    pub location_policies: Vec<LocationPolicy>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
     /// The runtime database's engine, where the program was built with

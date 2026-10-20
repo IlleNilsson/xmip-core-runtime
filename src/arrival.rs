@@ -637,6 +637,48 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_files_name_is_kept_in_the_message_context_and_nothing_else_observed() {
+        // ADR-0024, amendment 2026-10-20: what a file Send Location names
+        // the Message's file by.
+        use context::property::{FILE_NAME, PEER_ADDRESS};
+        let ids = Counter::default();
+        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
+        let authenticators: [&dyn Authenticator; 1] = [&proves];
+        let parties = registry();
+        let allow = Open;
+        let open: [&dyn Authorizer; 1] = [&allow];
+        let clock = Fixed(NOW);
+        let subscriptions = subscribed_to_party_x();
+        let sends = sends(Recording::ok());
+
+        let arrived = arrive(
+            &runtime(
+                &ids,
+                &authenticators,
+                &parties,
+                &subscriptions,
+                &sends,
+                &open,
+                &clock,
+            ),
+            &location(),
+            arriving()
+                .with_property(FILE_NAME, "order-1001.edi")
+                .with_property(PEER_ADDRESS, "192.0.2.10:4711"),
+        );
+
+        let Arrived::Routed { work, .. } = arrived else {
+            panic!("expected a route, got {arrived:?}");
+        };
+        let context = work.message.context();
+        assert_eq!(
+            context.get(FILE_NAME),
+            Some(&xcore::ScalarValue::Text("order-1001.edi".into()))
+        );
+        assert_eq!(context.get(PEER_ADDRESS), None);
+    }
+
+    #[test]
     fn a_file_arrives_and_reaches_a_send_port() {
         let ids = Counter::default();
         let proves = Always(mechanism::mutual_tls(), Verified::Proven);
