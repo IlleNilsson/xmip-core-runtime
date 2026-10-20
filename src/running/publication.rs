@@ -1,7 +1,7 @@
 //! What a running node says of itself: its snapshot — health, figures,
 //! Subscriptions and the oldest of its Dead Message Queue — and its
-//! publication, the snapshot with the node drawn as
-//! a topology, which the program running it writes where a surface reads it
+//! publication, the snapshot with the node drawn as a topology, which the
+//! program running it writes where a surface reads it
 //! (`observe::Publication::write`; ADR-0018, amendment 2026-09-30).
 //!
 //! **Where each record sits**, beneath the node's location
@@ -12,6 +12,7 @@
 //! <node>/system-process      alive, and the process it runs in (ADR-0053)
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
+//! <node>/storage/<domain>    each database it keeps: its schema version
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
 //! <node>/send/<Location>     Done with the reason once it stopped, and
 //!                            Done saying `configure::NOT_STARTED` where its
@@ -141,6 +142,8 @@ impl Running {
                 format!("loaded ({how}), serving {}", capability.capability),
             );
         }
+        let databases = self.storage.published(&node);
+        databases.for_each(|(at, said)| record(at, Health::Fine, said));
         let figures = self.send.figures();
         let staged = not_started_records(&node, &self.not_started)
             .into_iter()
