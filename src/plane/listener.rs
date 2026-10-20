@@ -16,7 +16,7 @@
 //! A stop wakes every wait, and ends every connection reading.
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -171,12 +171,12 @@ impl Listener {
             return;
         }
         self.serve.published.wake();
-        match &self.place {
-            Place::Network(address) => drop(net::connect(wakeable(*address), Some(WAKE))),
-            Place::Local(path) => local::wake(path),
-        }
+        // Knocked until it has heard (`net::accepting`).
         if let Some(accepting) = self.accepting.take() {
-            let _ = accepting.join();
+            let _ = net::accepting::woken(accepting, WAKE, || match &self.place {
+                Place::Network(address) => net::accepting::knock(*address, WAKE),
+                Place::Local(path) => local::wake(path),
+            });
         }
         let served =
             std::mem::take(&mut *self.served.lock().unwrap_or_else(PoisonError::into_inner));
@@ -220,16 +220,6 @@ fn ended(connection: Connection) {
     }
     if connection.thread.is_finished() || connection.cancel.is_none() {
         let _ = connection.thread.join();
-    }
-}
-
-/// An address a connection reaches the listener at: loopback where it
-/// listens on every address.
-fn wakeable(address: SocketAddr) -> SocketAddr {
-    match address.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => (Ipv4Addr::LOCALHOST, address.port()).into(),
-        IpAddr::V6(ip) if ip.is_unspecified() => (Ipv6Addr::LOCALHOST, address.port()).into(),
-        _ => address,
     }
 }
 

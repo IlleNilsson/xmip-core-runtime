@@ -1,5 +1,6 @@
 //! The two kills: a receive killed before its Publication leaves no
-//! Message, and every Message acknowledged before a kill is there after it.
+//! Message, nor the chunks it wrote, never synced; and every Message
+//! acknowledged before a kill is there after it.
 
 use journey::Journey;
 use message::Message;
@@ -92,12 +93,16 @@ fn a_receive_killed_after_its_chunks_and_before_publication_leaves_no_message() 
     let message: u128 = child.heard("halting ", STARTED).parse().expect("a Message");
     child.killed();
 
+    // The child said its chunk was written; never synced, it went with the
+    // process, as a write not yet durable does (ADR-0018, amendment
+    // 2026-10-20: the write-ahead log is written to its file by a sync).
     let node = test_node(&place);
-    let chunk = node
-        .read_chunk(StreamId::new(stream), 0)
-        .expect("read")
-        .expect("the chunk written before the kill is there");
-    assert_eq!(chunk.bytes, b"order 0");
+    assert!(
+        node.read_chunk(StreamId::new(stream), 0)
+            .expect("read")
+            .is_none(),
+        "a chunk no Publication made durable is not kept"
+    );
     assert!(
         node.read_message(MessageId::new(message))
             .expect("read")

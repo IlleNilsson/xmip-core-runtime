@@ -149,8 +149,8 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
     Ok(Stream(stream))
 }
 
-/// Wake a listener waiting at `path` for a connection.
+/// Wake a listener waiting at `path` for a connection; whether it connected.
 #[cfg(feature = "node")]
-pub(crate) fn wake(path: &Path) {
-    let _ = UnixStream::connect(path);
+pub(crate) fn wake(path: &Path) -> bool {
+    UnixStream::connect(path).is_ok()
 }

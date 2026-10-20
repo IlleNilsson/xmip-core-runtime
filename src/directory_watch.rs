@@ -145,12 +145,24 @@ mod tests {
         // Held as the fastest of five beside the machine's own wake, round
         // by round (`xcore::latency`): a drop wakes the watching thread and
         // then this one as it joins, two wakes, under about a millisecond.
+        // Each watch is dropped once its thread is watching, as a watch is
+        // when a Location stops: told of a change first, so what is
+        // measured is the drop, never the thread's start on a machine with
+        // no processor free for it.
         use xcore::latency::{FIVE, PlainWake, spread};
         let directory = directory("dropped");
         let plain = PlainWake::start();
         let (mut ended, mut woke) = (Vec::new(), Vec::new());
-        for _ in 0..4 * FIVE {
-            let watch = DirectoryWatch::spawn(&directory, || {}).expect("watched");
+        for round in 0..4 * FIVE {
+            let (told, tells) = mpsc::channel();
+            let watch = DirectoryWatch::spawn(&directory, move || {
+                let _ = told.send(());
+            })
+            .expect("watched");
+            std::fs::write(directory.join(format!("round-{round}")), "").expect("written");
+            tells
+                .recv_timeout(Duration::from_secs(5))
+                .expect("its thread watches");
             let asked = Instant::now();
             drop(watch);
             ended.push(asked.elapsed());
