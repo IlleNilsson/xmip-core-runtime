@@ -18,6 +18,7 @@
 //! receive_threads_per_hardware_thread = 2     # pool::RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_idle = "1m"                         # pool::RECEIVE_IDLE
 //! receive_poll = "1s"                         # receiving::RECEIVE_POLL
+//! receive_sweep = "1s"                        # receiving::RECEIVE_SWEEP
 //! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
 //! receive_drain = "1s"                        # receiving::RECEIVE_DRAIN
 //! receive_handshake = "5s"                    # transport::guard::HANDSHAKE
@@ -47,7 +48,7 @@ use crate::budget::{
 use crate::ledger::SEGMENTS;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{Limits, RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
-use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL};
+use crate::receiving::{Pace, RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWEEP};
 use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
 };
@@ -103,6 +104,14 @@ pub const TUNING: &Settings = &Settings {
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(RECEIVE_POLL)),
             meaning: "How long a polled Receive Location that found nothing rests.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_sweep",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(RECEIVE_SWEEP)),
+            meaning: "How long a Receive Location whose far end tells it of a change rests \
+                      when no word comes: its recovery sweep.",
             applies: Applies::Both,
         },
         Setting {
@@ -244,6 +253,7 @@ pub struct Tuning {
     pub receive_threads_per_hardware_thread: usize,
     pub receive_idle: Duration,
     pub receive_poll: Duration,
+    pub receive_sweep: Duration,
     pub receive_backoff: Duration,
     pub receive_drain: Duration,
     pub receive_handshake: Duration,
@@ -303,6 +313,7 @@ impl Tuning {
             receive_threads_per_hardware_thread: count("receive_threads_per_hardware_thread"),
             receive_idle: duration("receive_idle"),
             receive_poll: duration("receive_poll"),
+            receive_sweep: duration("receive_sweep"),
             receive_backoff: duration("receive_backoff"),
             receive_drain: duration("receive_drain"),
             receive_handshake: duration("receive_handshake"),
@@ -357,6 +368,7 @@ impl Tuning {
     pub const fn pace(&self) -> Pace {
         Pace {
             poll: self.receive_poll,
+            sweep: self.receive_sweep,
             backoff: self.receive_backoff,
             drain: self.receive_drain,
         }
@@ -421,6 +433,7 @@ mod tests {
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
              send_scan = \"200ms\"\nreceive_poll = \"100ms\"\nreceive_backoff = \"2s\"\n\
+             receive_sweep = \"3s\"\n\
              receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n\
              node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
              send_chunks_per_thread = 9\n",
@@ -446,6 +459,7 @@ mod tests {
             tuning.pace(),
             Pace {
                 poll: Duration::from_millis(100),
+                sweep: Duration::from_secs(3),
                 backoff: Duration::from_secs(2),
                 drain: Duration::from_millis(250),
             }

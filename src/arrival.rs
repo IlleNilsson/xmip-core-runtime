@@ -592,7 +592,7 @@ mod tests {
                     work,
                     facts,
                     to,
-                    (&mut Progress::default(), &|| true),
+                    (&mut Progress::default(), &|| true, &|| Ok(())),
                 )
             })
             .collect()

@@ -59,11 +59,16 @@ use journey::Attempts;
 use route::Subscriber;
 use send::SendLevel;
 use transport::Outgoing;
+use transport::error::TransportError;
 use xcore::Purpose;
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 use crate::sending::{Destination, Port, Sending};
+
+/// What waits until a departure's Message is durable in the Ledger, and
+/// why it could not be, in words.
+pub type Kept<'a> = dyn Fn() -> Result<(), String> + 'a;
 
 /// What became of one Message on its way out to one destination.
 #[derive(Clone, Debug)]
@@ -164,13 +169,14 @@ impl Progress {
 /// declared by no Application of this node. `owned` says, before each
 /// Location is tried and again just before its transport sends, whether the
 /// Journey is still this node's to send; the pass stops where it is not,
-/// nothing more tried.
+/// nothing more tried. `kept` waits until the Message is durable in the
+/// Ledger: a far end sees nothing before (ADR-0018, amendment 2026-10-20).
 pub fn depart_to(
     runtime: &Runtime<'_>,
     work: &ReceivedWork,
     facts: &IdentityFacts,
     to: &Subscriber,
-    (progress, owned): (&mut Progress, &dyn Fn() -> bool),
+    (progress, owned, kept): (&mut Progress, &dyn Fn() -> bool, &Kept<'_>),
 ) -> Vec<Departed> {
     if !progress.waiting() {
         return Vec::new();
@@ -178,7 +184,7 @@ pub fn depart_to(
     match (to, runtime.sends.to(to)) {
         (Subscriber::SendPort(_), Destination::Ports(ports)) => ports
             .first()
-            .map(|port| depart_port(runtime, (work, facts), port, (progress, owned)))
+            .map(|port| depart_port(runtime, (work, facts), port, (progress, owned, kept)))
             .unwrap_or_default(),
         (_, Destination::Process) => vec![Departed::ProcessNotRun { to: to.clone() }],
         _ => {
@@ -198,7 +204,7 @@ fn depart_port(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
     port: &Port<'_>,
-    (standing, owned): (&mut Progress, &dyn Fn() -> bool),
+    (standing, owned, kept): (&mut Progress, &dyn Fn() -> bool, &Kept<'_>),
 ) -> Vec<Departed> {
     let to = Subscriber::SendPort(port.name.to_string());
     let mut departed = Vec::new();
@@ -211,7 +217,8 @@ fn depart_port(
             departed.push(Departed::NoSuchDestination { to });
             return departed;
         };
-        let Some(one) = depart_one(runtime, (work, facts), to.clone(), (sending, owned)) else {
+        let asked = (*sending, owned, kept);
+        let Some(one) = depart_one(runtime, (work, facts), to.clone(), asked) else {
             return departed;
         };
         standing.tries += 1;
@@ -245,7 +252,7 @@ fn depart_one(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
     to: Subscriber,
-    (sending, owned): (&Sending, &dyn Fn() -> bool),
+    (sending, owned, kept): (&Sending, &dyn Fn() -> bool, &Kept<'_>),
 ) -> Option<Departed> {
     let location = &sending.configured;
 
@@ -289,6 +296,20 @@ fn depart_one(
         .sent
         .hold(runtime.budget.send(length, gathered));
 
+    // Seen by the far end only once the Message is durable in the Ledger:
+    // by a technology that holds its delivery back, as it delivers, so its
+    // own work overlaps the Ledger's sync; by every other, before it sends.
+    if sending.transport.holds_back().is_none()
+        && let Err(detail) = kept()
+    {
+        return Some(Departed::Failed {
+            to,
+            retryable: true,
+            detail,
+        });
+    }
+    let durable = || kept().map_err(TransportError::retryable);
+
     // Asked again at the edge: the wait above may have outlasted the claim.
     if !owned() {
         return None;
@@ -309,6 +330,7 @@ fn depart_one(
     })
     .keyed(&key)
     .checked(&still)
+    .kept_by(&durable)
     .carrying(work.message.context());
     let sent = sending.transport.send_from(&location.address, outgoing);
     drop(held);

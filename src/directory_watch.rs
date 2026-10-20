@@ -1,13 +1,15 @@
 //! A directory the operating system watches, and a thread told each time
 //! it changes: how a program running a node is woken by a file another
 //! process leaves for it — `xmip-service`'s orders (ADR-0018, amendment
-//! 2026-09-30) — rather than looking again and again. A surface is told,
-//! never asks (ADR-0052, amendment 2026-09-15), and a node is told as a
-//! surface is.
+//! 2026-09-30), a file Receive Location's drop directory (ADR-0024,
+//! amendment 2026-10-20) — rather than looking again and again. A surface
+//! is told, never asks (ADR-0052, amendment 2026-09-15), and a node is told
+//! as a surface is.
 //!
 //! The thread waits in the kernel, using no processor, until a file is
-//! created in the directory, renamed into it or, on Windows, removed from
-//! it, and calls what it was given; a change during the call is kept and
+//! created in the directory, renamed into it, closed after it was written
+//! or, on Windows, removed from it or grown, and calls what it was given;
+//! a change during the call is kept and
 //! tells it again at once, so none is lost. Dropping the watch ends the
 //! wait and joins the thread. Each operating system's own notification:
 //! Windows a change notification (`ffi/directory_watch.rs`, where the

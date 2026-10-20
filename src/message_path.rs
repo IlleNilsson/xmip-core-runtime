@@ -198,6 +198,7 @@ pub fn carry(
         journeys,
         holding,
         lined,
+        durable,
     }) = published
     else {
         return Carried {
@@ -206,11 +207,23 @@ pub fn carry(
             journeys: Vec::new(),
         };
     };
+    // Handed on as soon as it is decided, so a send that holds its far end
+    // back is written while the Ledger syncs (ADR-0018, amendment
+    // 2026-10-20); the cycle itself ends once the Publication is durable.
     if let Arrived::Routed { work, facts, .. } = &arrived {
-        runtime.send.handed(lined, &journeys, work, facts);
+        runtime.send.handed(lined, &journeys, work, facts, &durable);
     } else {
         runtime.send.withdrawn(&lined);
     }
+    if let Err(why) = durable.wait() {
+        let reason = format!("Xmip Storage did not keep the Publication: {why}");
+        return Carried {
+            arrived: Arrived::Failed { reason },
+            held: 0,
+            journeys: Vec::new(),
+        };
+    }
+    pickup.published(&holding);
     Carried {
         arrived,
         held: holding.holds().len(),

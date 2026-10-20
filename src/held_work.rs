@@ -150,6 +150,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             claim,
             sequence: None,
             until: asked + step.lease(),
+            durable: None,
         });
     } else {
         step.ask(queue);

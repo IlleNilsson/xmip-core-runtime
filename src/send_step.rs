@@ -80,7 +80,7 @@ use std::time::{Duration, Instant};
 
 use context::IdentityFacts;
 use journey::Journey;
-use persist::storage::{Claim, Hold, XmipStorage};
+use persist::storage::{Claim, Durable, Hold, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::wake::Wake;
@@ -152,6 +152,10 @@ pub struct Departure {
     /// lease from when the request that last confirmed the claim was asked,
     /// so no two clocks are ever compared.
     pub until: Instant,
+    /// When its Publication is durable, where its receive cycle handed it
+    /// on before the Ledger synced it: the far end sees it only then.
+    /// `None` where it was read from the Ledger, durable already.
+    pub durable: Option<Durable>,
 }
 
 /// What a Publication writes for the Journeys that go on to be sent: each
@@ -312,17 +316,19 @@ impl SendStep {
         lined
     }
 
-    /// What `lined` claimed, durable now in its Publication, handed to the
-    /// Send pool: each of `journeys` it claimed, with `work`'s Message and
-    /// the identity it arrived with, `facts`, each in the place admitted
-    /// for it. A queue holding a Journey this node sends and did not claim
-    /// is read at once, or once a place frees.
+    /// What `lined` claimed in its Publication, handed to the Send pool:
+    /// each of `journeys` it claimed, with `work`'s Message and the
+    /// identity it arrived with, `facts`, each in the place admitted for
+    /// it, and let out to its far end once `durable` says the Publication
+    /// is. A queue holding a Journey this node sends and did not claim is
+    /// read at once, or once a place frees.
     pub fn handed(
         &self,
         lined: LinedUp,
         journeys: &[Journey],
         work: &ReceivedWork,
         facts: &IdentityFacts,
+        durable: &Durable,
     ) {
         let until = lined.asked.unwrap_or_else(Instant::now) + self.lease;
         let mut state = self.lock();
@@ -343,6 +349,7 @@ impl SendStep {
                 progress: Progress::of(journey.attempts),
                 sequence: None,
                 until,
+                durable: Some(durable.clone()),
             };
             state.owned.insert(id, Owned::of(&departure));
             state.handed.push_back(departure);
