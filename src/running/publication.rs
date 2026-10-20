@@ -39,7 +39,7 @@
 //! the node what failed — refused at a gate, or a Journey written Failed.
 //! At each Send Port, `send/<Port>`, what the send step counted there
 //! (`crate::send_step::PortFigures`): Messages sent, Journeys failed, and
-//! those retrying — waiting for their due time.
+//! those retrying; the stage and the node keep only what no Port counted.
 //!
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
 //! drawing every publisher calls: the cluster, the node, its stages with an
@@ -65,6 +65,7 @@ use super::Running;
 mod stopped;
 
 use crate::capability_registry::Load;
+use crate::outcome::Outcomes;
 use crate::pickup::PUBLISHED;
 use crate::send_step::PortFigures;
 pub use stopped::stopped;
@@ -216,29 +217,10 @@ impl Running {
         Capability::serving(&stages).with_online(self.online)
     }
 
-    /// What the tally counted, each kind at the stage that counts it, and
-    /// what the send step counted at each Send Port: sent, failed, and
-    /// waiting for a retry's due time.
+    /// What [`counts`] says the node counted, recorded at `now`.
     fn count(&self, snapshot: &mut Snapshot, node: &str, now: i64) {
-        let outcomes = self.tally.outcomes();
-        let at = |stage: Stage| format!("{node}/{}", stage.name());
-        let mut counts = vec![
-            (at(Stage::Receive), Counted::Streams, outcomes.received),
-            (at(Stage::Process), Counted::Journeys, outcomes.routed),
-            (at(Stage::Send), Counted::Messages, outcomes.sent),
-            (
-                node.to_string(),
-                Counted::Failed,
-                outcomes.refused + outcomes.failed + outcomes.not_sent,
-            ),
-        ];
-        for (port, figures) in self.send.figures() {
-            let scope = format!("{}/{port}", at(Stage::Send));
-            counts.push((scope.clone(), Counted::Messages, figures.sent));
-            counts.push((scope.clone(), Counted::Failed, figures.failed));
-            counts.push((scope, Counted::Retrying, figures.waiting));
-        }
-        for (scope, counted, value) in counts {
+        let figures = self.send.figures();
+        for (scope, counted, value) in counts(node, self.tally.outcomes(), figures) {
             snapshot.record_count(Count {
                 scope,
                 counted,
@@ -382,10 +364,78 @@ fn drawn(cluster: &str, node: &str, snapshot: &Snapshot) -> Topology {
     topology
 }
 
+/// What the tally counted, each kind at the stage that counts it, and what
+/// the send step counted at each Send Port: sent, failed, and waiting for a
+/// retry's due time. A scope's measure is the sum of every count within
+/// it, so the send stage and the node keep only what no Send Port counted:
+/// one file sent is one Message, never two.
+fn counts(
+    node: &str,
+    outcomes: Outcomes,
+    ports: BTreeMap<String, PortFigures>,
+) -> Vec<(String, Counted, u64)> {
+    let sent = outcomes
+        .sent
+        .saturating_sub(ports.values().map(|port| port.sent).sum());
+    let failed = (outcomes.refused + outcomes.failed + outcomes.not_sent)
+        .saturating_sub(ports.values().map(|port| port.failed).sum());
+    let at = |stage: Stage| format!("{node}/{}", stage.name());
+    let mut counts = vec![
+        (at(Stage::Receive), Counted::Streams, outcomes.received),
+        (at(Stage::Process), Counted::Journeys, outcomes.routed),
+        (at(Stage::Send), Counted::Messages, sent),
+        (node.to_string(), Counted::Failed, failed),
+    ];
+    for (port, figures) in ports {
+        let scope = format!("{}/{port}", at(Stage::Send));
+        counts.push((scope.clone(), Counted::Messages, figures.sent));
+        counts.push((scope.clone(), Counted::Failed, figures.failed));
+        counts.push((scope, Counted::Retrying, figures.waiting));
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use observe::FailedJourney;
+
+    #[test]
+    fn one_message_sent_through_a_send_port_measures_one_at_the_node() {
+        let node = configure::fixture::test_cluster().node_scope(0);
+        let outcomes = Outcomes {
+            received: 1,
+            routed: 1,
+            sent: 1,
+            not_sent: 1,
+            ..Outcomes::default()
+        };
+        let figures = PortFigures {
+            sent: 1,
+            failed: 1,
+            ..PortFigures::default()
+        };
+        let mut snapshot = Snapshot::new();
+        for (scope, counted, value) in counts(&node, outcomes, [("Out".into(), figures)].into()) {
+            snapshot.record_count(Count {
+                scope,
+                counted,
+                value,
+                window_start_unix_nanos: 0,
+                window_end_unix_nanos: 0,
+                observed_unix_nanos: 0,
+            });
+        }
+        for counted in [
+            Counted::Streams,
+            Counted::Journeys,
+            Counted::Messages,
+            Counted::Failed,
+        ] {
+            let measured = snapshot.measure(&node, counted).expect("counted");
+            assert_eq!(measured.value, 1, "{counted:?} at the node");
+        }
+    }
 
     fn configured(name: &str) -> configure::ConfiguredLocation {
         configure::ConfiguredLocation {
