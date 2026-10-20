@@ -5,9 +5,15 @@
 //! keeps it in chunks, and nothing on the way — the gates, Message
 //! creation, promotion, Publication — holds it whole. What this process
 //! allocates is counted while it is carried.
+//!
+//! The count is the whole process's: one allocator, every thread. A test
+//! that holds a figure of it to a bound runs [`alone`], in a process of its
+//! own with no other test beside it, so what tests running in parallel
+//! allocate never reaches its figure.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Read;
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use receive::ReceivedStream;
@@ -75,8 +81,37 @@ impl Read for Made {
     }
 }
 
+/// The environment variable naming the one test a process of its own runs
+/// [`alone`].
+const ALONE: &str = "XMIP_LEDGER_ALONE";
+
+/// Run `run`, the body of the test `test` (its path in this program, as
+/// `--exact` takes it), alone: in this process where this process was
+/// started for it, and otherwise in this test program started again for
+/// that one test, on one test thread, its outcome this test's.
+pub(super) fn alone(test: &str, run: impl FnOnce()) {
+    if std::env::var(ALONE).is_ok_and(|named| named == test) {
+        run();
+        return;
+    }
+    let output = Command::new(std::env::current_exe().expect("this program"))
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
+        .env(ALONE, test)
+        .output()
+        .expect("this program, started again");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("{said}");
+    assert!(output.status.success(), "{test}, alone, failed");
+    assert!(said.contains("1 passed"), "{test}, alone, ran no test");
+}
+
 /// What `run` returns, and the most this process held at once while it
 /// ran, beyond what it held as it began: the allocator's count, measured.
+/// A figure held to a bound is measured [`alone`].
 pub(super) fn measured<T>(run: impl FnOnce() -> T) -> (T, usize) {
     let before = HELD.load(Ordering::Relaxed);
     MOST.store(before, Ordering::Relaxed);
@@ -89,13 +124,17 @@ pub(super) fn measured<T>(run: impl FnOnce() -> T) -> (T, usize) {
 
 #[test]
 fn a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory() {
+    alone(
+        "bounded::a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory",
+        carried_in_bounded_memory,
+    );
+}
+
+fn carried_in_bounded_memory() {
     let place = directory("bounded");
     let node = test_node(&place);
     let (carried, most) = receiving(&node, CHUNK, |carry| {
-        MOST.store(HELD.load(Ordering::Relaxed), Ordering::Relaxed);
-        let before = HELD.load(Ordering::Relaxed);
-        let carried = carry(ReceivedStream::new(Made::of(LENGTH), "tcp://127.0.0.1:1"));
-        (carried, MOST.load(Ordering::Relaxed) - before)
+        measured(|| carry(ReceivedStream::new(Made::of(LENGTH), "tcp://127.0.0.1:1")))
     });
     assert_eq!(
         carried.cycle(),
@@ -103,9 +142,8 @@ fn a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory() {
         "{:?}",
         carried.arrived
     );
-    // Four MiB is some sixty-five chunks: what the whole path held at its most,
-    // against a Stream of sixty-four — with room for what tests running
-    // beside this one hold at the same time.
+    // Four MiB is some sixty-five chunks: what the whole path held at its
+    // most, against a Stream of sixty-four.
     eprintln!("BOUNDED a Stream of {LENGTH} bytes held {most} bytes at most");
     assert!(most < 4 * 1024 * 1024, "{most} bytes held at once");
 

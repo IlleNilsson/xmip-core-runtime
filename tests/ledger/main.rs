@@ -21,7 +21,9 @@
 //! `receive_cycle.rs` the receive a child runs; `halts_at_publication.rs`
 //! the Xmip Storage that stops a receive at its Publication; `killed.rs`
 //! the two kill tests, and what they read back; `bounded.rs` a Stream far
-//! larger than a chunk carried in bounded memory; `held.rs` what a paused
+//! larger than a chunk carried in bounded memory, and the allocator's count
+//! every test of what is held measures by, each such test run alone in a
+//! process of its own; `held.rs` what a paused
 //! Subscription holds, over Xmip Storage that fails on demand;
 //! `dead_message_queue.rs` a Message nothing matched, kept with why and
 //! replayed; `panicked.rs` a carrying thread that panics, settled as failed;

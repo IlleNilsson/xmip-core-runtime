@@ -7,9 +7,12 @@
 //!   test's Storage node, or a [`persist::storage::StorageClient`] it
 //!   built with the identity it presents — hands it over in
 //!   [`Linked::storage`], and that one is the node's.
-//! - **The node's own embedded Storage node.** A node whose `[storage]`
-//!   lists no Storage node is its own (`deployment-model.md` section 3: *A
-//!   one-node deployment is its own Storage node*). Each data domain's
+//! - **The node's own embedded Storage node.** A node declaring the
+//!   `storage` role whose `[storage]` lists no Storage node is its own
+//!   (`deployment-model.md` section 3: *A one-node deployment is its own
+//!   Storage node*); only a node with the Storage role stores (the owner,
+//!   2026-10-20; ADR-0056, amendment 2026-10-20), and one declaring neither
+//!   the role nor `[storage] nodes` is refused at phase 3. Each data domain's
 //!   database is where its table, `[runtime]`, `[administration]` or
 //!   `[audit]`, says — its `storage` and its `connection`, a path relative
 //!   to the configuration file (the owner, 2026-10-10: *i would do it like
@@ -31,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use configure::XmipConfigurationDocument;
+use node::NodeRole;
 use persist::Engine;
 use persist::storage::database::{self, Domain, Technology};
 use persist::storage::schema::Database;
@@ -117,10 +121,12 @@ pub fn domains(document: &XmipConfigurationDocument) -> Vec<Domain<'_>> {
 ///
 /// # Errors
 ///
-/// Refused at phase 3 where the node lists Storage nodes and its program
-/// gave it no way to reach them, or where it is its own Storage node and a
-/// data domain's table is not one Xmip Storage reads, names a database
-/// server, or its program was not built with both embedded engines.
+/// Refused at phase 3 where its roles are not role words, where the node
+/// lists Storage nodes and its program gave it no way to reach them, where
+/// it declares no Storage role and lists no Storage node, or where it is its
+/// own Storage node and a data domain's table is not one Xmip Storage reads,
+/// names a database server, or its program was not built with both embedded
+/// engines.
 pub fn plan(
     document: &XmipConfigurationDocument,
     path: &str,
@@ -135,6 +141,15 @@ pub fn plan(
             "[storage] nodes lists the Storage nodes this node reaches, and the identity it \
              presents to them over Xmip's TLS is not configurable yet; its program has to \
              hand it the client"
+                .to_string(),
+        ));
+    }
+    let roles = NodeRole::declared(document.roles.as_deref().unwrap_or("")).map_err(refused)?;
+    if !roles.contains(&NodeRole::Storage) {
+        return Err(refused(
+            "this node does not declare the storage role and [storage] nodes lists no Storage \
+             node: only a node with the storage role keeps Xmip Storage, and any other reaches \
+             it through [storage] nodes"
                 .to_string(),
         ));
     }
@@ -170,8 +185,8 @@ pub fn plan(
     ] {
         if engine.is_none() {
             problems.push(format!(
-                "this node is its own Storage node ([storage] lists none), and was not built \
-                 with {technology}, its {database} databases' engine"
+                "this node is its own Storage node (the storage role, and [storage] lists \
+                 none), and was not built with {technology}, its {database} databases' engine"
             ));
         }
     }
@@ -285,17 +300,21 @@ mod tests {
     use persist::PersistError;
     use secret::KeyStore;
 
-    /// The `[service]` section of the test cluster's first node, and the
-    /// file name it is read from.
+    /// The test cluster's first node declaring [`STORAGE`], and its
+    /// `[service]` section, and the file name it is read from.
     fn service() -> (String, String) {
         let cluster = configure::fixture::test_cluster();
         let node = &cluster.node(0).name;
         let head = format!(
-            "[service]\nname = \"xmip-{node}\"\ncluster_name = \"{}\"\nnode_name = \"{node}\"\n",
+            "{STORAGE}[service]\nname = \"xmip-{node}\"\ncluster_name = \"{}\"\n\
+             node_name = \"{node}\"\n",
             cluster.name
         );
         (head, format!("{node}.toml"))
     }
+
+    /// What a node keeping Xmip Storage itself declares.
+    const STORAGE: &str = "roles = \"executing, storage\"\n";
 
     fn memory(_: &Path) -> Result<Box<dyn Engine>, PersistError> {
         Ok(Box::new(persist::fixture::Memory::default()))
@@ -401,6 +420,29 @@ mod tests {
         }
         assert_eq!(reached.chunk(), CHUNK);
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn only_a_node_with_the_storage_role_stores() {
+        let (head, file) = service();
+        for roles in ["", "roles = \"executing, monitoring\"\n"] {
+            let text = format!("{head}[store]\nkey_store = \"xmip-core-secret-memory\"\n")
+                .replace(STORAGE, roles);
+            let refused = plan(&document(&text), &file, &linked())
+                .err()
+                .expect("neither the role nor a Storage node");
+            assert_eq!(refused.phase, StartupPhase::ValidateStartup);
+            assert!(
+                refused.problems[0].contains("storage role")
+                    && refused.problems[0].contains("[storage] nodes"),
+                "{refused}"
+            );
+        }
+        let unknown = head.replace(STORAGE, "roles = \"stores\"\n");
+        let refused = plan(&document(&unknown), &file, &linked())
+            .err()
+            .expect("no role is called stores");
+        assert!(refused.problems[0].contains("stores"), "{refused}");
     }
 
     #[test]

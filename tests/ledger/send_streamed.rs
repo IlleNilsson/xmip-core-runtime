@@ -27,7 +27,7 @@ use xmip_core_runtime::message_path::{Carried, ReceiveCycle, carry};
 use xmip_core_runtime::pool::hardware_threads;
 use xmip_core_runtime::sending::Sends;
 
-use super::bounded::{Made, measured};
+use super::bounded::{Made, alone, measured};
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{dispatching, interleaving, onward, order, out, port, quick, sender};
 use super::{directory, test_node};
@@ -120,6 +120,13 @@ fn fan_out(test: &str, length: u64, drains: &[Drain]) -> (usize, u64) {
 
 #[test]
 fn a_fan_out_of_a_large_message_is_sent_in_bounded_memory() {
+    alone(
+        "send_streamed::a_fan_out_of_a_large_message_is_sent_in_bounded_memory",
+        sent_in_bounded_memory,
+    );
+}
+
+fn sent_in_bounded_memory() {
     const LENGTH: u64 = 64 * 1024 * 1024;
     let drains: Vec<Drain> = PORTS.iter().map(|_| Drain::default()).collect();
     let (most, read) = fan_out("send-streamed-large", LENGTH, &drains);
