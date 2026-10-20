@@ -1,6 +1,6 @@
 //! The calls into Windows a directory watch makes (`directory_watch`): a
-//! change notification on the directory's file names
-//! (`FindFirstChangeNotificationW`) and an event that ends the wait on it,
+//! change notification on the directory's file names, sizes and last
+//! writes (`FindFirstChangeNotificationW`) and an event that ends the wait on it,
 //! both waited on at once (`WaitForMultipleObjects`). Here because the
 //! runtime keeps every unsafe call in this folder (ADR-0050).
 #![allow(unsafe_code)]
@@ -10,8 +10,8 @@ use std::path::Path;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_NOTIFY_CHANGE_FILE_NAME, FindCloseChangeNotification, FindFirstChangeNotificationW,
-    FindNextChangeNotification,
+    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
+    FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects,
@@ -27,18 +27,20 @@ pub(crate) struct Changes {
 }
 
 impl Changes {
-    /// Watch the names of the files in `directory`: one created, renamed
-    /// into it or removed is a change.
+    /// Watch the files in `directory`: one created, renamed into it,
+    /// removed, or written and closed is a change — the last so a file a
+    /// producer wrote in place tells as it is finished.
     pub(crate) fn new(directory: &Path) -> std::io::Result<Self> {
         let wide: Vec<u16> = directory
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
+        let filter =
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
         // SAFETY: `wide` is a NUL-terminated UTF-16 path that lives across
         // the call; the handle returned is this watch's, closed in `drop`.
-        let change =
-            unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 0, FILE_NOTIFY_CHANGE_FILE_NAME) };
+        let change = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 0, filter) };
         if change == INVALID_HANDLE_VALUE {
             return Err(std::io::Error::last_os_error());
         }

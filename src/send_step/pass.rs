@@ -8,7 +8,7 @@ use configure::OnFailure;
 use context::IdentityFacts;
 use journey::{Journey, JourneyEntry, JourneyState};
 use message::Message;
-use persist::storage::{Failure, HandOn, Wait};
+use persist::storage::{Durable, Failure, HandOn, Wait};
 use route::Subscriber;
 use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
 
@@ -69,11 +69,18 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         facts,
         to,
         progress,
+        durable,
         ..
     } = departure;
     let id = work.journey.journey_id();
     let owned = || step.holds(id);
-    let departed = depart_to(runtime, work, facts, to, (progress, &owned));
+    let kept = || {
+        durable
+            .as_ref()
+            .map_or(Ok(()), Durable::wait)
+            .map_err(|why| format!("its Publication was not kept in the Ledger: {why}"))
+    };
+    let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
     if step.is_lost(id) {
         return Ended::Lost(departed);
     }

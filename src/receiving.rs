@@ -23,9 +23,10 @@ mod received;
 mod refusal;
 mod telling;
 mod turn;
+mod watched;
 
 pub use drain::RECEIVE_DRAIN;
-pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL};
+pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL, RECEIVE_SWEEP};
 
 use crate::budget::Held;
 use crate::pickup::Pickup;
@@ -35,6 +36,7 @@ use drain::Drain;
 use pace::Ended;
 use telling::Telling;
 use turn::{Ticket, Turn};
+use watched::Watched;
 
 /// What arrival asks of the Receive Location a Stream came in at: its name,
 /// the closed set of mechanisms and Parties it accepts (ADR-0019 clause 1)
@@ -153,8 +155,11 @@ impl Receiving {
     /// listed, a query run — rests its poll interval after a receive that
     /// found nothing, and its backoff after one that failed in a way asking
     /// again may mend, each measured from when that receive began, so an
-    /// idle Location never spins. The rest is waited on `stopping`, which
-    /// ends it the moment the node stops.
+    /// idle Location never spins. One whose far end tells of a change — a
+    /// drop directory the operating system watches (`transport::Notice`) —
+    /// rests its sweep instead, ended the moment the word comes, so a file
+    /// is listed as it lands (ADR-0024, amendment 2026-10-20). The rest is
+    /// waited on `stopping`, which ends it the moment the node stops.
     ///
     /// **Each arrival is carried on a thread of the Location's pool**
     /// (`runtime-model.md` section 3, *Threads, pools and chunks*; section
@@ -211,6 +216,7 @@ impl Receiving {
         let ordered = self.transport.arrivals().ordered();
         let busy = if ordered { 0 } else { limits.most.max(1) - 1 };
         let polled = self.transport.waiting().polled();
+        let mut watched = Watched::new(self.transport.as_ref(), stopping);
         let (tell, told) = mpsc::channel();
         let mut carrying = Carrying {
             node: runtime.send.node(),
@@ -257,7 +263,10 @@ impl Receiving {
                 }
             };
             drain.received(outcome);
-            let _ = stopping.wait(self.pace.rest(polled, outcome, began.elapsed()));
+            let rest = self
+                .pace
+                .rest(watched.asking(polled), outcome, began.elapsed());
+            let _ = stopping.rest(rest, watched.nudge());
         }
         while carrying.count > 0 {
             let settled = self.settle(&mut each, &told, &mut carrying);

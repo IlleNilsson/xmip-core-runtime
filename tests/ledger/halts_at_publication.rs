@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, FailedQueue,
-    HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay,
-    Replayed, StreamChunk, StreamRecord, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, Durable,
+    FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query,
+    Replay, Replayed, StreamChunk, StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -53,7 +53,7 @@ impl XmipStorage for HaltsAtPublication {
         self.0.write_message(message)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
         say(&format!("halting {}", publication.message.message.value()));
         loop {
             std::thread::park();

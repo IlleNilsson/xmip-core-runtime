@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, FailedQueue,
-    HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query, Replay,
-    Replayed, StreamChunk, StreamRecord, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, Durable,
+    FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord, Publication, Query,
+    Replay, Replayed, StreamChunk, StreamRecord, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -214,7 +214,7 @@ impl XmipStorage for Failing {
         self.answered(Operation::ReadJourney, answer)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<Vec<Claim>, PersistError> {
+    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
         self.asked(Operation::Publish)?;
         let lost = self
             .lost
@@ -222,7 +222,7 @@ impl XmipStorage for Failing {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(meanwhile) = lost {
-            self.beneath.publish(publication)?;
+            self.beneath.publish(publication)?.1.wait()?;
             meanwhile();
         }
         let answer = self.beneath.publish(publication);

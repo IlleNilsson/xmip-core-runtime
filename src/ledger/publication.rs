@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use journey::{ChainCause, Journey, JourneyMessageRef};
 use message::Message;
-use persist::storage::{AuditEntry, Hold, Publication, XmipStorage};
+use persist::storage::{AuditEntry, Durable, Hold, Publication, XmipStorage};
 use route::{Routing, Subscriber};
 use xaudit::audit_record::AuditRecord;
 use xaudit::origin::Origin;
@@ -23,11 +23,14 @@ use crate::sending::Sends;
 /// What a Publication wrote: a Journey for every Subscription routing
 /// matched and every Send Port it reaches, in the order they were asked,
 /// which of them a paused Subscription holds, and where the rest wait to be
-/// sent — those this node claimed among them.
+/// sent — those this node claimed among them — and when it is durable.
 pub struct Published {
     pub journeys: Vec<Journey>,
     pub holding: Holding,
     pub lined: LinedUp,
+    /// Waited on before the receive cycle ends and before a far end sees a
+    /// Journey of it: the Publication is answered before its sync.
+    pub durable: Durable,
 }
 
 /// What a Publication is written with: Xmip Storage, how its identifiers
@@ -101,10 +104,11 @@ pub(crate) fn opened(
 /// `pickup` says a Subscription holds, the rest each in the queue of where
 /// it leads, to be sent — claimed by this node where it sends it
 /// ([`SendStep::line_up`]) — each with what `body` says is kept beside it,
-/// and the audit record of the Publication, as one durable write, all or
-/// nothing (`XmipStorage::publish`). Nothing is sent here: the receive
-/// cycle ends at this write and the acknowledgement. Once it is
-/// durable `pickup` counts it. No Journey where nothing matched: the
+/// and the audit record of the Publication, as one write, all or nothing,
+/// answered before its sync and durable once its [`Durable`] says
+/// (`XmipStorage::publish`). Nothing is sent here: the receive cycle ends
+/// once this write is durable, and the acknowledgement; once it is, the
+/// caller tells `pickup` ([`Pickup::published`]). No Journey where nothing matched: the
 /// Message is kept with its entry in the node's Dead Message Queue — its
 /// receive context, `unmatched`, every Subscription's decline and `body` —
 /// in the same write (`runtime-model.md` section 9).
@@ -160,7 +164,7 @@ pub fn publish(
         claims: lined.claims.clone(),
         lease_nanos: u64::try_from(publisher.send.lease().as_nanos()).unwrap_or(u64::MAX),
     };
-    let holds = publisher.storage.publish(&publication).map_err(|why| {
+    let (holds, durable) = publisher.storage.publish(&publication).map_err(|why| {
         // Nothing it claimed is claimed: the places admitted are free.
         publisher.send.withdrawn(&lined);
         format!(
@@ -172,11 +176,11 @@ pub fn publish(
     // Publication asked again after a lost answer holds none another node
     // took up meanwhile.
     publisher.send.confirmed(&mut lined, &holds);
-    pickup.published(&holding);
     Ok(Published {
         journeys,
         holding,
         lined,
+        durable,
     })
 }
 
