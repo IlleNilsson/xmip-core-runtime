@@ -37,7 +37,7 @@ impl Running {
         let stated = operate.role.as_deref().map(Role::named);
         let local = self.local_endpoint();
         let mut listeners = vec![
-            Listener::local(&local, Arc::clone(published), stated, audit)
+            Listener::local(&local, &operate.admit, Arc::clone(published), stated, audit)
                 .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
         ];
         if let Some(network) = operate.network()? {

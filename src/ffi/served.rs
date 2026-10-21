@@ -97,7 +97,7 @@ pub unsafe extern "C" fn xmip_operate_serve_local_v1(
     let audit = ProgramAudit::new(program, None);
     let board = Arc::new(Board::default());
     let published: Arc<dyn Published> = Arc::clone(&board) as Arc<dyn Published>;
-    let started = Listener::local(local, published, stated, &audit);
+    let started = Listener::local(local, &[], published, stated, &audit);
     // SAFETY: per the contract above.
     unsafe { handed(started, board, out, report, cap, out_len) }
 }

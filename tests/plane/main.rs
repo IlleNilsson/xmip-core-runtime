@@ -8,7 +8,7 @@
 mod local;
 
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use xaudit::program_audit::ProgramAudit;
@@ -16,6 +16,20 @@ use xcore::latency::{PlainWake, at_once, spread};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::{Authority, absent_node};
 use xmip_core_runtime::plane::{Board, Listener, Outcome, Remote, Role};
+
+/// The machine, as the tests here share it: a test that measures how long
+/// Xmip takes holds it whole ([`alone`]) and every other shares it
+/// ([`sharing`]), so the process's processor time a round is held to is
+/// Xmip's work and not a neighboring test's, as the service's tests do.
+static MACHINE: RwLock<()> = RwLock::new(());
+
+fn alone() -> RwLockWriteGuard<'static, ()> {
+    MACHINE.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn sharing() -> RwLockReadGuard<'static, ()> {
+    MACHINE.read().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// A node's listener over `board` on a loopback port, holding `role`.
 fn node(authority: &Authority, board: &Arc<Board>, role: Option<Role>) -> (Listener, ProgramAudit) {
@@ -44,6 +58,7 @@ fn remote(authority: &Authority, listener: &Listener) -> Remote {
 
 #[test]
 fn a_surface_reads_the_publication_and_is_told_as_it_advances() {
+    let _alone = alone();
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
@@ -142,6 +157,7 @@ const BOUND: Duration = Duration::from_millis(1);
 
 #[test]
 fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
+    let _sharing = sharing();
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     let (listener, audit) = node(&authority, &board, None);
@@ -170,6 +186,7 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
 
 #[test]
 fn an_operator_acts_as_the_certificate_and_the_node_answers() {
+    let _sharing = sharing();
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     let (listener, _) = node(&authority, &board, Some(Role::Operator));
@@ -187,6 +204,7 @@ fn an_operator_acts_as_the_certificate_and_the_node_answers() {
 
 #[test]
 fn a_surface_whose_certificate_the_node_does_not_trust_is_refused() {
+    let _sharing = sharing();
     let ours = Authority::new();
     let theirs = Authority::new();
     let board = Arc::new(Board::default());
@@ -199,6 +217,7 @@ fn a_surface_whose_certificate_the_node_does_not_trust_is_refused() {
 
 #[test]
 fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
+    let _sharing = sharing();
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
@@ -246,6 +265,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
 
 #[test]
 fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
+    let _alone = alone();
     let authority = Authority::new();
     let address = net::fixture::unheld();
     let surface = Remote::retrying(

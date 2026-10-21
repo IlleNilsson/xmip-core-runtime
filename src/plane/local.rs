@@ -6,14 +6,25 @@
 //! endpoint's permissions name (ADR-0063 clause 1: the one exception
 //! inside one machine, said where it is made).
 //!
+//! **Local callers are proven by the operating system** — decided by the
+//! owner, 2026-10-19, open problem 35 — and this is the one way a surface
+//! on the node's machine reaches it: xmip-cli, the PowerShell module and
+//! the GUIs alike, through `xmip_remote_open_local_v1`. A tcp connection
+//! over loopback is trusted for nothing; it presents a certificate like a
+//! caller from another machine.
+//!
 //! **Who may open it** is the account the node runs as, the system and the
-//! machine's administrators: on Windows the pipe's own security descriptor
-//! (the owner, `SYSTEM` and `BUILTIN\Administrators`, and no caller from
-//! another machine); on Unix the socket file's mode, `0600`, so the node's
-//! account and the superuser. **Who acts** is the operating system user
-//! the connecting process runs as, read from the connection, never a name
-//! the caller says: `DOMAIN\user` on Windows, the user name elsewhere
-//! (ADR-0009, amendment 2026-10-03).
+//! machine's administrators, and each account or group `[operate] admit`
+//! names: on Windows the pipe's own security descriptor (the owner,
+//! `SYSTEM` and `BUILTIN\Administrators` fully, the admitted to read and
+//! write it, and no caller from another machine); on Unix the kernel's
+//! word on the peer (`SO_PEERCRED`, `getpeereid`) judged against the same
+//! list, the socket file `0600` where nobody else is admitted, in a folder
+//! nobody else may write. **Who acts** is the account the connecting
+//! process runs as, read from the connection, never a name the caller
+//! says: `DOMAIN\user` on Windows, lent for identification alone so the
+//! node can never act as it, the user name elsewhere (ADR-0009, amendment
+//! 2026-10-21).
 //!
 //! **Where it is** — decided by the owner, 2026-10-13: *Linux
 //! `/run/xmip/xmip-<node>.sock`, macOS `/var/run/xmip/xmip-<node>.sock`,

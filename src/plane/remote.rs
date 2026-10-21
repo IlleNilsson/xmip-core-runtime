@@ -327,7 +327,6 @@ impl Remote {
         }
         // A line on a pipe has no timeout to look between: its read ends.
         self.shared.cancel();
-        self.shared.deadline.wake();
     }
 }
 
