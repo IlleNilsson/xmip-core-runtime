@@ -1,10 +1,12 @@
 //! The runtime's C boundary, in one folder (ADR-0050, refined 2026-09-25):
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
-//! sections 5 to 20, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
+//! sections 5 to 21, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
 //! ADR-0034) and the loader that opens a module's library and calls through
 //! its table (ADR-0057), the two Windows calls the local operate endpoint makes
-//! (`system`; ADR-0014, amendment 2026-10-13) and those a directory watch
-//! makes (`directory_watch`; ADR-0018, amendment 2026-10-17). Unsafe
+//! (`system`; ADR-0014, amendment 2026-10-13), the server end of its pipe
+//! and either end's reads and writes (`pipe`, `pipe_io`; amendment
+//! 2026-10-21), and those a directory watch makes
+//! (`directory_watch`; ADR-0018, amendment 2026-10-17). Unsafe
 //! code is allowed in these files and nowhere else in the runtime; each file
 //! lowers the crate's `deny` at its top, and `test/Unsafe.Test.ps1` holds the
 //! folder.
@@ -46,6 +48,10 @@ pub mod loaded_module;
 pub mod operate;
 #[cfg(feature = "node")]
 pub mod order;
+#[cfg(all(windows, feature = "node"))]
+pub(crate) mod pipe;
+#[cfg(all(windows, feature = "remote"))]
+pub(crate) mod pipe_io;
 #[cfg(feature = "node")]
 pub mod process;
 #[cfg(feature = "remote")]
@@ -58,6 +64,8 @@ pub mod remote;
 pub mod resident;
 #[cfg(feature = "remote")]
 pub mod rule;
+#[cfg(feature = "node")]
+pub mod secure_listener;
 #[cfg(feature = "remote")]
 pub mod security_role;
 #[cfg(feature = "node")]

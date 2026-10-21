@@ -116,25 +116,26 @@ impl Listener {
     /// Serve the same on the node's local endpoint called `endpoint` — a
     /// named pipe on Windows, a Unix domain socket elsewhere — to every
     /// surface on this machine the operating system lets open it: the
-    /// node's account, the machine's administrators and whom `admitted`
-    /// names (`[operate] admit`), each caller the account its process runs
-    /// as. Plain HTTP/2 inside the machine, said in `audit` where it is
-    /// made (ADR-0063 clause 1).
+    /// node's account, the machine's administrators and whom `admitting`
+    /// names (`[operate] admit`, and on Unix the socket's `[operate]
+    /// group`), each caller the account its process runs as. Plain HTTP/2
+    /// inside the machine, said in `audit` where it is made (ADR-0063
+    /// clause 1).
     ///
     /// # Errors
     ///
     /// A name that would leave the endpoints' folder
-    /// ([`local::place`]), an admitted name the system does not know, an
-    /// endpoint that cannot be made, or no thread.
+    /// ([`local::place`]), an admitted name or a group the system does not
+    /// know, an endpoint that cannot be made, or no thread.
     pub fn local(
         endpoint: &str,
-        admitted: &[String],
+        admitting: local::Admitting<'_>,
         published: Arc<dyn Published>,
         stated: Option<Role>,
         audit: &ProgramAudit,
     ) -> Result<Self, String> {
         let path = local::place(endpoint)?;
-        let acceptor = Acceptor::bind(&path, admitted)?;
+        let acceptor = Acceptor::bind(&path, admitting)?;
         let where_ = path.display().to_string();
         let _ = audit.record(
             "operate.local",

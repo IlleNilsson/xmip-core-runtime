@@ -89,7 +89,12 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
 
 /// Each call on a connection answered in turn, until the surface or the
 /// listener ends it: HTTP/2 compiled in `net`, as it ships, over the
-/// connection boxed (`net::http2::boxed`).
+/// connection boxed (`net::http2::boxed`). Every call taken was answered
+/// by then, and the surface that went away said so or closed, so the
+/// connection is let go with nothing more said: until 2026-10-21 this side
+/// answered a surface's `GOAWAY` with its own and read on until it closed,
+/// a quarter of a millisecond of processor time a connection on the local
+/// endpoint (open problem 35).
 fn calls(connection: Boxed<'_>, who: &str, serve: &Serve) {
     let Ok(mut server) = BoxedServer::handshake(connection) else {
         return;
@@ -103,13 +108,7 @@ fn calls(connection: Boxed<'_>, who: &str, serve: &Serve) {
             break;
         }
     }
-    // A stop ends the connection where it stands; a surface that went away
-    // is said goodbye to.
-    if !serve.stopped() {
-        server.close();
-    }
 }
-
 /// The subject of the certificate the surface presented, which the
 /// handshake checked against the anchors.
 fn proven(guarded: &tls::GuardedServer) -> Result<String, String> {
