@@ -79,8 +79,9 @@ persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson
 # node's `[store]` names, among those its program linked (ADR-0063 clause 4).
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", optional = true }
 # The operate plane (ADR-0067; ADR-0014, amendment 2026-10-12): gRPC on
-# the estate's own HTTP/2 and framing, inside Xmip's own mutual TLS.
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+# the estate's own HTTP/2 and framing, inside Xmip's own mutual TLS; and
+# the local endpoint's named pipe on Windows (`net::pipe`).
+net ={ package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
 # A person's certificate (ADR-0034, amendment 2026-10-15): the request a
 # surface makes — the phone's build too — and, on a node's, the signing by
@@ -96,18 +97,11 @@ rcgen = { version = "0.13", optional = true }
 # The one byte cursor a loaded contract reads the content through.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 
-# The local operate endpoint (`plane::local`; ADR-0014, amendment
-# 2026-10-13): on Windows a named pipe, made, connected, read and written
-# through these calls (`ffi::pipe`, `ffi::pipe_io`), its security descriptor
-# written from SDDL; opened as a client lent for identification alone, a
-# read ended from another thread, the connecting account and the identifier
-# of an account `[operate] admit` names (open problem 35). Until 2026-10-21
-# through the `interprocess` pipe library, whose stream opened a handle
-# again behind its caller. And a directory watch (`directory_watch`): a
-# change notification and the event that ends its wait.
+# A directory watch (`directory_watch`): a change notification and the
+# event that ends its wait. The local operate endpoint's pipe on Windows is
+# `net::pipe`'s (ADR-0014, amendment 2026-10-21).
 [target.'cfg(windows)'.dependencies]
-widestring = "1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Pipes", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
 # its name, and the group a shared socket belongs to. Only the node's side

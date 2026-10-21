@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// A directory's changes, and the event that ends the wait for them. The
-/// handles are kept as numbers, as `system.rs` keeps a pipe's, so the
+/// handles are kept as numbers, as `net::pipe` keeps a pipe's, so the
 /// watch is sent to the thread that waits; both are open from `new` until
 /// `drop`, and only `drop` closes them.
 pub(crate) struct Changes {
