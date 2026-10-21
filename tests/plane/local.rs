@@ -36,7 +36,8 @@ fn node(board: &Arc<Board>, role: Option<Role>) -> (Listener, ProgramAudit, Stri
     let (audit, _) = audit();
     let called = endpoint();
     let published = Arc::clone(board) as Arc<dyn Published>;
-    let listener = Listener::local(&called, &[], published, role, &audit).expect("it serves");
+    let admitting = xmip_core_runtime::plane::local::Admitting::default();
+    let listener = Listener::local(&called, admitting, published, role, &audit).expect("it serves");
     (listener, audit, called)
 }
 

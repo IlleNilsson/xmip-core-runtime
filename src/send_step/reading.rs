@@ -97,14 +97,29 @@ impl<'a> Reading<'a> {
 
     /// What is due, what waits for a retry and, where a failure blocks,
     /// what failed, each read whole, in the queue's order.
+    ///
+    /// The parts are read one after another, and a Journey may move between
+    /// them meanwhile: a send's verdict moves one from what is due to what
+    /// waits or failed, and an operator's Retry, or the clock, moves one
+    /// back. What is due is read first and again last, so a Journey that
+    /// moved is read in some part, never in none, and each is kept as it
+    /// was read last. Until 2026-10-21 what is due was read first alone,
+    /// and a Journey retried between that read and the read of what failed
+    /// was in neither: the sequence went on without it, out of its order.
     fn whole(&mut self, blocking: bool, waits: &mut Due) -> Result<(), PersistError> {
         let parts: &[DuePart] = if blocking {
-            &[DuePart::Due, DuePart::Waiting, DuePart::Failed]
+            &[
+                DuePart::Due,
+                DuePart::Waiting,
+                DuePart::Failed,
+                DuePart::Due,
+            ]
         } else {
-            &[DuePart::Due, DuePart::Waiting]
+            &[DuePart::Due, DuePart::Waiting, DuePart::Due]
         };
-        let mut all = Vec::new();
-        for &part in parts {
+        let mut all = std::collections::BTreeMap::new();
+        for (order, &part) in parts.iter().enumerate() {
+            let again = order > 0 && part == DuePart::Due;
             let mut from = Some((0, 0));
             while let Some(at) = from {
                 let (asked, page) = self.part(part, at, waits)?;
@@ -113,14 +128,14 @@ impl<'a> Reading<'a> {
                     .last()
                     .filter(|_| page.held.len() == PAGE as usize)
                     .map(DueQueue::after);
-                if part == DuePart::Due {
+                if part == DuePart::Due && !again {
                     self.due_retries += due_retries(&page);
                 }
-                all.extend(read(&page, asked));
+                // A later read of a Journey replaces an earlier one.
+                all.extend(read(&page, asked).map(|entry| (entry.0.sequence, entry)));
             }
         }
-        all.sort_by_key(|(held, _, _)| held.sequence);
-        self.read = all.into();
+        self.read = all.into_values().collect();
         self.from = None;
         Ok(())
     }

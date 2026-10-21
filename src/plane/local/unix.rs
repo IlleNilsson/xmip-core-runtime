@@ -6,9 +6,14 @@
 //! says who connected (`SO_PEERCRED` on Linux, `getpeereid` elsewhere) and
 //! the node judges that account against the admitted, so a caller nobody
 //! admitted is refused in words. The socket file is `0600` where nobody
-//! else is admitted, so the file system refuses everyone else first; it
-//! is `0666` where some are, and the kernel's word is the gate. **The
-//! folder** must be the node's account's or the superuser's and writable
+//! else is admitted, so the file system refuses everyone else first. Where
+//! some are it is `0660` and belongs to a group — the one `[operate]
+//! group` names, the node's own where it is left out — so the file system
+//! is still the first gate, letting only that group's members connect, and
+//! the kernel's word against the admitted the second (the owner,
+//! 2026-10-21, where it was `0666` and the kernel's word the only gate). An
+//! admitted account outside the group is refused by the file system.
+//! **The folder** must be the node's account's or the superuser's and writable
 //! by nobody else, or a stranger could put a socket of their own where a
 //! surface looks; a node refuses to make its endpoint in any other (open
 //! problem 35).
@@ -94,6 +99,29 @@ fn member(uid: u32, gid: u32) -> bool {
         .is_some_and(|group| group.mem.contains(&user.name))
 }
 
+/// The group a shared socket belongs to, and its name: the one `named`
+/// names, or the node's own where it names none.
+///
+/// # Errors
+///
+/// A group the system does not know, in words.
+#[cfg(feature = "node")]
+fn socket_group(named: Option<&str>) -> Result<(Gid, String), String> {
+    let Some(name) = named else {
+        let own = nix::unistd::getegid();
+        let name = Group::from_gid(own)
+            .ok()
+            .flatten()
+            .map_or_else(|| format!("gid {own}"), |group| group.name);
+        return Ok((own, name));
+    };
+    Group::from_name(name)
+        .ok()
+        .flatten()
+        .map(|group| (group.gid, group.name))
+        .ok_or_else(|| format!("[operate] group: the system knows no group called \"{name}\""))
+}
+
 /// The made end, waiting for a connection; its socket file goes with it.
 #[cfg(feature = "node")]
 pub(crate) struct Acceptor {
@@ -105,17 +133,23 @@ pub(crate) struct Acceptor {
 #[cfg(feature = "node")]
 impl Acceptor {
     /// Make the socket at `path`, for the node's account and whom
-    /// `admitted` names. A socket file a node that stopped left behind is
+    /// `admitting` names. A socket file a node that stopped left behind is
     /// replaced; one a running node answers on is not.
     ///
     /// # Errors
     ///
     /// A folder others may write or someone else owns, a name the system
-    /// does not know, a path that cannot be bound, or one another node
-    /// listens on.
-    pub(crate) fn bind(path: &Path, admitted: &[String]) -> Result<Self, String> {
+    /// does not know, a group the node's account may not give the socket,
+    /// a path that cannot be bound, or one another node listens on.
+    pub(crate) fn bind(path: &Path, admitting: super::Admitting<'_>) -> Result<Self, String> {
         let said = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-        let admitted = Arc::new(Admitted::named(admitted)?);
+        let admitted = Arc::new(Admitted::named(admitting.admit)?);
+        let shared = *admitted != Admitted::default();
+        let group = if shared {
+            Some(socket_group(admitting.group)?)
+        } else {
+            None
+        };
         guarded(path.parent().unwrap_or_else(|| Path::new("/")))?;
         if path.exists() {
             if UnixStream::connect(path).is_ok() {
@@ -124,11 +158,15 @@ impl Acceptor {
             std::fs::remove_file(path).map_err(|e| said(&e))?;
         }
         let inner = UnixListener::bind(path).map_err(|e| said(&e))?;
-        let mode = if *admitted == Admitted::default() {
-            0o600
-        } else {
-            0o666
-        };
+        if let Some((gid, name)) = group {
+            std::os::unix::fs::chown(path, None, Some(gid.as_raw())).map_err(|error| {
+                said(&format_args!(
+                    "the node's account may not give its socket to the group \"{name}\": \
+                     {error}; it must be a member of the group [operate] group names"
+                ))
+            })?;
+        }
+        let mode = if shared { 0o660 } else { 0o600 };
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
             .map_err(|e| said(&e))?;
         Ok(Self {
@@ -307,7 +345,8 @@ pub(crate) fn wake(path: &Path) -> bool {
     UnixStream::connect(path).is_ok()
 }
 
-#[cfg(all(test, feature = "node"))]
+#[cfg(test)]
+#[cfg(feature = "node")]
 mod tests {
     use super::*;
 
@@ -342,5 +381,68 @@ mod tests {
         std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("shut");
         assert_eq!(guarded(&open), Ok(()));
         std::fs::remove_dir(&open).expect("removed");
+    }
+
+    /// A folder only its owner writes, for a test's sockets.
+    fn folder(test: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("shut");
+        folder
+    }
+
+    #[test]
+    fn a_socket_others_are_admitted_to_is_0660_of_its_group_and_0600_otherwise() {
+        let folder = folder("socket-group");
+        let path = folder.join("node.sock");
+        let alone = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
+        let found = std::fs::metadata(&path).expect("the socket");
+        assert_eq!(found.mode() & 0o777, 0o600);
+        drop(alone);
+
+        // Admitting someone, the socket is the node's own group's, 0660.
+        let me = User::from_uid(nix::unistd::geteuid())
+            .ok()
+            .flatten()
+            .expect("this account's name")
+            .name;
+        let admit = [me];
+        let admitting = super::super::Admitting {
+            admit: &admit,
+            group: None,
+        };
+        let shared = Acceptor::bind(&path, admitting).expect("bound");
+        let found = std::fs::metadata(&path).expect("the socket");
+        assert_eq!(found.mode() & 0o777, 0o660);
+        assert_eq!(found.gid(), nix::unistd::getegid().as_raw());
+        drop(shared);
+
+        // A group named is the socket's, where the node's account may give
+        // it; one the system does not know is refused in words.
+        let own = Group::from_gid(nix::unistd::getegid())
+            .ok()
+            .flatten()
+            .expect("this account's group")
+            .name;
+        let named = super::super::Admitting {
+            admit: &admit,
+            group: Some(&own),
+        };
+        drop(Acceptor::bind(&path, named).expect("its own group"));
+        let unknown = super::super::Admitting {
+            admit: &admit,
+            group: Some("xmip-no-such-group"),
+        };
+        let refused = Acceptor::bind(&path, unknown).err().expect("refused");
+        assert!(refused.contains("knows no group"), "{refused}");
+        if !nix::unistd::geteuid().is_root() {
+            let foreign = super::super::Admitting {
+                admit: &admit,
+                group: Some("root"),
+            };
+            let refused = Acceptor::bind(&path, foreign).err().expect("refused");
+            assert!(refused.contains("must be a member"), "{refused}");
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

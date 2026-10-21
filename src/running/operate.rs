@@ -12,6 +12,7 @@ use std::sync::Arc;
 use configure::operate::{Network, OperateConfiguration};
 use xaudit::program_audit::ProgramAudit;
 
+use crate::plane::local::Admitting;
 use crate::plane::{Listener, Published, Role};
 use crate::registration::node_service_name;
 use crate::running::Running;
@@ -36,8 +37,12 @@ impl Running {
         let operate = self.operate.clone().unwrap_or_default();
         let stated = operate.role.as_deref().map(Role::named);
         let local = self.local_endpoint();
+        let admitting = Admitting {
+            admit: &operate.admit,
+            group: operate.group.as_deref(),
+        };
         let mut listeners = vec![
-            Listener::local(&local, &operate.admit, Arc::clone(published), stated, audit)
+            Listener::local(&local, admitting, Arc::clone(published), stated, audit)
                 .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
         ];
         if let Some(network) = operate.network()? {

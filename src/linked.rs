@@ -89,7 +89,7 @@ impl LinkedTransport {
 /// `T` built from a Location and given its node, once, as it is built (the
 /// owner, 2026-10-03; `transport::Configured::on_node`), and the guard its
 /// receives terminate TLS with (`transport::Configured::guarded_by`).
-fn open<T: Configured + Send + Sync + 'static>(
+pub(crate) fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],

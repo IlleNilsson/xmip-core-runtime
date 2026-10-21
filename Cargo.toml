@@ -97,20 +97,21 @@ rcgen = { version = "0.13", optional = true }
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 
 # The local operate endpoint (`plane::local`; ADR-0014, amendment
-# 2026-10-13): on Windows a named pipe — `interprocess`, the pipe the named
-# pipe transport makes, behind a safe surface, its security descriptor
-# written from SDDL — and the calls it does not make: opening it as a client
-# lent for identification alone, ending a read from another thread, the
-# connecting account and the identifier of an account `[operate] admit`
-# names (open problem 35). And a directory watch (`directory_watch`): a
+# 2026-10-13): on Windows a named pipe, made, connected, read and written
+# through these calls (`ffi::pipe`, `ffi::pipe_io`), its security descriptor
+# written from SDDL; opened as a client lent for identification alone, a
+# read ended from another thread, the connecting account and the identifier
+# of an account `[operate] admit` names (open problem 35). Until 2026-10-21
+# through the `interprocess` pipe library, whose stream opened a handle
+# again behind its caller. And a directory watch (`directory_watch`): a
 # change notification and the event that ends its wait.
 [target.'cfg(windows)'.dependencies]
-interprocess = "2.4"
 widestring = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Pipes", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
-# and its name. Only the node's side asks who connected, so only `node`
+# its name, and the group a shared socket belongs to. Only the node's side
+# asks who connected, so only `node`
 # links it; a remote build connects with the standard library alone, and
 # the phone's (iOS) never compiles `nix`'s socket module, which names
 # macOS-only constants on every Apple target. A directory watch
@@ -147,6 +148,10 @@ path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-
 # receives and sends over it rather than over a stand-in; with TLS, so a
 # test proves a Party's certificate through a node's real gates.
 tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilsson/xmip-core-transport-tcp", branch = "main", features = ["tls"] }
+# And one whose connections are kept, for a test that carries hundreds of
+# Messages through a node: raw TCP spends a connection a Message, its
+# sender's side waiting minutes to close (ADR-0018, amendment 2026-10-21).
+http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
 # The test Storage node (the owner, 2026-10-01: *for testing purposes the
 # Xmip Nodes of Storage type can use SQLite in memory for administration and
 # RocksDB for runtime*), so the receive path is proved, timed and killed
@@ -171,9 +176,10 @@ default = ["node"]
 # a program links, and the node's side of the operate plane — the operate
 # listener and its board (`plane::listener`, `plane::served`), with
 # `xmip_operate.h` sections 1, 5, 6 and 10 to 16, section 17's serve
-# exports and section 19's signing (`xmip_operator_sign_v1`, by the
-# authority `[provision.operator]` names). Everything a remote surface has,
-# too.
+# exports, section 19's signing (`xmip_operator_sign_v1`, by the authority
+# `[provision.operator]` names) and section 21, a host's listener in Xmip's
+# own protection and the certificate an authority issues it
+# (`secure_listener`). Everything a remote surface has, too.
 node = [
     "remote",
     "dep:serde",

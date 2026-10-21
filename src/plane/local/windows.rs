@@ -11,22 +11,18 @@
 //!
 //! A pipe has no read timeout, so a read waiting on its peer is ended by
 //! [`Cancel`] — the I/O on the pipe cancelled from another thread, which
-//! `interprocess`'s overlapped pipes allow — where a socket's is ended by
+//! its overlapped reads allow (`ffi::pipe_io`) — where a socket's is ended by
 //! `net::watched` looking between short timeouts.
 
 use std::io::{Read, Write};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use interprocess::os::windows::named_pipe::DuplexPipeStream;
-use interprocess::os::windows::named_pipe::pipe_mode::Bytes;
 #[cfg(feature = "node")]
-use interprocess::os::windows::named_pipe::{PipeListener, PipeListenerOptions};
-#[cfg(feature = "node")]
-use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-
+use crate::ffi::pipe;
+use crate::ffi::pipe_io::{self, Event};
 #[cfg(feature = "node")]
 use crate::ffi::system::{account_name, account_sid, impersonated};
 use crate::ffi::system::{cancel_io, open_identifying, wait_free};
@@ -78,63 +74,75 @@ static NAMES: std::sync::OnceLock<Mutex<std::collections::HashMap<Vec<u32>, Stri
 #[cfg(feature = "node")]
 const KEPT_NAMES: usize = 1024;
 
-/// The made end, waiting for a connection.
+/// The made end, waiting for a connection: the instance a client reaches
+/// next, and how to make the one after (`ffi::pipe`).
 #[cfg(feature = "node")]
 pub(crate) struct Acceptor {
-    inner: PipeListener<Bytes, Bytes>,
+    path: widestring::U16CString,
+    descriptor: pipe::Descriptor,
+    next: Mutex<OwnedHandle>,
 }
 
 #[cfg(feature = "node")]
 impl Acceptor {
     /// Make the pipe at `path`, opened only by whom [`OPENERS`] and
-    /// `admitted` name and never from another machine.
+    /// `admitting` names and never from another machine; a pipe has no
+    /// group of its own, so `admitting.group` says nothing here.
     ///
     /// # Errors
     ///
     /// A name Windows does not permit, a pipe of that name another process
     /// already made, or an admitted name Windows does not know.
-    pub(crate) fn bind(path: &Path, admitted: &[String]) -> Result<Self, String> {
-        let sddl = widestring::U16CString::from_str(openers(admitted)?)
+    pub(crate) fn bind(path: &Path, admitting: super::Admitting<'_>) -> Result<Self, String> {
+        let said = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+        let sddl = widestring::U16CString::from_str(openers(admitting.admit)?)
             .map_err(|error| error.to_string())?;
-        let openers = SecurityDescriptor::deserialize(&sddl).map_err(|e| e.to_string())?;
-        let inner = PipeListenerOptions::new()
-            .path(path)
-            .accept_remote(false)
-            .input_buffer_size_hint(BUFFER)
-            .output_buffer_size_hint(BUFFER)
-            .security_descriptor(Some(openers))
-            .create_duplex::<Bytes>()
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        Ok(Self { inner })
+        let path = widestring::U16CString::from_os_str(path.as_os_str()).map_err(|e| said(&e))?;
+        let descriptor = pipe::Descriptor::from_sddl(&sddl).map_err(|e| said(&e))?;
+        let first = pipe::instance(&path, &descriptor, true, BUFFER).map_err(|e| said(&e))?;
+        Ok(Self {
+            path,
+            descriptor,
+            next: Mutex::new(first),
+        })
     }
 
-    /// The next connection; waits until one comes.
+    /// The next connection; waits until one comes. The instance a client
+    /// reached is waited on with an `OVERLAPPED` of its own, and the next is
+    /// made before it is handed out (`ffi::pipe`, which says why the pipe
+    /// library's accept is not used).
     ///
     /// # Errors
     ///
     /// The pipe's own failure.
     pub(crate) fn accept(&self) -> std::io::Result<Stream> {
+        let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
         // bounded: a listener waits as long as its node runs; a stop wakes it
-        self.inner.accept().map(Stream::new)
+        pipe::connected(&next)?;
+        let after = pipe::instance(&self.path, &self.descriptor, false, BUFFER)?;
+        Stream::new(std::mem::replace(&mut *next, after))
     }
 }
 
 /// One connection, either end.
 pub(crate) struct Stream {
-    pipe: DuplexPipeStream<Bytes>,
+    pipe: OwnedHandle,
+    /// What its reads and writes wait on.
+    event: Event,
     open: Arc<Mutex<Option<usize>>>,
     /// What was read to learn who connected, and is read again first.
     read_ahead: Vec<u8>,
 }
 
 impl Stream {
-    fn new(pipe: DuplexPipeStream<Bytes>) -> Self {
+    fn new(pipe: OwnedHandle) -> std::io::Result<Self> {
         let handle = pipe.as_raw_handle() as usize;
-        Self {
+        Ok(Self {
             pipe,
+            event: Event::new()?,
             open: Arc::new(Mutex::new(Some(handle))),
             read_ahead: Vec::new(),
-        }
+        })
     }
 
     /// The account the connecting process runs as, `DOMAIN\user`, by its
@@ -179,20 +187,16 @@ impl Stream {
     pub(crate) fn lent(&mut self) -> Result<(Vec<u32>, i32), String> {
         if self.read_ahead.is_empty() {
             let mut first = [0u8; 64];
-            let read = self
-                .pipe
-                .read(&mut first)
+            let read = pipe_io::read(&self.pipe, &self.event, &mut first)
                 .map_err(|error| format!("the caller sent nothing: {error}"))?;
             if read == 0 {
                 return Err("the caller sent nothing".to_string());
             }
             self.read_ahead.extend_from_slice(&first[..read]);
         }
-        let _impersonating = self
-            .pipe
-            .impersonate_client()
-            .map_err(|error| format!("the caller is not known: {error}"))?;
-        impersonated().map_err(|why| format!("the caller is not known: {why}"))
+        pipe::impersonating(&self.pipe, impersonated)
+            .map_err(|error| format!("the caller is not known: {error}"))?
+            .map_err(|why| format!("the caller is not known: {why}"))
     }
 
     /// A pipe has no read timeout: a wait is ended by [`Cancel`].
@@ -225,10 +229,10 @@ impl Read for Stream {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if self.read_ahead.is_empty() {
             if buffer.len() >= READ {
-                return self.pipe.read(buffer);
+                return pipe_io::read(&self.pipe, &self.event, buffer);
             }
             let mut read = [0u8; READ];
-            let count = self.pipe.read(&mut read)?;
+            let count = pipe_io::read(&self.pipe, &self.event, &mut read)?;
             self.read_ahead.extend_from_slice(&read[..count]);
             if count == 0 {
                 return Ok(0);
@@ -243,7 +247,7 @@ impl Read for Stream {
 
 impl Write for Stream {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.pipe.write(bytes)
+        pipe_io::write(&self.pipe, &self.event, bytes)
     }
 
     /// A write is in the pipe once it returns. Windows' flush of a pipe
@@ -278,11 +282,7 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
     let until = Instant::now() + patience;
     loop {
         match open_identifying(&wide) {
-            Some(Ok(handle)) => {
-                return DuplexPipeStream::<Bytes>::try_from(handle)
-                    .map(Stream::new)
-                    .map_err(|error| said(&error));
-            }
+            Some(Ok(handle)) => return Stream::new(handle).map_err(|error| said(&error)),
             Some(Err(error)) => return Err(said(&error)),
             None => {
                 let left = until.saturating_duration_since(Instant::now());
@@ -300,7 +300,8 @@ pub(crate) fn wake(path: &Path) -> bool {
     connect(path, Duration::from_secs(1)).is_ok()
 }
 
-#[cfg(all(test, feature = "node"))]
+#[cfg(test)]
+#[cfg(feature = "node")]
 mod tests {
     use super::*;
     use crate::ffi::system::IDENTIFICATION;
@@ -309,14 +310,15 @@ mod tests {
     fn a_caller_lends_its_account_for_identification_alone() {
         let path = crate::plane::local::place(&format!("xmip-lent-{}", std::process::id()))
             .expect("a place");
-        let acceptor = Acceptor::bind(&path, &[]).expect("it binds");
+        let acceptor =
+            Acceptor::bind(&path, crate::plane::local::Admitting::default()).expect("it binds");
         let client = std::thread::spawn({
             let path = path.clone();
             move || {
                 let mut stream = connect(&path, Duration::from_secs(5)).expect("connected");
                 stream.write_all(b"x").expect("written");
                 let mut back = [0u8; 1];
-                let _ = stream.read(&mut back);
+                stream.read_exact(&mut back).map(|()| back)
             }
         });
         let mut served = acceptor.accept().expect("accepted");
@@ -325,9 +327,11 @@ mod tests {
         let caller = served.caller().expect("named");
         assert!(caller.contains('\\'), "DOMAIN\\user: {caller}");
         served.write_all(b"y").expect("answered");
-        client.join().expect("the client ends");
+        // The answer reaches the connection the caller made: one, not a
+        // second the pipe library opened behind it (`ffi::pipe`).
+        let heard = client.join().expect("the client ends");
+        assert_eq!(heard.expect("answered on its own connection"), *b"y");
     }
-
     #[test]
     fn an_admitted_account_may_read_and_write_and_a_name_nobody_has_is_refused() {
         let domain = std::env::var("USERDOMAIN").expect("a domain");

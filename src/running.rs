@@ -374,6 +374,7 @@ mod tests {
     use super::*;
     use crate::fixture::{Always, Open};
     use crate::linked::{LinkedTransport, Opened};
+    use http::HttpTransport;
     use net::fixture::unheld;
     use observe::Health;
     use std::cell::Cell;
@@ -393,19 +394,15 @@ mod tests {
         };
     }
 
-    fn counted(
+    fn counted<T: Configured + Send + Sync + 'static>(
         address: &str,
         side: Applies,
         given: &[(String, Given)],
-        (node, guard): crate::linked::OnNode<'_>,
+        on: crate::linked::OnNode<'_>,
     ) -> Opened {
         OPENED.with(|opened| opened.set(opened.get() + 1));
-        GIVEN.with(|nodes| nodes.borrow_mut().push(node.to_string()));
-        Ok(Box::new(
-            TcpTransport::open(address, side, given)?
-                .on_node(node)?
-                .guarded_by(guard)?,
-        ))
+        GIVEN.with(|nodes| nodes.borrow_mut().push(on.0.to_string()));
+        crate::linked::open::<T>(address, side, given, on)
     }
 
     /// What the tests' program links, and the test Storage node it opened
@@ -419,7 +416,10 @@ mod tests {
             PLACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         Linked {
-            transports: vec![LinkedTransport::new(TcpTransport::SETTINGS, counted)],
+            transports: vec![
+                LinkedTransport::new(TcpTransport::SETTINGS, counted::<TcpTransport>),
+                LinkedTransport::new(HttpTransport::SETTINGS, counted::<HttpTransport>),
+            ],
             authenticators: vec![Box::new(Always::circumstance())],
             policies: vec![Box::new(Open)],
             storage: Some(Arc::new(test_storage(&place))),
@@ -535,20 +535,48 @@ address = "{far}"
         path.to_str().expect("a UTF-8 path")
     }
 
-    /// Send `payload` to the node, asking again while its Receive Location
-    /// has not yet bound — it binds on its first receive, and nothing else
-    /// says when that was. Bounded, and never a sleep.
-    fn deliver(address: &str, payload: &[u8]) {
+    /// Send `payload` to the node at `target` by `sender`, asking again
+    /// while its Receive Location has not yet bound — it binds on its first
+    /// receive, and nothing else says when that was. Bounded, and never a
+    /// sleep.
+    fn deliver(sender: &dyn Transport, target: &str, payload: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match TcpTransport::loopback().send(address, payload) {
+            match sender.send(target, payload) {
                 Ok(()) => return,
                 Err(refused) if refused.retryable && Instant::now() < deadline => {
                     std::thread::yield_now();
                 }
-                Err(failed) => panic!("the node took nothing at {address}: {failed:?}"),
+                Err(failed) => panic!("the node took nothing at {target}: {failed:?}"),
             }
         }
+    }
+
+    /// [`node`] over HTTP, the Send Port posting to `far`: a test carrying
+    /// hundreds of Messages through a node keeps one connection a sender,
+    /// where raw TCP spends one a Message, each waiting minutes to close on
+    /// its sender's side.
+    fn node_keeping_connections(receive: &str, far: &str) -> String {
+        node(receive, &format!("http://{far}/orders"))
+            .replace("xmip-core-transport-tcp", "xmip-core-transport-http")
+    }
+
+    /// A far end over HTTP, listening before anything is sent to it, and
+    /// where it listens.
+    fn kept_far_end() -> (HttpTransport, String) {
+        let far = HttpTransport::loopback();
+        let address = far.listening().expect("the far end binds").to_string();
+        (far, address)
+    }
+
+    /// The next Message `far` takes, accepted: its sender is answered.
+    fn taken_at(far: &HttpTransport) -> Vec<u8> {
+        far.receive()
+            .expect("it reaches the far end")
+            .remove(0)
+            .taken()
+            .expect("accepted")
+            .bytes
     }
 
     #[test]
@@ -583,7 +611,7 @@ address = "{far}"
             "loading carries the declaration"
         );
 
-        deliver(&receive, b"order 0");
+        deliver(&TcpTransport::loopback(), &receive, b"order 0");
         let first = far
             .accept_one(&listener)
             .expect("the first arrives")
@@ -686,40 +714,35 @@ address = "{far}"
 
     #[test]
     fn eight_senders_at_once_are_carried_side_by_side() {
-        // A TCP Receive Location's arrivals are unordered — each
-        // connection its own — so eight senders' Streams are carried at
-        // once on the Location's pool, and their Ledger writes share a
-        // group commit's disk sync rather than waiting one by one.
+        // An HTTP Receive Location's arrivals are unordered — each request
+        // its own — so eight senders' Streams are carried at once on the
+        // Location's pool, and their Ledger writes share a group commit's
+        // disk sync rather than waiting one by one.
         const SENDERS: u32 = 8;
         const EACH: u32 = 50;
-        let far = TcpTransport::loopback();
-        let (listener, far_address) = far.bind().expect("the far end binds");
+        let (far, far_address) = kept_far_end();
         let receive = unheld().to_string();
-        let path = written("eight", &node(&receive, &far_address));
+        let path = written("eight", &node_keeping_connections(&receive, &far_address));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
-        deliver(&receive, b"warm");
-        far.accept_one(&listener)
-            .expect("the first arrives")
-            .taken()
-            .expect("read whole");
+        let to_node = format!("http://{receive}/orders");
+        deliver(&HttpTransport::loopback(), &to_node, b"warm");
+        taken_at(&far);
 
         let started = Instant::now();
         let taking = std::thread::spawn(move || {
-            let mut taken = Vec::new();
-            for _ in 0..SENDERS * EACH {
-                let arrived = far.accept_one(&listener).expect("it reaches the far end");
-                taken.push(arrived.taken().expect("read whole").bytes);
-            }
+            let mut taken: Vec<Vec<u8>> = (0..SENDERS * EACH).map(|_| taken_at(&far)).collect();
             taken.sort();
             taken.dedup();
             taken.len()
         });
         let senders: Vec<_> = (0..SENDERS)
             .map(|sender| {
-                let at = receive.clone();
+                let at = to_node.clone();
                 std::thread::spawn(move || {
+                    // Each sender keeps its one connection.
+                    let sending = HttpTransport::loopback();
                     for message in 0..EACH {
-                        TcpTransport::loopback()
+                        sending
                             .send(&at, format!("S{sender} {message}").as_bytes())
                             .expect("the node takes it");
                     }
@@ -811,7 +834,7 @@ address = "{far}"
         let receive = unheld().to_string();
         let path = written("stops", &node(&receive, &far_address));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
-        deliver(&receive, b"before the stop");
+        deliver(&TcpTransport::loopback(), &receive, b"before the stop");
         far.accept_one(&listener)
             .expect("it reaches the far end")
             .taken()
@@ -839,7 +862,7 @@ address = "{far}"
 
         // Dropped without a stop, a node stops all the same.
         let again = Running::start(path_text(&path), linked(&path)).expect("starts again");
-        deliver(&receive, b"after");
+        deliver(&TcpTransport::loopback(), &receive, b"after");
         far.accept_one(&listener)
             .expect("it reaches the far end")
             .taken()
@@ -1007,7 +1030,7 @@ address = "{far}"
         let sequential = "execution_style = \"sequential\"\non_failure = \"block\"";
         let path = written("paused", &node_sending(&receive, &far_address, sequential));
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
-        deliver(&receive, b"before the pause");
+        deliver(&TcpTransport::loopback(), &receive, b"before the pause");
         far.accept_one(&listener)
             .expect("it reaches the far end")
             .taken()
@@ -1031,7 +1054,11 @@ address = "{far}"
         // order of their own (`Arrivals::Unordered`), so the order held is
         // the order the receive cycles finished.
         for n in 1..=3 {
-            deliver(&receive, format!("held {n}").as_bytes());
+            deliver(
+                &TcpTransport::loopback(),
+                &receive,
+                format!("held {n}").as_bytes(),
+            );
             let deadline = Instant::now() + Duration::from_secs(5);
             while pickup.standing()[0].held < n && Instant::now() < deadline {
                 std::thread::yield_now();

@@ -19,7 +19,8 @@
 //! `SYSTEM` and `BUILTIN\Administrators` fully, the admitted to read and
 //! write it, and no caller from another machine); on Unix the kernel's
 //! word on the peer (`SO_PEERCRED`, `getpeereid`) judged against the same
-//! list, the socket file `0600` where nobody else is admitted, in a folder
+//! list, the socket file `0600` where nobody else is admitted and `0660`,
+//! of the group `[operate] group` names, where some are, in a folder
 //! nobody else may write. **Who acts** is the account the connecting
 //! process runs as, read from the connection, never a name the caller
 //! says: `DOMAIN\user` on Windows, lent for identification alone so the
@@ -45,6 +46,20 @@ mod system;
 #[cfg(feature = "node")]
 pub(crate) use system::{Acceptor, wake};
 pub(crate) use system::{Cancel, Stream, connect};
+
+/// Whom a local endpoint admits beside the node's account and the
+/// machine's administrators: the accounts and groups `[operate] admit`
+/// names, and on Unix the group its socket belongs to where `admit` names
+/// anyone (`[operate] group`; the node's own group where it is left out).
+/// Windows admits by the pipe's security descriptor and has no socket
+/// group, so `group` is read on Unix alone.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Admitting<'a> {
+    /// What `[operate] admit` names.
+    pub admit: &'a [String],
+    /// What `[operate] group` names.
+    pub group: Option<&'a str>,
+}
 
 /// The pipe namespace, Windows' folder of local endpoints.
 pub const WINDOWS_FOLDER: &str = r"\\.\pipe\";
