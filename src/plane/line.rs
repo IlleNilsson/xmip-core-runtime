@@ -7,10 +7,11 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use net::http2::Client;
+use net::http2::BoxedClient;
 use net::watched::Watched;
 use serde_json::Value;
 
@@ -63,9 +64,37 @@ impl Write for Link {
     }
 }
 
+/// A watched connection whose silence a call restarts: the line sets
+/// `called` as it sends, and the next read counts the peer's silence from
+/// then, not from the last answer.
+struct Asking {
+    watched: Watched<Link, Ending>,
+    called: Arc<AtomicBool>,
+}
+
+impl Read for Asking {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.called.swap(false, Ordering::SeqCst) {
+            self.watched.heard = Instant::now();
+        }
+        self.watched.read(buffer)
+    }
+}
+
+impl Write for Asking {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.watched.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.watched.flush()
+    }
+}
+
 /// A connection.
 pub(crate) struct Line {
-    client: Client<Watched<Link, Ending>>,
+    client: BoxedClient<'static>,
+    called: Arc<AtomicBool>,
     authority: String,
 }
 
@@ -111,8 +140,19 @@ impl Line {
         *cancel.lock().unwrap_or_else(PoisonError::into_inner) = ends;
         let mut watched = Watched::new(link, ending);
         watched.silence = Some(silence);
-        let client = Client::handshake(watched, scheme).map_err(|failed| failed.message)?;
-        Ok(Self { client, authority })
+        let called = Arc::new(AtomicBool::new(false));
+        let asking = Asking {
+            watched,
+            called: Arc::clone(&called),
+        };
+        // HTTP/2 compiled in `net`, as it ships (`net::http2::boxed`).
+        let client =
+            BoxedClient::handshake(Box::new(asking), scheme).map_err(|failed| failed.message)?;
+        Ok(Self {
+            client,
+            called,
+            authority,
+        })
     }
 
     /// Call `method` with `message` and read what it answered.
@@ -123,7 +163,7 @@ impl Line {
     pub(crate) fn call(&mut self, method: &str, message: &Value) -> Result<Value, String> {
         let request = call::request(&self.authority, method, message)?;
         // Silence is counted from the call, not from the last answer.
-        self.client.io_mut().heard = std::time::Instant::now();
+        self.called.store(true, Ordering::SeqCst);
         let response = self
             .client
             .send(&request)

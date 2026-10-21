@@ -38,6 +38,8 @@ pub mod role;
 #[cfg(feature = "node")]
 pub mod served;
 mod shared;
+#[cfg(feature = "node")]
+mod workers;
 
 #[cfg(feature = "node")]
 pub use board::{Board, Published};

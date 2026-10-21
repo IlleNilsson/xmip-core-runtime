@@ -4,13 +4,15 @@
 //! own.*
 //!
 //! A socket's read keeps time itself (`net::watched`'s silence); a named
-//! pipe's has none, so a call on a pipe is bounded by one thread per
-//! surface that cancels the asking line's read once its deadline passes
-//! (`plane::local::Cancel`). The thread waits on nothing until a call
-//! arms it, and ends with its surface.
+//! pipe's has none, so a call on a pipe is bounded by one thread for the
+//! process that cancels a surface's asking line's read once its deadline
+//! passes (`plane::local::Cancel`). The thread waits on nothing until a
+//! call arms a deadline. Until 2026-10-21 each surface had a thread of its
+//! own, whose start and wakes cost a connection on the local endpoint more
+//! processor time than the rest of it (open problem 35).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use xcore::wake::Wake;
@@ -28,16 +30,18 @@ struct Armed {
 #[derive(Default)]
 pub(crate) struct Deadline {
     armed: Mutex<Armed>,
-    changed: Wake,
 }
 
 impl Deadline {
     /// A call begins: it may wait `within`.
     pub(crate) fn arm(&self, within: Duration) {
-        let mut armed = self.armed.lock().unwrap_or_else(PoisonError::into_inner);
-        armed.until = Some(Instant::now() + within);
-        armed.fired = false;
-        self.changed.notify_all();
+        let until = Instant::now() + within;
+        {
+            let mut armed = self.armed.lock().unwrap_or_else(PoisonError::into_inner);
+            armed.until = Some(until);
+            armed.fired = false;
+        }
+        sooner(until);
     }
 
     /// The call ended: whether its deadline passed first.
@@ -53,12 +57,6 @@ impl Deadline {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .fired
-    }
-
-    /// Wake the thread to see its surface ends.
-    pub(crate) fn wake(&self) {
-        let _armed = self.armed.lock().unwrap_or_else(PoisonError::into_inner);
-        self.changed.notify_all();
     }
 }
 
@@ -101,16 +99,60 @@ pub fn not_answered(within: Duration) -> String {
     format!("the node did not answer within {said}")
 }
 
-/// Keep `shared`'s calls to their deadline: on a named pipe, a thread
-/// watching it for as long as the surface lives; elsewhere the line's own
-/// silence does.
+/// Every surface whose calls the process's deadline thread keeps, and
+/// when the thread looks at them next: `None` while it waits to be told.
+#[derive(Default)]
+struct Kept {
+    surfaces: Vec<Weak<Shared>>,
+    looks: Option<Instant>,
+}
+
+/// What the process's deadline thread keeps, and what wakes it.
+#[derive(Default)]
+struct Watcher {
+    kept: Mutex<Kept>,
+    changed: Wake,
+}
+
+static WATCHER: OnceLock<Watcher> = OnceLock::new();
+
+/// Keep `shared`'s calls to their deadline: on a named pipe, by the
+/// process's deadline thread for as long as the surface lives, started
+/// with the first; elsewhere the line's own silence does. A surface ended
+/// or dropped is let go at the thread's next look.
 pub(crate) fn kept(shared: &Arc<Shared>) {
-    if cfg!(windows) {
-        let shared = Arc::clone(shared);
-        // Detached: it ends when its surface ends and wakes it.
+    if !cfg!(windows) {
+        return;
+    }
+    let mut first = false;
+    let watcher = WATCHER.get_or_init(|| {
+        first = true;
+        Watcher::default()
+    });
+    watcher
+        .kept
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .surfaces
+        .push(Arc::downgrade(shared));
+    if first {
+        // Detached: it keeps every local surface the process opens.
         let _ = std::thread::Builder::new()
             .name("xmip-operate-deadline".to_string())
-            .spawn(move || watch(&shared));
+            .spawn(move || watch(watcher));
+    }
+}
+
+/// A deadline armed for `until`: the thread woken only where it would look
+/// later, so a call made while it already waits for an earlier one costs no
+/// wake. Under its lock, so a deadline armed after it looked at a surface
+/// is never lost before it waits.
+fn sooner(until: Instant) {
+    if let Some(watcher) = WATCHER.get() {
+        let kept = watcher.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.looks.is_none_or(|looks| until < looks) {
+            watcher.changed.notify_all();
+        }
     }
 }
 
@@ -118,42 +160,55 @@ pub(crate) fn kept(shared: &Arc<Shared>) {
 /// cancels again.
 const AGAIN: Duration = Duration::from_millis(1);
 
-/// Watch `shared`'s deadline until it ends, cancelling the asking line's
-/// read whenever one passes, and again until its call has ended. A cancel
-/// reaches only a read in flight: one made while the call was still
-/// connecting, or before its thread, kept from its processor, began the
-/// read, is lost, and the read then waited for good — the runtime's
-/// deadline test hung beside eight processor-bound jobs (2026-10-21). Until
-/// then a passed deadline cancelled once.
-fn watch(shared: &Arc<Shared>) {
-    let deadline = &shared.deadline;
-    let mut armed = deadline
-        .armed
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    while !shared.ending() {
-        if armed.fired {
-            // Its call has not ended: `disarm` takes `fired`.
-            let again = Instant::now() + AGAIN;
-            armed = deadline.changed.wait_until(&deadline.armed, armed, again).0;
-            if armed.fired && armed.until.is_none() {
-                shared.cancel_asking();
-            }
-            continue;
-        }
-        let Some(until) = armed.until else {
-            armed = deadline.changed.wait(&deadline.armed, armed);
-            continue;
+/// Watch every kept surface's deadline, cancelling its asking line's read
+/// whenever one passes, and again each [`AGAIN`] until its call has ended;
+/// a surface ended or dropped is let go. A cancel reaches only a read in
+/// flight: one made while the call was still connecting, or before its
+/// thread, kept from its processor, began the read, is lost, and the read
+/// then waited for good — the runtime's deadline test hung beside eight
+/// processor-bound jobs (2026-10-21). Until then a passed deadline
+/// cancelled once.
+fn watch(watcher: &Watcher) {
+    let mut kept = watcher.kept.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let now = Instant::now();
+        let mut next: Option<Instant> = None;
+        kept.surfaces.retain(|weak| {
+            let Some(shared) = weak.upgrade().filter(|shared| !shared.ending()) else {
+                return false;
+            };
+            let mut armed = shared
+                .deadline
+                .armed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let due = match (armed.fired, armed.until) {
+                // Its call has not ended: `disarm` takes `fired`.
+                (true, _) => {
+                    shared.cancel_asking();
+                    Some(now + AGAIN)
+                }
+                (false, Some(until)) if now >= until => {
+                    armed.until = None;
+                    armed.fired = true;
+                    // Under its lock, so the next call cannot arm before
+                    // this cancel has reached the read it was meant for.
+                    shared.cancel_asking();
+                    Some(now + AGAIN)
+                }
+                (false, until) => until,
+            };
+            next = match (next, due) {
+                (Some(next), Some(due)) => Some(next.min(due)),
+                (next, due) => next.or(due),
+            };
+            true
+        });
+        kept.looks = next;
+        kept = match next {
+            Some(next) => watcher.changed.wait_until(&watcher.kept, kept, next).0,
+            None => watcher.changed.wait(&watcher.kept, kept),
         };
-        if Instant::now() < until {
-            armed = deadline.changed.wait_until(&deadline.armed, armed, until).0;
-            continue;
-        }
-        armed.until = None;
-        armed.fired = true;
-        // Under the lock, so the next call cannot arm before this cancel
-        // has reached the read it was meant for.
-        shared.cancel_asking();
     }
 }
 
@@ -185,7 +240,7 @@ mod tests {
     #[test]
     fn a_node_that_does_not_answer_within_the_wait_is_unreachable_at_once_after() {
         let name = format!("xmip-deadline-test-{}", std::process::id());
-        let acceptor = Acceptor::bind(&place(&name).expect("a name")).expect("bound");
+        let acceptor = Acceptor::bind(&place(&name).expect("a name"), &[]).expect("bound");
         let held = std::thread::spawn(move || acceptor.accept().map(|stream| (stream, acceptor)));
         let within = Duration::from_millis(150);
         let surface = Remote::local_retrying(&name, within, vec![Duration::from_secs(60)])
@@ -222,7 +277,7 @@ mod tests {
 
         let name = format!("xmip-deadline-late-{}", std::process::id());
         let path = place(&name).expect("a name");
-        let acceptor = Acceptor::bind(&path).expect("bound");
+        let acceptor = Acceptor::bind(&path, &[]).expect("bound");
         let held = std::thread::spawn(move || acceptor.accept().map(|stream| (stream, acceptor)));
         let mut stream =
             crate::plane::local::connect(&path, Duration::from_secs(5)).expect("connected");
@@ -251,7 +306,6 @@ mod tests {
         assert!(read.is_err(), "cancelled, not answered: {read:?}");
         assert!(shared.deadline.disarm(), "the deadline passed first");
         shared.ending.store(true, Ordering::SeqCst);
-        shared.deadline.wake();
         drop(stream);
         drop(accepted(held, &place(&name).expect("a name")));
     }

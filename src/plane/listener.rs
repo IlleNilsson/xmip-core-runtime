@@ -7,12 +7,14 @@
 //!
 //! On TCP every connection presents a certificate reaching the anchors the
 //! listener was given, and agrees `h2` by ALPN; the certificate's subject
-//! is who acts. On the local endpoint the operating system admits only the
-//! node's account and the machine's administrators and proves who
-//! connected ([`local`](crate::plane::local)). Either way who acts is what
+//! is who acts, and a connection over loopback is no exception. On the
+//! local endpoint the operating system admits only the node's account, the
+//! machine's administrators and whom `[operate] admit` names, and proves
+//! who connected ([`local`](crate::plane::local)). Either way who acts is what
 //! the connection proved, never a name the caller says. A connection is
 //! one thread, no async runtime: requests are answered in turn, so a
-//! surface following the node holds a connection of its own for its wait.
+//! surface following the node holds a connection of its own for its wait;
+//! a thread that answered one is kept for the next (`plane::workers`).
 //! A stop wakes every wait, and ends every connection reading.
 
 use std::collections::BTreeMap;
@@ -30,6 +32,7 @@ use crate::plane::board::Published;
 use crate::plane::local::{self, Acceptor, Cancel};
 use crate::plane::role::Role;
 use crate::plane::served::{answer, answer_local};
+use crate::plane::workers::Workers;
 
 /// How long a stop waits on its own wake-up connection, and on a
 /// connection to end.
@@ -59,13 +62,21 @@ enum Place {
     Local(PathBuf),
 }
 
-/// A connection being answered, and what ends a read it waits in.
+/// A connection being answered, whether it has ended, and what ends a read
+/// it waits in.
 struct Connection {
-    thread: JoinHandle<()>,
+    done: Arc<AtomicBool>,
     cancel: Option<Cancel>,
 }
 
-type Connections = Arc<Mutex<Vec<Connection>>>;
+/// The connections being answered, and the threads answering them.
+#[derive(Default)]
+struct Served {
+    connections: Mutex<Vec<Connection>>,
+    workers: Arc<Workers>,
+}
+
+type Connections = Arc<Served>;
 
 /// An operate listener, serving until it is stopped or dropped.
 pub struct Listener {
@@ -104,22 +115,26 @@ impl Listener {
 
     /// Serve the same on the node's local endpoint called `endpoint` — a
     /// named pipe on Windows, a Unix domain socket elsewhere — to every
-    /// surface on this machine the operating system lets open it, each
-    /// caller the user its process runs as. Plain HTTP/2 inside the
-    /// machine, said in `audit` where it is made (ADR-0063 clause 1).
+    /// surface on this machine the operating system lets open it: the
+    /// node's account, the machine's administrators and whom `admitted`
+    /// names (`[operate] admit`), each caller the account its process runs
+    /// as. Plain HTTP/2 inside the machine, said in `audit` where it is
+    /// made (ADR-0063 clause 1).
     ///
     /// # Errors
     ///
     /// A name that would leave the endpoints' folder
-    /// ([`local::place`]), an endpoint that cannot be made, or no thread.
+    /// ([`local::place`]), an admitted name the system does not know, an
+    /// endpoint that cannot be made, or no thread.
     pub fn local(
         endpoint: &str,
+        admitted: &[String],
         published: Arc<dyn Published>,
         stated: Option<Role>,
         audit: &ProgramAudit,
     ) -> Result<Self, String> {
         let path = local::place(endpoint)?;
-        let acceptor = Acceptor::bind(&path)?;
+        let acceptor = Acceptor::bind(&path, admitted)?;
         let where_ = path.display().to_string();
         let _ = audit.record(
             "operate.local",
@@ -178,11 +193,17 @@ impl Listener {
                 Place::Local(path) => local::wake(path),
             });
         }
-        let served =
-            std::mem::take(&mut *self.served.lock().unwrap_or_else(PoisonError::into_inner));
-        for connection in served {
+        let connections = std::mem::take(
+            &mut *self
+                .served
+                .connections
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for connection in &connections {
             ended(connection);
         }
+        self.served.workers.stop(WAKE);
     }
 }
 
@@ -207,19 +228,16 @@ fn serving(
     })
 }
 
-/// A connection ended: a read it waits in cancelled until its thread
-/// finishes — a pipe has no timeout to look between — and the thread
-/// joined. One that does not finish within [`WAKE`] is left to end alone.
-fn ended(connection: Connection) {
-    if let Some(cancel) = &connection.cancel {
-        let until = Instant::now() + WAKE;
-        while !connection.thread.is_finished() && Instant::now() < until {
+/// A connection ended: a read it waits in cancelled until it has ended — a
+/// pipe has no timeout to look between — waiting at most [`WAKE`]; one
+/// that has not by then is left to end alone.
+fn ended(connection: &Connection) {
+    let until = Instant::now() + WAKE;
+    while !connection.done.load(Ordering::SeqCst) && Instant::now() < until {
+        if let Some(cancel) = &connection.cancel {
             cancel.cancel();
-            std::thread::sleep(Duration::from_micros(200));
         }
-    }
-    if connection.thread.is_finished() || connection.cancel.is_none() {
-        let _ = connection.thread.join();
+        std::thread::sleep(Duration::from_micros(200));
     }
 }
 
@@ -234,7 +252,7 @@ fn accept(listener: &TcpListener, serve: &Arc<Serve>, served: &Connections) {
             continue;
         };
         let serve = Arc::clone(serve);
-        spawned(served, None, move || answer(connection, peer, &serve));
+        answered(served, None, move || answer(connection, peer, &serve));
     }
 }
 
@@ -249,18 +267,25 @@ fn accept_local(acceptor: &Acceptor, serve: &Arc<Serve>, served: &Connections) {
         };
         let cancel = stream.cancel();
         let serve = Arc::clone(serve);
-        spawned(served, Some(cancel), move || answer_local(stream, &serve));
+        answered(served, Some(cancel), move || answer_local(stream, &serve));
     }
 }
 
-fn spawned(served: &Connections, cancel: Option<Cancel>, work: impl FnOnce() + Send + 'static) {
-    let Ok(thread) = std::thread::Builder::new()
-        .name("xmip-operate-connection".to_string())
-        .spawn(work)
-    else {
-        return;
-    };
-    let mut served = served.lock().unwrap_or_else(PoisonError::into_inner);
-    served.retain(|connection| !connection.thread.is_finished());
-    served.push(Connection { thread, cancel });
+/// `work` answered on one of the listener's threads (`plane::workers`),
+/// and kept among its connections until it has ended.
+fn answered(served: &Connections, cancel: Option<Cancel>, work: impl FnOnce() + Send + 'static) {
+    let done = Arc::new(AtomicBool::new(false));
+    let ending = Arc::clone(&done);
+    let mut connections = served
+        .connections
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    connections.retain(|connection| !connection.done.load(Ordering::SeqCst));
+    let running = served.workers.run(Box::new(move || {
+        work();
+        ending.store(true, Ordering::SeqCst);
+    }));
+    if running {
+        connections.push(Connection { done, cancel });
+    }
 }

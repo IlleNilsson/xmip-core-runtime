@@ -99,13 +99,15 @@ codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNil
 # The local operate endpoint (`plane::local`; ADR-0014, amendment
 # 2026-10-13): on Windows a named pipe — `interprocess`, the pipe the named
 # pipe transport makes, behind a safe surface, its security descriptor
-# written from SDDL — and the two calls it does not make: ending a read from
-# another thread and the connecting user's name. And a directory watch
-# (`directory_watch`): a change notification and the event that ends its wait.
+# written from SDDL — and the calls it does not make: opening it as a client
+# lent for identification alone, ending a read from another thread, the
+# connecting account and the identifier of an account `[operate] admit`
+# names (open problem 35). And a directory watch (`directory_watch`): a
+# change notification and the event that ends its wait.
 [target.'cfg(windows)'.dependencies]
 interprocess = "2.4"
 widestring = "1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_Security_Authentication_Identity", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Pipes", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
 # and its name. Only the node's side asks who connected, so only `node`

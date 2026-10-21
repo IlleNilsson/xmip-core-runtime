@@ -87,8 +87,9 @@ pub fn admitted(who: Option<&str>, role: Role, act: &str, target: &str) -> Resul
     match who {
         None => Err(format!(
             "REFUSED. Nothing proved who asks to {act} {target}; an act is taken from the \
-             identity the connection proved — a client certificate, or the host's own user \
-             on loopback — never from what the caller says (ADR-0009)"
+             identity the connection proved — a client certificate, or on the node's local \
+             endpoint the account the operating system names — never from what the caller \
+             says, nor from where it connects (ADR-0009)"
         )),
         Some(_) if role.may_operate() => Ok(()),
         Some(who) => Err(format!(

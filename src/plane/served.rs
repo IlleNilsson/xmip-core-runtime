@@ -6,14 +6,13 @@
 //! 2026-10-06; ADR-0062).
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
 use authenticate::x509::Name;
 use net::http::{Request, Response};
-use net::http2::Server;
+use net::http2::{Boxed, BoxedServer};
 use net::watched::Watched;
 use observe::{Noun, Order};
 use serde_json::{Value, json};
@@ -62,7 +61,11 @@ pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
             Ok((guarded, who))
         });
     match guarded {
-        Ok((guarded, who)) => calls(Watched::new(guarded, || serve.stopped()), &who, serve),
+        Ok((guarded, who)) => calls(
+            Box::new(Watched::new(guarded, || serve.stopped())),
+            &who,
+            serve,
+        ),
         Err(reason) => noted(serve, &peer.to_string(), &format!("refused: {reason}")),
     }
 }
@@ -77,13 +80,18 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
     if let Err(error) = stream.watch(WATCH) {
         return noted(serve, &who, &format!("refused: {error}"));
     }
-    calls(Watched::new(stream, || serve.stopped()), &who, serve);
+    calls(
+        Box::new(Watched::new(stream, || serve.stopped())),
+        &who,
+        serve,
+    );
 }
 
 /// Each call on a connection answered in turn, until the surface or the
-/// listener ends it.
-fn calls<S: Read + Write>(connection: S, who: &str, serve: &Serve) {
-    let Ok(mut server) = Server::handshake(connection) else {
+/// listener ends it: HTTP/2 compiled in `net`, as it ships, over the
+/// connection boxed (`net::http2::boxed`).
+fn calls(connection: Boxed<'_>, who: &str, serve: &Serve) {
+    let Ok(mut server) = BoxedServer::handshake(connection) else {
         return;
     };
     while !serve.stopped() {
