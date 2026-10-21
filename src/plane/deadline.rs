@@ -114,8 +114,17 @@ pub(crate) fn kept(shared: &Arc<Shared>) {
     }
 }
 
+/// How long a passed deadline's cancel waits for its call to end before it
+/// cancels again.
+const AGAIN: Duration = Duration::from_millis(1);
+
 /// Watch `shared`'s deadline until it ends, cancelling the asking line's
-/// read whenever one passes.
+/// read whenever one passes, and again until its call has ended. A cancel
+/// reaches only a read in flight: one made while the call was still
+/// connecting, or before its thread, kept from its processor, began the
+/// read, is lost, and the read then waited for good — the runtime's
+/// deadline test hung beside eight processor-bound jobs (2026-10-21). Until
+/// then a passed deadline cancelled once.
 fn watch(shared: &Arc<Shared>) {
     let deadline = &shared.deadline;
     let mut armed = deadline
@@ -123,6 +132,15 @@ fn watch(shared: &Arc<Shared>) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     while !shared.ending() {
+        if armed.fired {
+            // Its call has not ended: `disarm` takes `fired`.
+            let again = Instant::now() + AGAIN;
+            armed = deadline.changed.wait_until(&deadline.armed, armed, again).0;
+            if armed.fired && armed.until.is_none() {
+                shared.cancel_asking();
+            }
+            continue;
+        }
         let Some(until) = armed.until else {
             armed = deadline.changed.wait(&deadline.armed, armed);
             continue;
@@ -190,6 +208,64 @@ mod tests {
             "{spent:?} of processor time"
         );
         drop(surface);
-        drop(held.join());
+        drop(accepted(held, &place(&name).expect("a name")));
+    }
+
+    /// A read begun only after its call's deadline passed — the asking
+    /// thread kept from its processor that long — is cancelled still: the
+    /// deadline cancels again until its call has ended.
+    #[cfg(all(windows, feature = "node"))]
+    #[test]
+    fn a_read_begun_after_its_deadline_passed_is_cancelled_still() {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let name = format!("xmip-deadline-late-{}", std::process::id());
+        let path = place(&name).expect("a name");
+        let acceptor = Acceptor::bind(&path).expect("bound");
+        let held = std::thread::spawn(move || acceptor.accept().map(|stream| (stream, acceptor)));
+        let mut stream =
+            crate::plane::local::connect(&path, Duration::from_secs(5)).expect("connected");
+        let shared = Arc::new(Shared {
+            address: path.display().to_string(),
+            reach: crate::plane::line::Reach::Local(path),
+            patience: Duration::ZERO,
+            deadline: Deadline::default(),
+            retry: Vec::new(),
+            state: Mutex::new(crate::plane::remote::State::default()),
+            told: Wake::new(),
+            ending: Arc::new(AtomicBool::new(false)),
+            connecting: AtomicBool::new(false),
+            following: Mutex::new(None),
+            asking: Mutex::new(None),
+        });
+        kept(&shared);
+
+        shared.deadline.arm(Duration::ZERO);
+        while !shared.deadline.passed() {
+            std::thread::yield_now();
+        }
+        *shared.asking.lock().expect("the slot") = Some(stream.cancel());
+        let read = stream.read(&mut [0u8; 1]);
+
+        assert!(read.is_err(), "cancelled, not answered: {read:?}");
+        assert!(shared.deadline.disarm(), "the deadline passed first");
+        shared.ending.store(true, Ordering::SeqCst);
+        shared.deadline.wake();
+        drop(stream);
+        drop(accepted(held, &place(&name).expect("a name")));
+    }
+
+    /// `held`, a stand-in node's accept, joined once it has taken a
+    /// connection: knocked on until it has (`net::accepting::woken`). A
+    /// client that connected and left before the accept began is passed
+    /// over by it, and the accept waits for the next: joined bare, a
+    /// stand-in kept from its processor that long waited for good, and the
+    /// test with it (2026-10-21, beside eight processor-bound jobs).
+    #[cfg(feature = "node")]
+    fn accepted<T>(held: std::thread::JoinHandle<T>, path: &Path) -> std::thread::Result<T> {
+        net::accepting::woken(held, Duration::from_secs(1), || {
+            crate::plane::local::wake(path)
+        })
     }
 }
