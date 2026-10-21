@@ -173,7 +173,9 @@ default = ["node"]
 # exports, section 19's signing (`xmip_operator_sign_v1`, by the authority
 # `[provision.operator]` names) and section 21, a host's listener in Xmip's
 # own protection and the certificate an authority issues it
-# (`secure_listener`). Everything a remote surface has, too.
+# (`secure_listener`), and section 22, a node's certificate from the
+# cluster's authority (`ffi::node_certificate`). Everything a remote surface
+# has, too.
 node = [
     "remote",
     "dep:serde",

@@ -314,6 +314,7 @@ pub unsafe extern "C" fn xmip_publication_run_v1(
         run_list::NODES => RunList::Nodes,
         run_list::ROLES => RunList::Roles,
         run_list::ONLINE => RunList::Online,
+        run_list::REAL => RunList::Real,
         _ => return status::INVALID,
     };
     let Some(run) = &read.publication.run else {

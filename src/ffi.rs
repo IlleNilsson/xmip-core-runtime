@@ -44,6 +44,8 @@ pub mod loaded_contract;
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_module;
 #[cfg(feature = "node")]
+pub mod node_certificate;
+#[cfg(feature = "node")]
 pub mod operate;
 #[cfg(feature = "node")]
 pub mod order;
