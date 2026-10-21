@@ -1,11 +1,12 @@
-//! A scan of a queue the node sends: what waits in it that no live claim
-//! holds, claimed oldest first — on a Sequential Send Port only the oldest
-//! of each sequence nothing is in flight or blocked before — each under a
-//! place the Send pool admits, and none past the last place it has. A
-//! Journey that failed stays in its queue for an operator, passed over by
-//! its place's mark in the Ledger without its Journey being read — unless
-//! it blocks its sequence, which is read to know which — and counted in the
-//! queue's index of failed Journeys; a Retry moves it to a new place, or,
+//! A scan of a queue the node sends: what is due in it that no live claim
+//! holds, claimed in the order it fell due — on a Sequential Send Port only
+//! the oldest of each sequence nothing is in flight or blocked before —
+//! each under a place the Send pool admits, and none past the last place it
+//! has. Only what is due is read (the owner, 2026-10-19). A Journey that
+//! failed stays in its queue for an operator, in a part of the queue's
+//! index of its own, never read — unless it blocks its sequence, which is
+//! read to know which — and counted in the queue's index of failed
+//! Journeys; a Retry moves it to a new place, or,
 //! where it blocks its sequence, makes it one to send where it is. Every
 //! claim a scan takes reads the Journey's place again under it, its due
 //! time with it, and sends only what is still there, due and to be sent.
@@ -21,6 +22,7 @@ use xcore::JourneyId;
 
 use super::due::Due;
 use super::pass::{Found, read, sequence};
+use super::reading::Reading;
 use super::under_claim::{Under, under_claim};
 use super::{Departure, Owned};
 use crate::departure::Progress;
@@ -28,19 +30,17 @@ use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 use crate::sending::Destination;
 
-/// The most entries of a queue read at once.
-const PAGE: u32 = 64;
-
-/// What waits in `queue`, bound for `to`, that this node is to send now —
+/// What is due in `queue`, bound for `to`, that this node is to send now —
 /// each under a place its Send pool admits, and where none is left the
-/// queue starved until one frees — read oldest first, each that no live
-/// claim holds claimed. On a Sequential Send Port only the
-/// oldest of each sequence that nothing is in flight, waiting or blocked
-/// before it, read before it is claimed and again once it is. A place
-/// marked failed is passed over unread, unless it blocks its sequence; a
-/// place whose retry is not yet due is passed over unclaimed, its due time
-/// noted for the queue ([`Due`]); a read of the whole queue forgets every
-/// place passed over that is gone from it.
+/// queue starved until one frees — read in the order it fell due, only
+/// what is due ([`Reading`]), each that no live claim holds claimed. On a
+/// Sequential Send Port only the oldest of each sequence that nothing is in
+/// flight, waiting or blocked before it, read before it is claimed and
+/// again once it is, its queue read in its order with what waits for a
+/// retry and, where it blocks, what failed. A retry not yet due is passed
+/// over unclaimed, the queue woken for its due time ([`Due`]); a read to
+/// the end of what is due forgets every place passed over that is gone
+/// from it.
 pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
     runtime.send.reading(queue);
@@ -74,95 +74,92 @@ fn scanning(
         .collect();
     let mut present = HashSet::new();
     let mut found = Vec::new();
-    let mut from = 0;
+    let mut reading = Reading::of(step, queue, ordered.as_ref().map(|_| blocking));
+    let mut answered = false;
     loop {
-        let asked = Instant::now();
-        let page = match step.storage.read_held(queue, from, PAGE) {
-            Ok(page) => page,
+        let next = match reading.next(waits) {
+            Ok(next) => next,
             Err(why) => {
                 step.queue_read(to.name(), Some(why.to_string()));
                 return (found, false);
             }
         };
-        step.queue_read(to.name(), None);
-        let read_all = page.held.len() < PAGE as usize;
-        for held in &page.held {
-            from = held.sequence + 1;
-            let id = held.hold.journey;
-            let place = (id, held.sequence);
-            present.insert(place);
-            if held.failed && !blocking {
-                continue;
-            }
-            if let Some(left) = page.due_in(held) {
-                // Its retry is not due: nothing claims it, and on a
-                // Sequential Port its sequence waits behind it.
-                waits.waits(asked + left);
-                let Some((key, _)) = &ordered else {
-                    continue;
-                };
-                match read(runtime, id, &held.hold.body) {
-                    Ok(Found::Waiting(waiting)) => {
-                        busy.insert(sequence(&waiting.0.message, key.as_deref()));
-                    }
-                    Ok(_) => {}
-                    Err(_) => return (found, false),
-                }
-                continue;
-            }
-            let known = {
-                let state = step.lock();
-                state.owned.contains_key(&id)
-                    || state.taking.contains(&id)
-                    || state
-                        .passed
-                        .get(&queue)
-                        .is_some_and(|set| set.contains(&place))
-            };
-            if known {
-                continue;
-            }
-            if step.admit(1) == 0 {
-                // The pool is full: the rest waits unclaimed, read again
-                // once a place frees, so nothing claimed lapses behind a
-                // backlog and nothing waits in memory.
-                step.starve(queue);
-                return (found, false);
-            }
-            let body = &held.hold.body;
-            let Some((key, on_failure)) = &ordered else {
-                // Claimed on a send thread, so a backlog's claims share
-                // their commits rather than wait one by one here.
-                step.lock().taking.insert(id);
-                found.push(Ready::Unclaimed(Unclaimed {
-                    to: to.clone(),
-                    queue,
-                    place,
-                    body: body.clone(),
-                }));
-                continue;
-            };
-            let taken = in_sequence(
-                runtime,
-                (to, queue),
-                (place, body),
-                (key.as_deref(), *on_failure),
-                &mut busy,
-            );
-            match taken {
-                Taken::One(one) => {
-                    found.push(Ready::Claimed(Box::new(owned(step, to, queue, *one))))
-                }
-                Taken::Passed => step.withdraw(1),
-                Taken::Unanswered => {
-                    step.withdraw(1);
-                    return (found, false);
-                }
-            }
+        if !answered {
+            answered = true;
+            step.queue_read(to.name(), None);
         }
-        if read_all {
+        let Some((held, due_in, asked)) = next else {
             step.read_whole(queue, &present);
             return (found, true);
+        };
+        let id = held.hold.journey;
+        let place = (id, held.sequence);
+        present.insert(place);
+        if held.failed && !blocking {
+            continue;
+        }
+        if let Some(left) = due_in {
+            // Its retry is not due: nothing claims it, and on a
+            // Sequential Port its sequence waits behind it.
+            waits.wakes_at(asked + left);
+            let Some((key, _)) = &ordered else {
+                continue;
+            };
+            match read(runtime, id, &held.hold.body) {
+                Ok(Found::Waiting(waiting)) => {
+                    busy.insert(sequence(&waiting.0.message, key.as_deref()));
+                }
+                Ok(_) => {}
+                Err(_) => return (found, false),
+            }
+            continue;
+        }
+        let known = {
+            let state = step.lock();
+            state.owned.contains_key(&id)
+                || state.taking.contains(&id)
+                || state
+                    .passed
+                    .get(&queue)
+                    .is_some_and(|set| set.contains(&place))
+        };
+        if known {
+            continue;
+        }
+        if step.admit(1) == 0 {
+            // The pool is full: the rest waits unclaimed, read again
+            // once a place frees, so nothing claimed lapses behind a
+            // backlog and nothing waits in memory.
+            step.starve(queue);
+            return (found, false);
+        }
+        let body = &held.hold.body;
+        let Some((key, on_failure)) = &ordered else {
+            // Claimed on a send thread, so a backlog's claims share
+            // their commits rather than wait one by one here.
+            step.lock().taking.insert(id);
+            found.push(Ready::Unclaimed(Unclaimed {
+                to: to.clone(),
+                queue,
+                place,
+                body: body.clone(),
+            }));
+            continue;
+        };
+        let taken = in_sequence(
+            runtime,
+            (to, queue),
+            (place, body),
+            (key.as_deref(), *on_failure),
+            &mut busy,
+        );
+        match taken {
+            Taken::One(one) => found.push(Ready::Claimed(Box::new(owned(step, to, queue, *one)))),
+            Taken::Passed => step.withdraw(1),
+            Taken::Unanswered => {
+                step.withdraw(1);
+                return (found, false);
+            }
         }
     }
 }

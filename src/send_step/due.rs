@@ -33,10 +33,11 @@ impl Due {
         }
     }
 
-    /// One more waiting, due at `at`: the earliest kept.
-    pub(super) fn waits(&mut self, at: Instant) {
+    /// Woken for at `at`, the earliest kept: a retry the queue's read found
+    /// not yet due, which the read counts by Xmip Storage's count of them
+    /// (`super::reading`).
+    pub(super) fn wakes_at(&mut self, at: Instant) {
         self.at = Some(earlier(self.at, at));
-        self.waiting += 1;
     }
 
     /// One more waiting, due at `at`, as its hand-on noted it once Xmip
