@@ -182,7 +182,7 @@ fn a_scan_that_read_its_queue_before_a_retry_was_handed_on_never_sends_it_again(
                 Operation::HandOn,
                 Box::new(move || {
                     reading.after(
-                        Operation::ReadHeld,
+                        Operation::ReadDue,
                         Box::new(move || {
                             read.send(()).expect("told");
                             was_settled.recv_timeout(patience).expect("settled");

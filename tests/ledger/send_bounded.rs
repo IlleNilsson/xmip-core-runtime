@@ -204,7 +204,7 @@ fn a_claim_in_flight_is_renewed_while_a_scan_is_held_up() {
                     (Arc::new(Gate::default()), Arc::new(AtomicBool::new(false)));
                 let (held, at) = (Arc::clone(&scanning), Arc::clone(&stuck));
                 interleaved.before(
-                    Operation::ReadHeld,
+                    Operation::ReadDue,
                     Box::new(move || {
                         at.store(true, Ordering::Release);
                         held.wait();
@@ -350,7 +350,7 @@ fn a_queue_storage_does_not_read_is_shown_at_its_port_until_it_is_read_again() {
         sender(node(), far, out(|_| {})),
         |runtime, _, _| {
             dispatching(runtime, |_| {
-                interleaved.fail(Operation::ReadHeld, u32::MAX);
+                interleaved.fail(Operation::ReadDue, u32::MAX);
                 let unread = || {
                     runtime
                         .send

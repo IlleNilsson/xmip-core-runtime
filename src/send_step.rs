@@ -102,6 +102,7 @@ mod figures;
 mod fixture;
 mod journey_act;
 mod pass;
+mod reading;
 mod registered;
 mod renewal;
 mod scan;
