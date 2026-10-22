@@ -21,7 +21,15 @@ fn claimed_trait(capability: &str) -> &str {
 
 /// Every Module `modules` starts, opened from its library and started.
 #[cfg(feature = "dynamic-loading")]
-pub struct Libraries(Vec<crate::ffi::loaded_module::LoadedModule>);
+pub struct Libraries {
+    opened: Vec<crate::ffi::loaded_module::LoadedModule>,
+    /// The Work Process units opened, each by its module and its unit.
+    flows: Vec<(
+        String,
+        String,
+        std::sync::Arc<crate::ffi::loaded_work_process::UnitModule>,
+    )>,
+}
 
 #[cfg(feature = "dynamic-loading")]
 impl Libraries {
@@ -35,8 +43,10 @@ impl Libraries {
     pub fn open(modules: &[ModuleConfiguration]) -> Result<Self, Vec<String>> {
         use crate::ffi::loaded_contract::{CONTRACT, LoadedContract, expectation};
         use crate::ffi::loaded_module::LoadedModule;
+        use crate::ffi::loaded_work_process::{self, WORK_PROCESS};
 
         let mut opened = Vec::new();
+        let mut flows = Vec::new();
         let mut problems = Vec::new();
 
         for module in modules {
@@ -53,10 +63,29 @@ impl Libraries {
                 .iter()
                 .map(|claim| claimed_trait(&claim.capability))
                 .collect();
+            if traits == [WORK_PROCESS] {
+                // A Work Process unit: opened once, its flow taken by every
+                // Work Process naming one of its units (`crate::work_step`).
+                match LoadedModule::open(
+                    std::path::Path::new(path),
+                    &loaded_work_process::expectation(),
+                ) {
+                    Ok(loaded) => {
+                        // A unit's library holds one unit, its descriptor's
+                        // standard naming it (`process::export`).
+                        let unit = loaded.descriptor().standard.clone();
+                        let loaded = loaded_work_process::UnitModule::shared(loaded);
+                        flows.push((module.name.clone(), unit, loaded));
+                    }
+                    Err(why) => problems.push(format!("the module '{}': {why}", module.name)),
+                }
+                continue;
+            }
             if traits != [CONTRACT] {
                 problems.push(format!(
                     "the module '{}' claims {traits:?}; this runtime drives the \
-                     '{CONTRACT}' table of a loaded module and no other yet",
+                     '{CONTRACT}' and '{WORK_PROCESS}' tables of a loaded module and no \
+                     other yet",
                     module.name
                 ));
                 continue;
@@ -76,7 +105,7 @@ impl Libraries {
             }
         }
 
-        let libraries = Self(opened);
+        let libraries = Self { opened, flows };
         if problems.is_empty() {
             Ok(libraries)
         } else {
@@ -87,7 +116,23 @@ impl Libraries {
 
     /// The Modules opened, each with the file it came from.
     pub fn modules(&self) -> impl Iterator<Item = &crate::ffi::loaded_module::LoadedModule> {
-        self.0.iter()
+        let units = self.flows.iter().map(|(_, _, unit)| unit.module());
+        self.opened.iter().chain(units)
+    }
+
+    /// The flow of the unit `unit` of the module `module`, where it was
+    /// opened.
+    ///
+    /// # Errors
+    /// None of that name was opened, or its table does not drive.
+    pub fn flow(&self, module: &str, unit: &str) -> Result<Box<dyn process::Flow>, String> {
+        let (_, _, loaded) = self
+            .flows
+            .iter()
+            .find(|(of, name, _)| of == module && name == unit)
+            .ok_or_else(|| format!("no module '{module}' opened holds the unit '{unit}'"))?;
+        crate::ffi::loaded_work_process::LoadedFlow::of(loaded.clone())
+            .map(|flow| Box::new(flow) as Box<dyn process::Flow>)
     }
 }
 
@@ -97,7 +142,7 @@ impl Libraries {
 #[cfg(feature = "dynamic-loading")]
 impl Drop for Libraries {
     fn drop(&mut self) {
-        for loaded in &self.0 {
+        for loaded in &self.opened {
             if let Ok(contract) = crate::ffi::loaded_contract::LoadedContract::of(loaded) {
                 // A module that refuses to stop is let go all the same: the
                 // node is stopping, and nothing is left to call it.

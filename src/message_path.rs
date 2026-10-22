@@ -32,6 +32,8 @@ use crate::pickup::Pickup;
 use crate::receiving::ReceiveGate;
 use crate::send_step::SendStep;
 use crate::sending::Sends;
+use crate::sequence;
+use crate::work_step::WorkStep;
 
 /// A Party, by the identifier the gates handed back.
 ///
@@ -96,6 +98,11 @@ pub struct Runtime<'a> {
     /// it sends every Journey this node sends from the Ledger
     /// ([`crate::send_step`]).
     pub send: &'a SendStep,
+
+    /// The node's Work Process step: what it runs of the Journeys bound for
+    /// a Work Process, a turn of its Instance at a time
+    /// ([`crate::work_step`]).
+    pub work: &'a WorkStep,
 
     /// What the node holds at once beside each pool's own bound: the
     /// arrivals its Receive Locations carry and their bytes, and the bytes
@@ -211,6 +218,10 @@ pub fn carry(
     // back is written while the Ledger syncs (ADR-0018, amendment
     // 2026-10-20); the cycle itself ends once the Publication is durable.
     if let Arrived::Routed { work, facts, .. } = &arrived {
+        // A Journey bound for a Work Process this node runs is read now.
+        for hold in &lined.holds {
+            runtime.work.ask(hold.queue);
+        }
         runtime.send.handed(lined, &journeys, work, facts, &durable);
     } else {
         runtime.send.withdrawn(&lined);
@@ -270,12 +281,26 @@ fn published(
         origin: runtime.origin,
         send: runtime.send,
         sends: runtime.sends,
+        gathering: runtime.gathering,
+        cluster: runtime.work.cluster(),
     };
     let (message, location) = (&work.message, &gate.location);
+    // Where its Stream came in, and its places in the sequences it holds
+    // end to end, its own Receive Location's by default (`sequence`).
+    let points = (
+        location.as_str(),
+        gate.port.as_str(),
+        gate.points.as_slice(),
+    );
+    let cluster = runtime.work.cluster();
+    let received = match sequence::received(cluster, points, runtime.gathering, message) {
+        Ok(received) => received,
+        Err(reason) => return (Arrived::Failed { reason }, None),
+    };
     match ledger::publish(
         &publisher,
         pickup,
-        location,
+        (location, received),
         message,
         routing,
         &unmatched,

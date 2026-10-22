@@ -568,6 +568,7 @@ mod tests {
             treatment: MessageTreatment::default(),
             sends,
             send: crate::fixture::send_step(crate::ledger::in_memory()),
+            work: crate::fixture::work_step(crate::ledger::in_memory()),
             budget: crate::fixture::node_budget(),
             transport_identifiers: &[],
             message_identifiers: &[],

@@ -31,6 +31,7 @@ pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL, RECEIVE_SWEEP};
 use crate::budget::Held;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
+use crate::sequence::Point;
 use crate::stopping::Stopping;
 use drain::Drain;
 use pace::Ended;
@@ -48,6 +49,11 @@ pub struct ReceiveGate {
     pub location: String,
     pub accept: Acceptance,
     pub identity: IdentityPolicy,
+    /// Its Receive Port, where it has one.
+    pub port: String,
+    /// The sequences its Streams hold a place in end to end: its own by
+    /// default, one Stream at a time (`crate::sequence`).
+    pub points: Vec<Point>,
 }
 
 impl ReceiveGate {
@@ -97,6 +103,8 @@ impl ReceiveGate {
                 location: configured.name.clone(),
                 accept,
                 identity: IdentityPolicy::default(),
+                port: String::new(),
+                points: vec![Point::receive_location(&configured.name)],
             })
         } else {
             Err(problems)
@@ -111,6 +119,8 @@ impl ReceiveGate {
             location: location.to_string(),
             accept,
             identity: IdentityPolicy::default(),
+            port: String::new(),
+            points: vec![Point::receive_location(location)],
         }
     }
 }

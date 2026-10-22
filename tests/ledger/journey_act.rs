@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use configure::{ExecutionStyle, OnFailure};
+use configure::OnFailure;
 use journey::JourneyState;
 use observe::Act;
 use transport::TransportError;
@@ -27,7 +27,7 @@ use xmip_core_runtime::message_path::carry;
 
 use super::receive_cycle::{node, on_node};
 use super::sending::{
-    dispatching, journey, memory, onward, order, out, sender, took, until, waiting,
+    dispatching, in_order, journey, memory, onward, order, out, sender, took, until, waiting,
 };
 
 /// A far end refusing `order <refused>` for good until `fixed`.
@@ -107,8 +107,7 @@ fn blocked_then(act: Act) -> (Vec<String>, JourneyState, Vec<JourneyId>) {
     let fixed = Arc::new(AtomicBool::new(false));
     let (far, taken) = FarEnd::answering(broken_for(3, &fixed));
     let sequential = out(|port| {
-        port.execution_style = Some(ExecutionStyle::Sequential);
-        port.on_failure = Some(OnFailure::Block);
+        in_order(OnFailure::Block)(port);
     });
     let mut state = JourneyState::Active;
     let mut left = Vec::new();

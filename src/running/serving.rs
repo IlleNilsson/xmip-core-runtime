@@ -24,6 +24,7 @@ use crate::recognized::Recognized;
 use crate::send_step::{self, SendStep};
 use crate::sending::Sends;
 use crate::stopping::Stopping;
+use crate::work_step::{self, WorkStep};
 
 /// What the serving thread owns for the node's life.
 pub(super) struct Served {
@@ -38,6 +39,7 @@ pub(super) struct Served {
     pub(super) parties: Recognized,
     pub(super) pickup: Arc<Pickup>,
     pub(super) send: Arc<SendStep>,
+    pub(super) work: Arc<WorkStep>,
     pub(super) budget: NodeBudget,
     pub(super) sends: Sends,
     pub(super) receiving: Vec<Receiving>,
@@ -60,6 +62,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             pickup,
             sends,
             send,
+            work,
             budget,
             receiving,
         } = served;
@@ -90,6 +93,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             treatment: MessageTreatment::default(),
             sends: &sends,
             send: &send,
+            work: &work,
             budget: &budget,
             transport_identifiers: &transport_identifiers,
             message_identifiers: &message_identifiers,
@@ -112,6 +116,8 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
         std::thread::scope(|scope| {
             let (runtime, tally, counted) = (&runtime, &*tally, &counted);
             scope.spawn(move || send_step::dispatch(scope, runtime, counted));
+            let pickup_ref = &*pickup;
+            scope.spawn(move || work_step::dispatch(scope, runtime, pickup_ref));
             std::thread::scope(|serving| {
                 for location in &receiving {
                     let (pickup, stopping) = (&*pickup, &*stopping);
@@ -129,6 +135,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
                 serving.spawn(move || pick_up_released(runtime, pickup, stopping));
             });
             runtime.send.close();
+            runtime.work.close();
         });
     })
 }

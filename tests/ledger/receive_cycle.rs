@@ -26,6 +26,7 @@ use xmip_core_runtime::receiving::ReceiveGate;
 use xmip_core_runtime::send_step::SendStep;
 use xmip_core_runtime::sending::Sends;
 use xmip_core_runtime::tuning::Tuning;
+use xmip_core_runtime::work_step::{Running, WorkStep};
 
 use super::say;
 
@@ -101,6 +102,29 @@ pub fn on_node<T>(
     sender: Sender,
     run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
 ) -> T {
+    // The send side's tests carry Streams side by side, as a Location whose
+    // correlation set gives every Stream a key of its own does: its gate
+    // holds no sequence. A Location's own sequence is `work_process.rs`'s.
+    on_working_node(
+        storage,
+        (chunk, subscriptions),
+        (sender, Vec::new()),
+        |r, p, g| {
+            let mut opened = g.clone();
+            opened.points.clear();
+            run(r, p, &opened)
+        },
+    )
+}
+
+/// [`on_node`]'s receive path, on a node that also runs `running`, the
+/// Work Processes its work step takes turns of.
+pub fn on_working_node<T>(
+    storage: &Arc<dyn XmipStorage>,
+    (chunk, subscriptions): (usize, &[Subscription]),
+    (sender, running): (Sender, Vec<Running>),
+    run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
+) -> T {
     let circumstance = Always::circumstance();
     let authenticators: [&dyn Authenticator; 1] = [&circumstance];
     let policies: [&dyn Authorizer; 1] = [&Open];
@@ -118,6 +142,13 @@ pub fn on_node<T>(
         &tuning,
         audit,
     );
+    let work = WorkStep::new(
+        (&configure::fixture::test_cluster().scope(), &node),
+        Arc::clone(storage),
+        tuning.send(),
+        None,
+        running,
+    );
     let origin = xaudit::origin::Origin::here("ledger-test");
     let runtime = Runtime {
         ids: &UuidV7Generator,
@@ -129,6 +160,7 @@ pub fn on_node<T>(
         treatment: MessageTreatment::default(),
         sends: &sends,
         send: &step,
+        work: &work,
         budget: &NodeBudget::of(&tuning),
         transport_identifiers: &[],
         message_identifiers: &[],

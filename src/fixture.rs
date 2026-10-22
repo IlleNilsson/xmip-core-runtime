@@ -190,6 +190,20 @@ pub fn send_step(storage: &Arc<dyn XmipStorage>) -> &'static crate::send_step::S
     )
 }
 
+/// A Work Process step over `storage` of the test cluster's first node,
+/// running no Work Process.
+#[must_use]
+pub fn work_step(storage: &Arc<dyn XmipStorage>) -> &'static crate::work_step::WorkStep {
+    let cluster = configure::fixture::test_cluster();
+    Box::leak(Box::new(crate::work_step::WorkStep::new(
+        (&cluster.scope(), &cluster.node_scope(0)),
+        Arc::clone(storage),
+        crate::pool::Limits::per_hardware_thread(1, std::time::Duration::from_secs(60)),
+        None,
+        Vec::new(),
+    )))
+}
+
 /// A send step over `storage` of the test cluster's node at `node`
 /// (`xmip:///<cluster>/node/<name>`), run as `tuning` says.
 #[must_use]

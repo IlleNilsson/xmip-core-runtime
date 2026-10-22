@@ -45,6 +45,10 @@ pub mod loaded_contract;
 /// Opening a module for real. Behind the feature that has always named it.
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_module;
+/// The work process trait of a loaded module: a Work Process unit compiled
+/// from a design (ADR-0066, amendment 2026-10-22).
+#[cfg(feature = "dynamic-loading")]
+pub mod loaded_work_process;
 #[cfg(feature = "node")]
 pub mod node_certificate;
 #[cfg(feature = "node")]

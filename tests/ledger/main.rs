@@ -76,6 +76,7 @@ mod send_streamed;
 mod send_waiting;
 mod sending;
 mod untold;
+mod work_process;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -156,6 +157,7 @@ fn child() {
         "halt" => receive_until_killed(&halting(test_node(&place))),
         "publish" => send_killed::publish_until_killed(&test_node(&place)),
         "sending" => send_killed::send_until_killed(&test_node(&place)),
+        "working" => work_process::work_until_killed(&test_node(&place)),
         other => panic!("no child does '{other}'"),
     }
 }

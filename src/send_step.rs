@@ -59,10 +59,12 @@
 //! no Location is tried again from here. A send already under way keeps the
 //! Journey's identifier as its deduplication key.
 //!
-//! **A Sequential Send Port keeps its order** by its order key: a sequence
-//! has one Journey in flight at a time, the oldest in its queue first, and
-//! one that failed blocks it, or is set aside, as its `on_failure` says
-//! (`runtime-model.md` section 3, *A claim is not ordering*).
+//! **A Send Port naming a correlation set keeps its order** per key, and a
+//! Journey of a Stream that holds its Receive Location's sequence waits for
+//! it: a Journey that does not head its sequences is passed, its claim given
+//! back, and taken up once it does; one that failed blocks its sequence, or
+//! is set aside, as its set's `on_failure` says (`crate::sequence`;
+//! `runtime-model.md` section 3, *A claim is not ordering*).
 //!
 //! **A Journey that failed waits for an operator** in its queue: Retry
 //! sends it again, Dismiss ends it Dismissed, each an act through the
@@ -112,7 +114,7 @@ use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
 pub use figures::{FAILED_WINDOW, FailedJourney, PortFigures};
-pub use pass::{Ended, Found, read, send, sequence};
+pub use pass::{Ended, Found, read, send};
 
 /// The Send pool's threads for each of the machine's hardware threads,
 /// where the node's `[tuning] send_threads_per_hardware_thread` does not
@@ -138,7 +140,7 @@ pub type Settled<'a> = &'a (dyn Fn(&Departure, &Ended) + Sync);
 
 /// One Journey being sent: its Journey and Message, the identity it arrived
 /// with, where it leads, the queue it waits in, the claim it is sent under,
-/// where its send stands and, on a Sequential Send Port, its sequence.
+/// and where its send stands.
 #[derive(Clone, Debug)]
 pub struct Departure {
     pub work: ReceivedWork,
@@ -147,8 +149,6 @@ pub struct Departure {
     pub queue: u128,
     pub claim: Claim,
     pub progress: Progress,
-    /// Its order key's value, on a Sequential Send Port.
-    pub sequence: Option<String>,
     /// The latest this node is sure its claim holds, on its own clock: a
     /// lease from when the request that last confirmed the claim was asked,
     /// so no two clocks are ever compared.
@@ -231,6 +231,11 @@ struct State {
     /// index of them in the Ledger, so the evidence outlives a restart,
     /// covers what another node failed, and is bounded however many fail.
     failing: BTreeMap<String, figures::Window>,
+    /// Every queue to read now: a Stream ahead in a sequence has ended, so
+    /// what waited behind it may go on (`crate::sequence`).
+    rescan: bool,
+    /// The queues it sends from, read again on a rescan.
+    served: Vec<u128>,
     closed: bool,
 }
 
@@ -348,7 +353,6 @@ impl SendStep {
                 queue,
                 claim,
                 progress: Progress::of(journey.attempts),
-                sequence: None,
                 until,
                 durable: Some(durable.clone()),
             };
@@ -380,6 +384,12 @@ impl SendStep {
             state.asked.push(queue);
         }
         drop(state);
+        self.wake.notify_all();
+    }
+
+    /// Read every queue now: a Stream ahead in a sequence has ended.
+    pub fn rescan(&self) {
+        self.lock().rescan = true;
         self.wake.notify_all();
     }
 
@@ -415,11 +425,11 @@ impl SendStep {
     }
 }
 
-/// Whether what is bound for `to` is sent in sequence: a Sequential Send
-/// Port, or a Group with one among its Ports.
+/// Whether what is bound for `to` passes its Send Port in a sequence: a
+/// Send Port naming a correlation set, or a Group with one among its Ports.
 pub(crate) fn sequential(sends: &Sends, to: &Subscriber) -> bool {
     match sends.to(to) {
-        Destination::Ports(ports) => ports.iter().any(|port| port.sequence().is_some()),
+        Destination::Ports(ports) => ports.iter().any(|port| port.point.is_some()),
         Destination::Process | Destination::Nowhere => false,
     }
 }

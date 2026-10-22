@@ -7,7 +7,7 @@
 //! context, an audit record's properties — is in the body alone.
 
 use context::property::PARTY;
-use journey::Journey;
+use journey::{Journey, JourneyState};
 use message::Message;
 use observe::Scope;
 use persist::storage::{
@@ -39,8 +39,29 @@ pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
                 .messages()
                 .last()
                 .map(|held| held.message_id.value()),
+            origin: held(journey).map(|received| received.origin),
+            open: held(journey).is_some_and(|received| open(journey.state, received.skips)),
             ..JourneyFacts::default()
         },
+    }
+}
+
+/// Where `journey`'s Stream came in, where it holds a place in a sequence.
+fn held(journey: &Journey) -> Option<&journey::Received> {
+    journey
+        .received()
+        .filter(|received| !received.sequences.is_empty())
+}
+
+/// Whether a Journey in `state` still keeps its Stream's places in the
+/// sequences it holds end to end: until it is completed or dismissed, and,
+/// where its sequences block on a failure, while it waits failed for an
+/// operator (`crate::sequence`).
+const fn open(state: JourneyState, skips: bool) -> bool {
+    match state {
+        JourneyState::Completed | JourneyState::Dismissed => false,
+        JourneyState::Failed => !skips,
+        _ => true,
     }
 }
 

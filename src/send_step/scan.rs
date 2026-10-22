@@ -1,34 +1,31 @@
 //! A scan of a queue the node sends: what is due in it that no live claim
-//! holds, claimed in the order it fell due — on a Sequential Send Port only
-//! the oldest of each sequence nothing is in flight or blocked before —
-//! each under a place the Send pool admits, and none past the last place it
-//! has. Only what is due is read (the owner, 2026-10-19). A Journey that
-//! failed stays in its queue for an operator, in a part of the queue's
-//! index of its own, never read — unless it blocks its sequence, which is
-//! read to know which — and counted in the queue's index of failed
-//! Journeys; a Retry moves it to a new place, or,
-//! where it blocks its sequence, makes it one to send where it is. Every
-//! claim a scan takes reads the Journey's place again under it, its due
-//! time with it, and sends only what is still there, due and to be sent.
+//! holds, claimed in the order it fell due, each under a place the Send
+//! pool admits, and none past the last place it has. Only what is due is
+//! read (the owner, 2026-10-19). A Journey that failed stays in its queue
+//! for an operator, in a part of the queue's index of its own, never read,
+//! and counted in the queue's index of failed Journeys; a Retry moves it to
+//! a new place. What goes one at a time per key is the sequence's: a
+//! Journey that does not head its sequence is passed by its send and taken
+//! up again once it does (`crate::sequence`). Every claim a scan takes
+//! reads the Journey's place again under it, its due time with it, and
+//! sends only what is still there, due and to be sent.
 
 use std::collections::HashSet;
 use std::time::Instant;
 
-use configure::OnFailure;
 use context::IdentityFacts;
 use persist::storage::Claim;
 use route::Subscriber;
 use xcore::JourneyId;
 
 use super::due::Due;
-use super::pass::{Found, read, sequence};
+use super::pass::Found;
 use super::reading::Reading;
 use super::under_claim::{Under, under_claim};
 use super::{Departure, Owned};
 use crate::departure::Progress;
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
-use crate::sending::Destination;
 
 /// What is due in `queue`, bound for `to`, that this node is to send now —
 /// each under a place its Send pool admits, and where none is left the
@@ -57,24 +54,9 @@ fn scanning(
     waits: &mut Due,
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
-    let ordered = match runtime.sends.to(to) {
-        Destination::Ports(ports) => ports.iter().find_map(|port| {
-            port.sequence()
-                .map(|(key, on_failure)| (key.map(str::to_string), on_failure))
-        }),
-        Destination::Process | Destination::Nowhere => None,
-    };
-    let blocking = matches!(ordered, Some((_, OnFailure::Block)));
-    let mut busy: HashSet<String> = step
-        .lock()
-        .owned
-        .values()
-        .filter(|owned| owned.queue == queue)
-        .filter_map(|owned| owned.sequence.clone())
-        .collect();
     let mut present = HashSet::new();
     let mut found = Vec::new();
-    let mut reading = Reading::of(step, queue, ordered.as_ref().map(|_| blocking));
+    let mut reading = Reading::of(step, queue);
     let mut answered = false;
     loop {
         let next = match reading.next(waits) {
@@ -95,23 +77,12 @@ fn scanning(
         let id = held.hold.journey;
         let place = (id, held.sequence);
         present.insert(place);
-        if held.failed && !blocking {
+        if held.failed {
             continue;
         }
         if let Some(left) = due_in {
-            // Its retry is not due: nothing claims it, and on a
-            // Sequential Port its sequence waits behind it.
+            // Its retry is not due: nothing claims it.
             waits.wakes_at(asked + left);
-            let Some((key, _)) = &ordered else {
-                continue;
-            };
-            match read(runtime, id, &held.hold.body) {
-                Ok(Found::Waiting(waiting)) => {
-                    busy.insert(sequence(&waiting.0.message, key.as_deref()));
-                }
-                Ok(_) => {}
-                Err(_) => return (found, false),
-            }
             continue;
         }
         let known = {
@@ -133,47 +104,26 @@ fn scanning(
             step.starve(queue);
             return (found, false);
         }
-        let body = &held.hold.body;
-        let Some((key, on_failure)) = &ordered else {
-            // Claimed on a send thread, so a backlog's claims share
-            // their commits rather than wait one by one here.
-            step.lock().taking.insert(id);
-            found.push(Ready::Unclaimed(Unclaimed {
-                to: to.clone(),
-                queue,
-                place,
-                body: body.clone(),
-            }));
-            continue;
-        };
-        let taken = in_sequence(
-            runtime,
-            (to, queue),
-            (place, body),
-            (key.as_deref(), *on_failure),
-            &mut busy,
-        );
-        match taken {
-            Taken::One(one) => found.push(Ready::Claimed(Box::new(owned(step, to, queue, *one)))),
-            Taken::Passed => step.withdraw(1),
-            Taken::Unanswered => {
-                step.withdraw(1);
-                return (found, false);
-            }
-        }
+        // Claimed on a send thread, so a backlog's claims share their
+        // commits rather than wait one by one here.
+        step.lock().taking.insert(id);
+        found.push(Ready::Unclaimed(Unclaimed {
+            to: to.clone(),
+            queue,
+            place,
+            body: held.hold.body.clone(),
+        }));
     }
 }
 
 /// What a scan found to send.
 pub(super) enum Ready {
-    /// Claimed and read, in its place in a sequence.
-    Claimed(Box<Departure>),
     /// Under a place admitted, to be claimed and read on a send thread.
     Unclaimed(Unclaimed),
 }
 
-/// A Journey a scan found that no live claim holds, in a queue that is not
-/// ordered: where it leads, its queue, its place and what is kept beside it.
+/// A Journey a scan found that no live claim holds: where it leads, its
+/// queue, its place and what is kept beside it.
 pub(super) struct Unclaimed {
     to: Subscriber,
     queue: u128,
@@ -209,7 +159,7 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
 /// the departure it is sent as: its claim surely held a lease from when it
 /// was asked.
 fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Departure {
-    let (work, facts, claim, sequence, asked) = one;
+    let (work, facts, claim, asked) = one;
     let departure = Departure {
         progress: Progress::of(work.journey.attempts),
         work,
@@ -217,7 +167,6 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
         to: to.clone(),
         queue,
         claim,
-        sequence,
         until: asked + step.lease,
         durable: None,
     };
@@ -226,9 +175,8 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
 }
 
 /// What a claim took: the Journey and its Message, the identity it arrived
-/// with, the claim, its sequence on a Sequential Send Port, and when the
-/// claim was asked.
-type Took = (ReceivedWork, IdentityFacts, Claim, Option<String>, Instant);
+/// with, the claim, and when the claim was asked.
+type Took = (ReceivedWork, IdentityFacts, Claim, Instant);
 
 impl super::SendStep {
     /// The Journey at `place` in `queue` passed over by every scan after.
@@ -246,7 +194,7 @@ enum Taken {
     Unanswered,
 }
 
-/// An entry of a queue that is not ordered, at its `place`, bound for `to`:
+/// An entry of a queue, at its `place`, bound for `to`:
 /// claimed, then read with its place ([`under_claim`]).
 fn claimed_first(
     runtime: &Runtime<'_>,
@@ -266,7 +214,7 @@ fn claimed_first(
     let under = under_claim(runtime, queue, place, body);
     if let Under::Waiting(found) = under {
         let (work, facts) = *found;
-        return Taken::One(Box::new((work, facts, claim, None, asked)));
+        return Taken::One(Box::new((work, facts, claim, asked)));
     }
     let _ = step.storage.release(&claim);
     match under {
@@ -282,72 +230,6 @@ fn claimed_first(
         }
         Under::Not(_) => {
             step.passed(queue, place);
-            Taken::Passed
-        }
-        Under::Unanswered => Taken::Unanswered,
-    }
-}
-
-/// An entry of a Sequential Send Port's queue: read, its sequence told,
-/// and claimed only where nothing of its sequence before it is in flight,
-/// held by another, or failed and blocking (`busy`) — and, once claimed,
-/// read again with its place ([`under_claim`]): another node may have sent
-/// it and let go of its place between the first read and the claim, or
-/// handed it on to wait for a retry.
-fn in_sequence(
-    runtime: &Runtime<'_>,
-    (to, queue): (&Subscriber, u128),
-    (place, body): ((JourneyId, u64), &[u8]),
-    (key, on_failure): (Option<&str>, OnFailure),
-    busy: &mut HashSet<String>,
-) -> Taken {
-    let step = runtime.send;
-    let id = place.0;
-    let work = match read(runtime, id, body) {
-        Ok(Found::Waiting(found)) => {
-            let (work, _) = *found;
-            work
-        }
-        // Blocking, it is read at every scan, its place marked failed or
-        // not: a Retry keeps its place.
-        Ok(Found::Failed(work)) if on_failure == OnFailure::Block => {
-            busy.insert(sequence(&work.message, key));
-            return Taken::Passed;
-        }
-        Ok(Found::Failed(_) | Found::Finished) => {
-            step.passed(queue, place);
-            return Taken::Passed;
-        }
-        Ok(Found::Unreadable(why)) => {
-            step.passed(queue, place);
-            step.failed(&format!("the Journey {id} is not sent: {why}"));
-            return Taken::Passed;
-        }
-        Err(_) => return Taken::Unanswered,
-    };
-    let told = sequence(&work.message, key);
-    if !busy.insert(told.clone()) {
-        return Taken::Passed;
-    }
-    let token = runtime.ids.next_u128();
-    let asked = Instant::now();
-    let claim = match step.storage.claim(id, &step.node, token, step.lease) {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return Taken::Passed,
-        Err(_) => return Taken::Unanswered,
-    };
-    let under = under_claim(runtime, queue, place, body);
-    if let Under::Waiting(found) = under {
-        let (work, facts) = *found;
-        return Taken::One(Box::new((work, facts, claim, Some(told), asked)));
-    }
-    let _ = step.storage.release(&claim);
-    match under {
-        // Moved or settled meanwhile: read afresh at the next scan, its
-        // sequence held until then.
-        Under::Waiting(_) | Under::Moved | Under::Not(_) => Taken::Passed,
-        Under::NotDue(at) => {
-            step.not_due((to.name(), queue), at);
             Taken::Passed
         }
         Under::Unanswered => Taken::Unanswered,

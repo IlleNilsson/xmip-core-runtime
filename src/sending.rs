@@ -9,16 +9,19 @@
 //! Port (ADR-0064), or the Send Locations its `send_locations` names, in
 //! that order; a Send Port Group reaches each of its Ports by a Journey of
 //! its own, opened at its Publication. Each Port's
-//! policy — `retry`, `failover`, `execution_style`, `order_key`,
-//! `on_failure` (ADR-0031, amendment 2026-10-01) — is its design's.
+//! policy — `retry` and `failover` (ADR-0031, amendment 2026-10-01) — is
+//! its design's; the correlation set it names is the sequence its Journeys
+//! pass it in, one at a time per key (`crate::sequence`).
 
 use std::time::Duration;
 
-use configure::{ConfiguredLocation, DesignedSendPort, ExecutionStyle, OnFailure, SendPortGroup};
+use configure::{ConfiguredLocation, DesignedSendPort, SendPortGroup};
 use persist::storage::named;
 use route::Subscriber;
 use send::SendChain;
 use transport::Transport;
+
+use crate::sequence::{Point, PointKind};
 
 /// A Send Location running: its configuration, the chain that resolves the
 /// identity it presents (ADR-0006), and the transport built for it once,
@@ -37,6 +40,8 @@ pub struct Port<'a> {
     pub name: &'a str,
     pub locations: Vec<&'a Sending>,
     pub policy: Option<&'a DesignedSendPort>,
+    /// The sequence its Journeys pass it in, where it names a set.
+    pub point: Option<&'a Point>,
 }
 
 impl Port<'_> {
@@ -66,21 +71,6 @@ impl Port<'_> {
             .and_then(|policy| policy.failover)
             .is_some_and(|failover| failover == configure::Failover::Next)
     }
-
-    /// Where the Port is Sequential: the property its sequences are ordered
-    /// by — none orders them all as one — and what a sequence does when
-    /// one of it fails (`runtime-model.md` section 3, *A claim is not
-    /// ordering*).
-    #[must_use]
-    pub fn sequence(&self) -> Option<(Option<&str>, OnFailure)> {
-        let policy = self.policy?;
-        if policy.execution_style != Some(ExecutionStyle::Sequential) {
-            return None;
-        }
-        // A Sequential Port states on_failure, or it is refused at startup.
-        let on_failure = policy.on_failure.unwrap_or(OnFailure::Block);
-        Some((policy.order_key.as_deref(), on_failure))
-    }
 }
 
 /// Where a destination routing matched is sent.
@@ -102,6 +92,9 @@ pub struct Sends {
     pub locations: Vec<Sending>,
     pub groups: Vec<SendPortGroup>,
     pub ports: Vec<DesignedSendPort>,
+    /// The sequences of the Send Ports and the Work Processes that name a
+    /// correlation set, each by its kind and name.
+    pub points: Vec<Point>,
 }
 
 impl Sends {
@@ -177,6 +170,10 @@ impl Sends {
                 .filter_map(|location| self.location(location))
                 .collect(),
             policy,
+            point: self
+                .points
+                .iter()
+                .find(|point| point.kind == PointKind::SendPort && point.name == name),
         }
     }
 

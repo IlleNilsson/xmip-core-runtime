@@ -69,6 +69,7 @@ pub mod pool;
 #[cfg(feature = "node")]
 pub mod presented;
 #[cfg(feature = "node")]
+#[cfg(feature = "node")]
 pub mod receive_certificate;
 #[cfg(feature = "node")]
 pub mod receiving;
@@ -84,6 +85,8 @@ pub mod secure_listener;
 pub mod send_step;
 #[cfg(feature = "node")]
 pub mod sending;
+#[cfg(feature = "node")]
+pub mod sequence;
 #[cfg(feature = "node")]
 pub mod service;
 #[cfg(feature = "node")]
@@ -102,3 +105,5 @@ pub mod stream_share;
 pub mod tuning;
 #[cfg(feature = "remote")]
 mod wire;
+#[cfg(feature = "node")]
+pub mod work_step;

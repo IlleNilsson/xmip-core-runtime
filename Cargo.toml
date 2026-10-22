@@ -66,6 +66,11 @@ xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xm
 xevent = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main", optional = true }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", optional = true }
+# A Work Process: its compiled program, its engine and its unit; and BPMN
+# 2.0, the default design format the designer reads and compiles
+# (ADR-0066, amendment 2026-10-22).
+assign = { package = "xmip-core-assign", git = "https://github.com/IlleNilsson/xmip-core-assign", branch = "main", optional = true }
+process = { package = "xmip-core-process", git = "https://github.com/IlleNilsson/xmip-core-process", branch = "main", optional = true }
 # The one transport trait: every Location's transport is built through it,
 # once, from the technologies the program starting the node linked, and
 # handed the guard the node terminates its receives' TLS with
@@ -135,6 +140,8 @@ persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
 # One real route technology, so a test proves arrival reads a prefixed
 # property through what a node loads rather than through a stand-in.
+# A Work Process the tests run is drawn in BPMN 2.0 and compiled here.
+process-bpmn = { package = "xmip-core-process-bpmn", path = "../../core/capability/process/bpmn" }
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
 # The tests write a Subscription's filter as the expression it is (ADR-0066).
 path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
@@ -194,6 +201,8 @@ node = [
     "dep:route",
     "dep:xevent",
     "dep:configure",
+    "dep:process",
+    "dep:assign",
     "dep:transport",
     "dep:persist",
     "dep:secret",

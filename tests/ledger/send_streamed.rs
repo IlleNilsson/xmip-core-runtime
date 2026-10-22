@@ -66,6 +66,7 @@ fn fan_out(test: &str, length: u64, drains: &[Drain]) -> (usize, u64) {
                 name: "All".to_string(),
                 send_ports: PORTS.iter().map(ToString::to_string).collect(),
             }],
+            points: Vec::new(),
         },
         tuning: quick(),
         node: node(),

@@ -76,8 +76,7 @@ fn a_sequential_scan_never_sends_a_journey_another_node_sent_between_its_read_an
     });
     let (far, taken) = FarEnd::answering(taking());
     let sequential = out(|port| {
-        port.execution_style = Some(configure::ExecutionStyle::Sequential);
-        port.on_failure = Some(configure::OnFailure::Block);
+        super::sending::in_order(configure::OnFailure::Block)(port);
     });
     on_node(
         &storage,

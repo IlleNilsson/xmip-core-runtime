@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use journey::{ChainCause, Journey, JourneyMessageRef};
+use journey::{ChainCause, Journey, JourneyMessageRef, Received};
 use message::Message;
 use persist::storage::{AuditEntry, Durable, Hold, Publication, XmipStorage};
-use route::{Routing, Subscriber};
+use route::{Gathering, Routing, Subscriber};
 use xaudit::audit_record::AuditRecord;
 use xaudit::origin::Origin;
 use xcore::{AuditId, Clock, ExecutionPhase, IdGenerator, JourneyId, Severity};
@@ -43,6 +43,10 @@ pub struct Publisher<'a> {
     pub origin: &'a Origin,
     pub send: &'a SendStep,
     pub sends: &'a Sends,
+    /// What a sequence's keys read of the Message, and the cluster its
+    /// sequences are named in (`crate::sequence`).
+    pub gathering: &'a Gathering,
+    pub cluster: &'a str,
 }
 
 /// A Journey a Publication opens: the Subscription that matched and where
@@ -120,7 +124,7 @@ pub(crate) fn opened(
 pub fn publish(
     publisher: &Publisher<'_>,
     pickup: &Pickup,
-    location: &str,
+    (location, received): (&str, (Received, Vec<Hold>)),
     message: &Message,
     routing: &Routing,
     unmatched: &Unmatched<'_>,
@@ -130,7 +134,19 @@ pub fn publish(
         message_id: message.message_id(),
         stream_id: message.sections()[0].stream.id(),
     };
-    let opened = opened(routing, pickup, held, publisher.ids);
+    let (received, places) = received;
+    let mut opened = opened(routing, pickup, held, publisher.ids);
+    // Every Journey born from the Stream says where it came in and which
+    // sequences its Stream holds a place in (`crate::sequence`).
+    for one in &mut opened {
+        one.journey = one.journey.clone().received_as(received.clone());
+    }
+    let promoted = publisher
+        .gathering
+        .promote(message)
+        .map_err(|why| why.to_string())?;
+    let send_places =
+        crate::sequence::places(publisher.cluster, publisher.sends, &mut opened, &promoted)?;
     let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
     let (holding, mut lined, dead) = if journeys.is_empty() {
         let now = publisher.clock.unix_timestamp_nanos();
@@ -148,6 +164,12 @@ pub fn publish(
         .holds()
         .iter()
         .chain(&lined.holds)
+        .chain(if journeys.is_empty() {
+            &[][..]
+        } else {
+            &places[..]
+        })
+        .chain(&send_places)
         .cloned()
         .collect();
     let record = super::message_record(message);
