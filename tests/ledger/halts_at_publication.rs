@@ -128,6 +128,21 @@ impl XmipStorage for HaltsAtPublication {
         self.0.hand_on(hand_on)
     }
 
+    fn turn(&self, turn: &persist::storage::Turn) -> Result<bool, PersistError> {
+        self.0.turn(turn)
+    }
+
+    fn read_instance(
+        &self,
+        instance: u128,
+    ) -> Result<Option<persist::storage::InstanceRecord>, PersistError> {
+        self.0.read_instance(instance)
+    }
+
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        self.0.read_correlation(correlation)
+    }
+
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {
         self.0.write_audit(entry)
     }

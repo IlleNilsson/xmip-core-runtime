@@ -164,7 +164,7 @@ pub struct LoadedModule {
     /// — specification section 3: unloading frees the library's code, and any
     /// pointer still held into it becomes a jump into unmapped memory.
     #[expect(dead_code, reason = "held so the library outlives the instance")]
-    library: Library,
+    library: Option<Library>,
 }
 
 impl std::fmt::Debug for LoadedModule {
@@ -192,6 +192,22 @@ impl LoadedModule {
             .map_err(|why| format!("{} would not open: {why}", path.display()))?;
 
         let create = resolve(&library, path)?;
+        Self::create(path, create, Some(library), expected)
+    }
+
+    /// A module whose entrypoint is linked into this test program: the
+    /// boundary crossed as a library's would be, with no library opened.
+    #[cfg(test)]
+    pub(crate) fn linked(create: CreateModuleFn, expected: &Expectation) -> Result<Self, String> {
+        Self::create(Path::new("linked"), create, None, expected)
+    }
+
+    fn create(
+        path: &Path,
+        create: CreateModuleFn,
+        library: Option<Library>,
+        expected: &Expectation,
+    ) -> Result<Self, String> {
         let host = host_table();
 
         // SAFETY: all-zero is a valid `Module` — null pointers, and `None`

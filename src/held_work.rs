@@ -148,7 +148,6 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             to,
             queue,
             claim,
-            sequence: None,
             until: asked + step.lease(),
             durable: None,
         });

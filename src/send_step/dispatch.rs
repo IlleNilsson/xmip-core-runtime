@@ -39,6 +39,7 @@ pub fn dispatch<'scope, 'env>(
             (to, queue)
         })
         .collect();
+    step.lock().served = served.iter().map(|(_, queue)| *queue).collect();
     step.lock().ports = served
         .iter()
         .map(|(to, _)| (to.name().to_string(), blocks(runtime, to)))
@@ -68,10 +69,8 @@ pub fn dispatch<'scope, 'env>(
                 continue;
             }
             for ready in scan(runtime, to, *queue) {
-                match ready {
-                    Ready::Claimed(departure) => run(&pool, runtime, settled, *departure),
-                    Ready::Unclaimed(unclaimed) => take(&pool, runtime, settled, unclaimed),
-                }
+                let Ready::Unclaimed(unclaimed) = ready;
+                take(&pool, runtime, settled, unclaimed);
             }
         }
         if all {
@@ -89,14 +88,21 @@ impl SendStep {
         loop {
             let now = Instant::now();
             let wakes = state.wakes_at(until);
-            let ready =
-                state.closed || !state.handed.is_empty() || !state.asked.is_empty() || wakes <= now;
+            let ready = state.closed
+                || state.rescan
+                || !state.handed.is_empty()
+                || !state.asked.is_empty()
+                || wakes <= now;
             if ready {
                 break;
             }
             state = self.wake.wait_until(&self.state, state, wakes).0;
         }
         let now = Instant::now();
+        if std::mem::take(&mut state.rescan) {
+            let served = state.served.clone();
+            state.asked.extend(served);
+        }
         let handed = state.handed.drain(..).collect();
         let mut asked = std::mem::take(&mut state.asked);
         for (queue, due) in &mut state.due {
@@ -118,9 +124,6 @@ impl SendStep {
     fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
         let id = departure.work.journey.journey_id();
         let mut state = self.lock();
-        if departure.sequence.is_some() && !state.asked.contains(&departure.queue) {
-            state.asked.push(departure.queue);
-        }
         match &ended {
             Ended::Waiting { after, .. } => {
                 // Its backoff from now, once Xmip Storage took its hand-on:
@@ -133,6 +136,11 @@ impl SendStep {
                     .entry(departure.queue)
                     .or_insert_with(|| Due::of(port))
                     .noted(Instant::now() + *after);
+            }
+            Ended::Behind => {
+                drop(state);
+                let _ = self.storage.release(&departure.claim);
+                state = self.lock();
             }
             Ended::Untried => {
                 drop(state);
@@ -224,8 +232,21 @@ fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: D
         return;
     };
     let ended = send(runtime, departure);
+    let sequenced = departure
+        .work
+        .journey
+        .received()
+        .is_some_and(|received| !received.sequences.is_empty())
+        || crate::sequence::point_of(runtime.sends, &departure.to).is_some();
+    let closed = sequenced && matches!(ended, Ended::Completed(_) | Ended::Failed { .. });
     if let Some(departure) = sending.departure.take() {
         runtime.send.settle(settled, departure, ended);
+    }
+    // A Journey of a Stream that holds a sequence has ended: what waits
+    // behind it in either step may go on now (`crate::sequence`).
+    if closed {
+        runtime.send.rescan();
+        runtime.work.ask_every();
     }
 }
 

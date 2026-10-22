@@ -49,6 +49,11 @@ pub enum Ended {
     /// again, where a scan claims it afresh. Until 2026-10-16 such a pass was
     /// written Recovering, an entry and a backoff for a try never made.
     Untried,
+    /// Its Stream does not head a sequence it holds a place in
+    /// (`crate::sequence`): nothing is tried or written, its claim is
+    /// given back, and it waits in its queue until the Stream ahead of it
+    /// has ended and a scan takes it up.
+    Behind,
     /// Xmip Storage did not take the hand-on, in words: the claim lapses,
     /// and the Journey is sent again — at least once, never lost.
     Unwritten(String),
@@ -64,6 +69,11 @@ pub enum Ended {
 /// pass that tried nothing ([`Ended::Untried`]).
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let step = runtime.send;
+    match heads(runtime, departure) {
+        Ok(true) => {}
+        Ok(false) => return Ended::Behind,
+        Err(why) => return Ended::Unwritten(why),
+    }
     let Departure {
         work,
         facts,
@@ -173,6 +183,16 @@ fn written(
         state,
     );
     journey.attempts = departure.progress.attempts();
+    // Its place in its Send Port's sequence is let go once it is sent, or
+    // once it failed where a failure lets the rest pass.
+    let leaves_point = match point(departure) {
+        Some((queue, skips)) => match state {
+            JourneyState::Completed => Some(queue),
+            JourneyState::Failed if skips => Some(queue),
+            _ => None,
+        },
+        None => None,
+    };
     let hand_on = HandOn {
         claim: departure.claim.clone(),
         result: crate::ledger::journey_record(&journey),
@@ -182,7 +202,10 @@ fn written(
             vec![departure.queue]
         } else {
             Vec::new()
-        },
+        }
+        .into_iter()
+        .chain(leaves_point)
+        .collect(),
         queued: Vec::new(),
         requeued: Vec::new(),
         failed,
@@ -216,13 +239,37 @@ fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
 }
 
 /// Whether a Journey bound for `to` that failed blocks its sequence:
-/// `on_failure = "block"` on a Sequential Send Port.
+/// a Send Port naming a correlation set whose `on_failure` is `block`.
 pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
     match runtime.sends.to(to) {
-        Destination::Ports(ports) => ports
-            .iter()
-            .any(|port| matches!(port.sequence(), Some((_, OnFailure::Block)))),
+        Destination::Ports(ports) => ports.iter().any(|port| {
+            port.point
+                .is_some_and(|point| point.on_failure == OnFailure::Block)
+        }),
         Destination::Process | Destination::Nowhere => false,
+    }
+}
+
+/// The place `departure` holds in its Send Port's sequence, where the Port
+/// names a correlation set: its queue, and whether a failure lets it go.
+/// The Journey was told it in the write that brought it to the Port.
+fn point(departure: &Departure) -> Option<(u128, bool)> {
+    let sequenced = departure.work.journey.sequence?;
+    Some((sequenced.queue, sequenced.skips))
+}
+
+/// Whether `departure` may be sent now: its Stream heads every sequence it
+/// holds end to end, and it heads its Send Port's (`crate::sequence`).
+fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
+    let storage = runtime.storage.as_ref();
+    if !crate::sequence::stream_heads(storage, &departure.work.journey)? {
+        return Ok(false);
+    }
+    match point(departure) {
+        Some((queue, _)) => {
+            crate::sequence::heads(storage, queue, departure.work.journey.journey_id().value())
+        }
+        None => Ok(true),
     }
 }
 
@@ -293,17 +340,6 @@ pub fn read(runtime: &Runtime<'_>, journey: JourneyId, body: &[u8]) -> Result<Fo
         Ok(facts) => Ok(Found::Waiting(Box::new((work, facts)))),
         Err(why) => Ok(Found::Unreadable(why.to_string())),
     }
-}
-
-/// The value of `key` in `message`'s context — what a Sequential Send
-/// Port's sequences are told apart by — or empty, where it carries none or
-/// the Port names none: one sequence for all of them.
-#[must_use]
-pub fn sequence(message: &Message, key: Option<&str>) -> String {
-    key.and_then(|key| message.context().get(key))
-        .and_then(xcore::ScalarValue::text)
-        .map(std::borrow::Cow::into_owned)
-        .unwrap_or_default()
 }
 
 /// The mechanism of that name this node carries: one its authenticators

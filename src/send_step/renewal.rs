@@ -241,8 +241,6 @@ mod tests {
     fn owning(step: &SendStep, claim: Claim) {
         let owned = Owned {
             claim,
-            queue: 1,
-            sequence: None,
             port: "Out".to_string(),
             standing: Standing::confirmed(Instant::now() + step.lease),
         };

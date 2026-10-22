@@ -50,6 +50,7 @@ use crate::start::read;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
 use crate::storage::Reached;
+use crate::work_step::WorkStep;
 
 #[cfg(test)]
 mod accepted;
@@ -230,6 +231,19 @@ impl Running {
             linked.audit.clone(),
         ));
         SendStep::register(&send);
+        let cluster = publication::cluster_location(&tree.service.cluster_name);
+        #[cfg(feature = "dynamic-loading")]
+        let running = crate::work_step::opened(&tree, &cluster, &libraries, &linked)
+            .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
+        #[cfg(not(feature = "dynamic-loading"))]
+        let running = Vec::new();
+        let work = Arc::new(WorkStep::new(
+            (&cluster, &scope),
+            Arc::clone(storage.storage()),
+            tree.tuning.send(),
+            linked.audit.clone(),
+            running,
+        ));
         let stopping = Arc::new(Stopping::default());
         let tally = Arc::new(Tally::default());
         let origin = origin(linked.audit.as_ref(), &scope);
@@ -245,6 +259,7 @@ impl Running {
                 pickup: Arc::clone(&pickup),
                 sends,
                 send: Arc::clone(&send),
+                work: Arc::clone(&work),
                 budget: NodeBudget::of(&tree.tuning),
                 receiving,
             },
@@ -511,7 +526,7 @@ address = "{far}"
     }
 
     /// [`node`], its Send Port `Out` stating `policy` — its `retry`,
-    /// `execution_style` and the rest, one key a line.
+    /// its `correlation_set` and the rest, one key a line.
     fn node_sending(receive: &str, far: &str, policy: &str) -> String {
         node(receive, far).replace(
             "[[xmip_applications.send_ports]]\nname = \"Out\"\n",
@@ -728,20 +743,63 @@ address = "{far}"
         sync + 2 * started.elapsed()
     }
 
+    /// `body` posted over `connection` as the sender `who` names itself in
+    /// its `X-Sender` header, and the node's answer read: accepted.
+    fn posted_as(connection: &mut std::net::TcpStream, who: &str, body: &[u8]) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let head = format!(
+            "POST /orders HTTP/1.1\r\nHost: node\r\nX-Sender: {who}\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len()
+        );
+        connection.write_all(head.as_bytes()).expect("writes");
+        connection.write_all(body).expect("writes");
+        let mut reader = BufReader::new(connection.try_clone().expect("clones"));
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("answered");
+        assert!(line.contains(" 2"), "the node answered {line}");
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).expect("a header");
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().expect("a length");
+            }
+        }
+        let mut answer = vec![0; length];
+        reader.read_exact(&mut answer).expect("the answer's body");
+    }
+
     #[test]
     fn eight_senders_at_once_are_carried_side_by_side() {
-        // An HTTP Receive Location's arrivals are unordered — each request
-        // its own — so eight senders' Streams are carried at once on the
-        // Location's pool, and their Ledger writes share a group commit's
-        // disk sync rather than waiting one by one.
+        // A Receive Location carries one Stream at a time end to end unless a
+        // correlation set spreads them (`crate::sequence`): this one's is keyed
+        // by the sender each request names, so one sender's Streams go one at
+        // a time and eight senders' side by side, their Ledger writes sharing a
+        // group commit's disk sync.
         const SENDERS: u32 = 8;
         const EACH: u32 = 50;
         let (far, far_address) = kept_far_end();
         let receive = unheld().to_string();
-        let path = written("eight", &node_keeping_connections(&receive, &far_address));
+        let spread = format!(
+            "{}\n[[correlation_sets]]\nname = \"PerSender\"\nkeys = [\"http.header.x-sender\"]\n",
+            node_keeping_connections(&receive, &far_address).replace(
+                "receive_port = \"Loopback\"\n",
+                "receive_port = \"Loopback\"\ncorrelation_set = \"PerSender\"\n",
+            )
+        );
+        let path = written("eight", &spread);
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
-        let to_node = format!("http://{receive}/orders");
-        deliver(&HttpTransport::loopback(), &to_node, b"warm");
+        posted_as(
+            &mut std::net::TcpStream::connect(&receive).expect("connects"),
+            "warm",
+            b"warm",
+        );
         taken_at(&far);
 
         let started = Instant::now();
@@ -753,14 +811,13 @@ address = "{far}"
         });
         let senders: Vec<_> = (0..SENDERS)
             .map(|sender| {
-                let at = to_node.clone();
+                let at = receive.clone();
                 std::thread::spawn(move || {
-                    // Each sender keeps its one connection.
-                    let sending = HttpTransport::loopback();
+                    // Each sender keeps its one connection, and names itself.
+                    let mut connection = std::net::TcpStream::connect(&at).expect("connects");
                     for message in 0..EACH {
-                        sending
-                            .send(&at, format!("S{sender} {message}").as_bytes())
-                            .expect("the node takes it");
+                        let body = format!("S{sender} {message}");
+                        posted_as(&mut connection, &format!("S{sender}"), body.as_bytes());
                     }
                 })
             })
@@ -1042,10 +1099,14 @@ address = "{far}"
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = unheld().to_string();
-        // In order: a Sequential Send Port keeps it (`runtime-model.md`
-        // section 3), where a Concurrent one sends side by side.
-        let sequential = "execution_style = \"sequential\"\non_failure = \"block\"";
-        let path = written("paused", &node_sending(&receive, &far_address, sequential));
+        // In order: a Send Port naming a set keyed by itself keeps it, one
+        // Journey at a time (`crate::sequence`).
+        let sequential = "correlation_set = \"InOrder\"";
+        let configured = format!(
+            "{}\n[[correlation_sets]]\nname = \"InOrder\"\nkeys = [\"send-port\"]\n",
+            node_sending(&receive, &far_address, sequential)
+        );
+        let path = written("paused", &configured);
         let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
         deliver(&TcpTransport::loopback(), &receive, b"before the pause");
         far.accept_one(&listener)

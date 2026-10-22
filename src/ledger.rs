@@ -129,6 +129,25 @@ impl Chunks {
     }
 }
 
+/// The Message `id` read back from the Ledger behind `storage`, its
+/// Sections over their Streams there; `None` where it holds none.
+///
+/// # Errors
+///
+/// In words, where Xmip Storage did not answer or the record is no
+/// Message.
+pub fn read_message(
+    storage: &Arc<dyn XmipStorage>,
+    id: xcore::MessageId,
+) -> Result<Option<message::Message>, String> {
+    let Some(kept) = storage.read_message(id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    message::Message::from_record(&kept.body, |stream| Chunks::referred(storage, stream))
+        .map(Some)
+        .map_err(|why| format!("the Message {id}: {why}"))
+}
+
 impl Content for Chunks {
     fn reader(&self) -> io::Result<Box<dyn Read + Send + '_>> {
         let from = Chunked::Ledger(self.stream);

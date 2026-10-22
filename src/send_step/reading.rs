@@ -3,12 +3,10 @@
 //! when each Journey is due (`persist::storage::DueQueue`), so its cost
 //! follows what is due, not what is held.
 //!
-//! A queue that is not ordered is read a page at a time, what is due in
-//! the order it fell due, and the reading stops where the Send pool is
-//! full. A Sequential Send Port's needs, beside what is due, what holds a
-//! sequence behind it — a retry not yet due, and where a failure blocks,
-//! what failed — so it reads those parts too, whole, and goes through all
-//! of it in the queue's order, as its sequences are kept.
+//! A queue is read a page at a time, what is due in the order it fell due,
+//! and the reading stops where the Send pool is full. What goes one at a
+//! time per key is not this reading's: a Journey that does not head its
+//! sequence is passed by its send (`crate::sequence`).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -30,9 +28,6 @@ pub(super) type Read = (Held, Option<Duration>, Instant);
 pub(super) struct Reading<'a> {
     step: &'a SendStep,
     queue: u128,
-    /// Read whole and in its order: a Sequential Send Port's, with what
-    /// failed where a failure blocks.
-    ordered: Option<bool>,
     read: VecDeque<Read>,
     /// Where the next page of what is due starts; `None` once read to its
     /// end.
@@ -44,13 +39,11 @@ pub(super) struct Reading<'a> {
 }
 
 impl<'a> Reading<'a> {
-    /// `queue` of `step` to read; `ordered` where it is a Sequential Send
-    /// Port's, `Some(true)` where a failure blocks its sequence.
-    pub(super) fn of(step: &'a SendStep, queue: u128, ordered: Option<bool>) -> Self {
+    /// `queue` of `step` to read.
+    pub(super) fn of(step: &'a SendStep, queue: u128) -> Self {
         Self {
             step,
             queue,
-            ordered,
             read: VecDeque::new(),
             from: Some((0, 0)),
             retrying: 0,
@@ -67,10 +60,7 @@ impl<'a> Reading<'a> {
     /// Where Xmip Storage did not answer: the rest waits for the next scan.
     pub(super) fn next(&mut self, waits: &mut Due) -> Result<Option<Read>, PersistError> {
         if self.read.is_empty() && self.from.is_some() {
-            match self.ordered {
-                Some(blocking) => self.whole(blocking, waits)?,
-                None => self.page(waits)?,
-            }
+            self.page(waits)?;
         }
         let next = self.read.pop_front();
         if next.is_none() {
@@ -92,51 +82,6 @@ impl<'a> Reading<'a> {
             .map(DueQueue::after);
         self.due_retries += due_retries(&page);
         self.read.extend(read(&page, asked));
-        Ok(())
-    }
-
-    /// What is due, what waits for a retry and, where a failure blocks,
-    /// what failed, each read whole, in the queue's order.
-    ///
-    /// The parts are read one after another, and a Journey may move between
-    /// them meanwhile: a send's verdict moves one from what is due to what
-    /// waits or failed, and an operator's Retry, or the clock, moves one
-    /// back. What is due is read first and again last, so a Journey that
-    /// moved is read in some part, never in none, and each is kept as it
-    /// was read last. Until 2026-10-21 what is due was read first alone,
-    /// and a Journey retried between that read and the read of what failed
-    /// was in neither: the sequence went on without it, out of its order.
-    fn whole(&mut self, blocking: bool, waits: &mut Due) -> Result<(), PersistError> {
-        let parts: &[DuePart] = if blocking {
-            &[
-                DuePart::Due,
-                DuePart::Waiting,
-                DuePart::Failed,
-                DuePart::Due,
-            ]
-        } else {
-            &[DuePart::Due, DuePart::Waiting, DuePart::Due]
-        };
-        let mut all = std::collections::BTreeMap::new();
-        for (order, &part) in parts.iter().enumerate() {
-            let again = order > 0 && part == DuePart::Due;
-            let mut from = Some((0, 0));
-            while let Some(at) = from {
-                let (asked, page) = self.part(part, at, waits)?;
-                from = page
-                    .held
-                    .last()
-                    .filter(|_| page.held.len() == PAGE as usize)
-                    .map(DueQueue::after);
-                if part == DuePart::Due && !again {
-                    self.due_retries += due_retries(&page);
-                }
-                // A later read of a Journey replaces an earlier one.
-                all.extend(read(&page, asked).map(|entry| (entry.0.sequence, entry)));
-            }
-        }
-        self.read = all.into_values().collect();
-        self.from = None;
         Ok(())
     }
 

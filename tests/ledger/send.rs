@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use configure::{ExecutionStyle, OnFailure, Retry};
+use configure::{OnFailure, Retry};
 use journey::JourneyState;
 use route::Subscriber;
 use transport::TransportError;
@@ -28,8 +28,8 @@ use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 
 use super::receive_cycle::{node, on_node};
 use super::sending::{
-    dispatching, journey, memory, onward, order, out, refusing, sender, taking, took, until,
-    waiting,
+    dispatching, in_order, journey, memory, onward, order, out, refusing, sender, taking, took,
+    until, waiting,
 };
 
 #[test]
@@ -202,10 +202,7 @@ fn in_sequence(on_failure: OnFailure, count: u32, refused: u32) -> Vec<String> {
         }
         Ok(())
     }));
-    let sequential = out(|port| {
-        port.execution_style = Some(ExecutionStyle::Sequential);
-        port.on_failure = Some(on_failure);
-    });
+    let sequential = out(in_order(on_failure));
     let sending = sender(node(), far, sequential);
     on_node(
         &storage,

@@ -81,12 +81,21 @@ impl SendStep {
             _ => format!("Journey {id} dismissed by {who}; its history is kept"),
         };
         let retry = act == Act::Retry;
+        let sequenced = kept.sequence;
         let hand_on = HandOn {
             claim: claim.clone(),
             result: journey_record(&acted(kept, act, &said)),
             messages: Vec::new(),
             next: Vec::new(),
-            leaves: if retry { Vec::new() } else { vec![queue] },
+            // Dismissed, it lets go of its queue and of its place in its Send
+            // Port's sequence, so the rest may pass.
+            leaves: if retry {
+                Vec::new()
+            } else {
+                std::iter::once(queue)
+                    .chain(sequenced.map(|s| s.queue))
+                    .collect()
+            },
             queued: Vec::new(),
             requeued: if retry && !blocks {
                 vec![queue]

@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use configure::{DesignedSendPort, SendPortGroup};
+use configure::{DesignedSendPort, OnFailure, SendPortGroup};
 use journey::{Journey, JourneyEntry, JourneyState};
 use persist::EncryptedStore;
 use persist::fixture::Memory;
@@ -21,7 +21,9 @@ use xmip_core_runtime::fixture::{Answer, Failing, FarEnd};
 use xmip_core_runtime::message_path::Runtime;
 use xmip_core_runtime::send_step::{Departure, Ended, dispatch};
 use xmip_core_runtime::sending::Sends;
+use xmip_core_runtime::sequence::{Point, PointKind};
 use xmip_core_runtime::tuning::Tuning;
+use xmip_core_runtime::work_step::{KeyWord, ResolvedSet};
 
 use super::receive_cycle::{Sender, subscription};
 
@@ -137,9 +139,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
         send_locations: Vec::new(),
         retry: None,
         failover: None,
-        execution_style: None,
-        order_key: None,
-        on_failure: None,
+        correlation_set: None,
         prepare: Vec::new(),
         transform: None,
         promote: None,
@@ -147,6 +147,45 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
     };
     shaped(&mut port);
     port
+}
+
+/// A Send Port's policy that lets its Journeys through one at a time, all
+/// of them one sequence, a failure doing what `on_failure` says: the set it
+/// names is `InOrder` and the failure its words.
+pub fn in_order(on_failure: OnFailure) -> impl FnOnce(&mut DesignedSendPort) {
+    move |port| {
+        port.correlation_set = Some(match on_failure {
+            OnFailure::Block => IN_ORDER.to_string(),
+            OnFailure::Skip => format!("{IN_ORDER}Skipping"),
+        });
+    }
+}
+
+/// The set `in_order` names, keyed by the Send Port alone.
+const IN_ORDER: &str = "InOrder";
+
+/// The sequences of `ports` that name a set: each Port's own, one for all
+/// its Journeys.
+pub fn points(ports: &[DesignedSendPort]) -> Vec<Point> {
+    ports
+        .iter()
+        .filter_map(|port| {
+            let set = port.correlation_set.clone()?;
+            Some(Point {
+                kind: PointKind::SendPort,
+                name: port.name.clone(),
+                on_failure: if set.ends_with("Skipping") {
+                    OnFailure::Skip
+                } else {
+                    OnFailure::Block
+                },
+                set: ResolvedSet {
+                    name: set,
+                    keys: vec![KeyWord::SendPort],
+                },
+            })
+        })
+        .collect()
 }
 
 /// The `[tuning]` the tests' nodes send by: a lease and a scan short
@@ -171,13 +210,14 @@ pub fn senders(
     ports: Vec<(FarEnd, DesignedSendPort)>,
     groups: Vec<SendPortGroup>,
 ) -> Sender {
-    let (locations, ports) = ports
+    let (locations, ports): (Vec<_>, Vec<DesignedSendPort>) = ports
         .into_iter()
         .map(|(far, port)| (far.at(&port.name), port))
         .unzip();
     Sender {
         sends: Sends {
             locations,
+            points: points(&ports),
             ports,
             groups,
         },
@@ -200,6 +240,7 @@ impl Told {
             Ended::Lost(_) => "lost",
             Ended::Unwritten(_) => "unwritten",
             Ended::Untried => "untried",
+            Ended::Behind => "behind",
         };
         let id = departure.work.journey.journey_id();
         self.0

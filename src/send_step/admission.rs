@@ -34,8 +34,6 @@ use super::{Departure, LinedUp, SendStep, State, renewal};
 #[derive(Clone, Debug)]
 pub(super) struct Owned {
     pub(super) claim: Claim,
-    pub(super) queue: u128,
-    pub(super) sequence: Option<String>,
     pub(super) port: String,
     pub(super) standing: renewal::Standing,
 }
@@ -45,8 +43,6 @@ impl Owned {
     pub(super) fn of(departure: &Departure) -> Self {
         Self {
             claim: departure.claim.clone(),
-            queue: departure.queue,
-            sequence: departure.sequence.clone(),
             port: departure.to.name().to_string(),
             standing: renewal::Standing::confirmed(departure.until),
         }

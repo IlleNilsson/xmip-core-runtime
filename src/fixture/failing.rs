@@ -298,6 +298,21 @@ impl XmipStorage for Failing {
         self.beneath.release(claim)
     }
 
+    fn turn(&self, turn: &persist::storage::Turn) -> Result<bool, PersistError> {
+        self.beneath.turn(turn)
+    }
+
+    fn read_instance(
+        &self,
+        instance: u128,
+    ) -> Result<Option<persist::storage::InstanceRecord>, PersistError> {
+        self.beneath.read_instance(instance)
+    }
+
+    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        self.beneath.read_correlation(correlation)
+    }
+
     fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
         self.asked(Operation::HandOn)?;
         let answer = self.beneath.hand_on(hand_on);

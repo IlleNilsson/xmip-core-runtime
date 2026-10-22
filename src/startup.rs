@@ -54,7 +54,14 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
     let mut gates = Vec::new();
     for location in &tree.receive_locations_to_start {
         match ReceiveGate::of(location, &authenticators, &tree.parties) {
-            Ok(gate) => gates.push(gate),
+            Ok(mut gate) => match crate::sequence::received_at(tree, &location.name) {
+                Ok((port, points)) => {
+                    gate.port = port;
+                    gate.points = points;
+                    gates.push(gate);
+                }
+                Err(why) => problems.push(why),
+            },
             Err(refused) => problems.extend(refused),
         }
     }
@@ -63,7 +70,19 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
     // naming what no route technology this node was built with reads is
     // refused now, not at the first Message.
     let sources: Vec<&dyn Source> = linked.sources.iter().map(AsRef::as_ref).collect();
-    let gathering = Gathering::of(&sources, &tree.subscriptions);
+    // What the sequences' keys read of a Message, beside what the filters
+    // read: compiled with them, once.
+    let destinations = crate::sequence::destinations(tree).unwrap_or_default();
+    let read = Gathering::of(&sources, &tree.subscriptions);
+    let mut names: Vec<&str> = read.properties().collect();
+    let received: Vec<&crate::sequence::Point> = gates
+        .iter()
+        .flat_map(|gate: &ReceiveGate| gate.points.iter())
+        .collect();
+    for point in received.into_iter().chain(&destinations) {
+        names.extend(point.set.names());
+    }
+    let gathering = Gathering::new(&sources, &names);
     problems.extend(
         gathering
             .refusals()
@@ -274,6 +293,9 @@ pub(crate) fn open(
                 locations,
                 groups: tree.send_port_groups.clone(),
                 ports: tree.send_ports.clone(),
+                points: crate::sequence::destinations(tree)
+                    .map_err(|why| why.join("; "))
+                    .unwrap_or_default(),
             },
         ))
     } else {

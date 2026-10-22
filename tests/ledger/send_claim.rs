@@ -59,6 +59,7 @@ fn failing_over(first: FarEnd, second: FarEnd) -> Sender {
             locations: vec![first.at("First"), second.at("Second")],
             ports: vec![port],
             groups: Vec::new(),
+            points: Vec::new(),
         },
         tuning: quick(),
         node: node(),
