@@ -14,6 +14,7 @@
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/storage             its Storage: Fine, or Done where none answers
 //! <node>/storage/<domain>    each database it keeps: its schema version
+//! <node>/certificate/<use>  each certificate it presents: renewal due, Stressed
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
 //! <node>/send/<Location>     Done with the reason once it stopped, and
 //!                            Done saying `configure::NOT_STARTED` where its
@@ -66,14 +67,12 @@ use super::Running;
 
 mod stopped;
 
-use crate::capability_registry::Load;
-use crate::outcome::Outcomes;
-use crate::pickup::PUBLISHED;
-use crate::send_step::PortFigures;
+use crate::{
+    capability_registry::Load, outcome::Outcomes, pickup::PUBLISHED, send_step::PortFigures,
+};
 pub use stopped::stopped;
 
-/// The Party a node draws on each side while its configuration can name
-/// none.
+/// The Party a node draws on each side while its configuration can name none.
 pub const ANY_PARTY: &str = "any-party";
 
 /// The location of the node `node` of `cluster`: the scope it declares and
@@ -144,6 +143,7 @@ impl Running {
             );
         }
         self.storage.publish(&node, &mut record);
+        self.certificates.publish(&node, now, &mut record);
         let figures = self.send.figures();
         let staged = not_started_records(&node, &self.not_started)
             .into_iter()

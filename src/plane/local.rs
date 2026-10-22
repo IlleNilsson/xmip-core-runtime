@@ -8,7 +8,7 @@
 //!
 //! **Local callers are proven by the operating system** — decided by the
 //! owner, 2026-10-19, open problem 35 — and this is the one way a surface
-//! on the node's machine reaches it: xmip-cli, the PowerShell module and
+//! on the node's machine reaches it: xmip, the PowerShell module and
 //! the GUIs alike, through `xmip_remote_open_local_v1`. A tcp connection
 //! over loopback is trusted for nothing; it presents a certificate like a
 //! caller from another machine.

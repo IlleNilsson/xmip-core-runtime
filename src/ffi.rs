@@ -18,6 +18,8 @@
 #[cfg(feature = "remote")]
 pub mod audit;
 #[cfg(feature = "node")]
+pub mod authority;
+#[cfg(feature = "node")]
 pub mod catalogue;
 #[cfg(feature = "remote")]
 pub mod certificate;
