@@ -4,123 +4,107 @@
 //! message path writes through, whichever is behind it.
 //!
 //! - **The program's own.** A program that opened Xmip Storage itself — a
-//!   test's Storage node, or a [`persist::storage::StorageClient`] it
-//!   built with the identity it presents — hands it over in
-//!   [`Linked::storage`], and that one is the node's.
-//! - **The node's own embedded Storage node.** A node declaring the
-//!   `storage` role whose `[storage]` lists no Storage node is its own
+//!   test's Storage node — hands it over in [`Linked::storage`], and that
+//!   one is the node's.
+//! - **The node's own Storage node.** Only a node with the Storage role
+//!   stores (the owner, 2026-10-20; ADR-0056, amendment 2026-10-20). One
+//!   whose `[storage]` lists no Storage node is the only one, embedded
 //!   (`deployment-model.md` section 3: *A one-node deployment is its own
-//!   Storage node*); only a node with the Storage role stores (the owner,
-//!   2026-10-20; ADR-0056, amendment 2026-10-20), and one declaring neither
-//!   the role nor `[storage] nodes` is refused at phase 3. Each data domain's
-//!   database is where its table, `[runtime]`, `[administration]` or
-//!   `[audit]`, says — its `storage` and its `connection`, a path relative
-//!   to the configuration file (the owner, 2026-10-10: *i would do it like
-//!   runtime, storage, connection string*) — and, where the table is left
-//!   out, under the data directory: `RocksDB` at `<data>/storage/runtime`,
-//!   `SQLite` at `<data>/storage/administration.sqlite` and at
+//!   Storage node*). One that lists them — every Storage node of the
+//!   cluster, itself among them — is one of several: the primary or a
+//!   standby copying it, as they settle it among themselves
+//!   (`persist::storage::standby`; ADR-0056, amendment 2026-10-22). Each
+//!   data domain's database is where its table, `[runtime]`,
+//!   `[administration]` or `[audit]`, says — its `storage` and its
+//!   `connection`, a path relative to the configuration file — and, where
+//!   the table is left out, under the data directory: `RocksDB` at
+//!   `<data>/storage/runtime`, `SQLite` at
+//!   `<data>/storage/administration.sqlite` and at
 //!   `<data>/storage/audit.sqlite` ([`FILES`]); all three sealed under the
-//!   key store `[store]` names, with the key [`KEK`]. Phase 3 refuses a
-//!   table Xmip Storage does not read, a database server, whose backend is
-//!   not built yet, and a program that was not built with both engines —
-//!   what `deploy/profile/role/storage.toml` builds — and phase 9 one
-//!   whose databases do not open.
-//! - **The Storage nodes `[storage]` lists**, round robin over Xmip's
-//!   mutual TLS. The identity a node presents to them is not in its
-//!   configuration yet, so a node listing them is refused at phase 3 unless
-//!   its program handed it the client.
+//!   key store `[store]` names, with the key [`KEK`]. Where `[storage]
+//!   listen` names an address, the node serves Xmip Storage there to the
+//!   nodes reaching it, over Xmip's mutual TLS with what `[storage]`
+//!   presents. Phase 3 refuses a table Xmip Storage does not read, a
+//!   database server, whose backend is not built yet, a program that was
+//!   not built with both engines — what `deploy/profile/role/storage.toml`
+//!   builds — and one of several that names nowhere to serve them; phase 9
+//!   one whose databases do not open or whose listener does not bind.
+//! - **The Storage nodes `[storage]` lists**, reached over Xmip's mutual
+//!   TLS with the certificate, key and anchors `[storage]` names, the
+//!   primary asked and the standbys passed over
+//!   (`persist::storage::client`). One listing them and naming nothing to
+//!   present is refused at phase 3.
+//!
+//! A node declaring neither the Storage role nor `[storage] nodes` is
+//! refused at phase 3, in words naming both.
+
+mod opened;
+mod reached;
+
+pub use reached::Reached;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use configure::XmipConfigurationDocument;
 use node::NodeRole;
-use persist::Engine;
+use persist::storage::XmipStorage;
 use persist::storage::database::{self, Domain, Technology};
-use persist::storage::schema::{Database, DatabaseVersion};
-use persist::storage::{Embedded, XmipStorage};
-use secret::KekName;
+use persist::storage::schema::Database;
 
 use crate::linked::Linked;
 use crate::running::Refusal;
 use crate::service::StartupPhase;
 
-/// The key-encryption key an embedded Storage node's data keys are
-/// wrapped under.
+/// The key-encryption key a Storage node's data keys are wrapped under.
 pub const KEK: &str = "storage";
 
-/// Where an embedded Storage node keeps its databases, under the node's
-/// data directory.
+/// Where a Storage node keeps its databases, under the node's data
+/// directory.
 pub const PLACE: &str = "storage";
 
-/// The leaf beneath a node its databases are published at, one record to
-/// each data domain beneath it ([`Reached::published`]).
+/// The leaf beneath a node what it reaches Xmip Storage through is
+/// published at, and one record to each data domain it keeps beneath it
+/// ([`Reached::published`]).
 pub const DATABASES: &str = "storage";
 
 /// Where each data domain's database is in [`PLACE`] where its table is
 /// left out: the runtime, the administration and the audit database.
 pub const FILES: [&str; 3] = ["runtime", "administration.sqlite", "audit.sqlite"];
 
+/// The administration and audit databases' engine on a Storage node that
+/// keeps them itself, by module name (`deployment-model.md` section 7).
+pub const ADMINISTRATION: &str = "xmip-core-persist-sqlite";
+
 /// What a node will reach Xmip Storage through, once phase 3 has held it
 /// to what the program linked.
 pub enum Planned {
     /// The program's own.
     Given(Arc<dyn XmipStorage>),
-    /// The node's own embedded Storage node, each data domain's database
-    /// at its place — runtime, administration, audit — sealed by the key
-    /// store named `key_store` keeping its keys in `keys`.
-    Embedded {
+    /// The node's own Storage node, each data domain's database at its
+    /// place — runtime, administration, audit — sealed by the key store
+    /// named `key_store` keeping its keys in `keys`, and served where
+    /// `serving` says.
+    Kept {
         places: [PathBuf; 3],
         key_store: String,
         keys: PathBuf,
+        serving: Option<Serving>,
+    },
+    /// The Storage nodes listed, reached presenting `identity`.
+    Reaching {
+        listed: Vec<String>,
+        identity: tls::Identity,
     },
 }
 
-/// Xmip Storage as the node reached it, and the chunk a Stream is written
-/// in.
-pub struct Reached {
-    storage: Arc<dyn XmipStorage>,
-    chunk: usize,
-    said: String,
-    versions: Vec<DatabaseVersion>,
-}
-
-impl Reached {
-    /// Xmip Storage.
-    #[must_use]
-    pub fn storage(&self) -> &Arc<dyn XmipStorage> {
-        &self.storage
-    }
-
-    /// The size a Stream is written to the Ledger in.
-    #[must_use]
-    pub const fn chunk(&self) -> usize {
-        self.chunk
-    }
-
-    /// What it is and where, in words, and the chunk.
-    #[must_use]
-    pub fn said(&self) -> &str {
-        &self.said
-    }
-
-    /// The schema version each database the node keeps itself holds, as
-    /// they opened; none where it reaches the program's own or other
-    /// Storage nodes, which say their own.
-    #[must_use]
-    pub fn versions(&self) -> &[DatabaseVersion] {
-        &self.versions
-    }
-
-    /// What the node beneath `node` publishes of each database it keeps:
-    /// at `<node>/storage/<domain>`, the schema version it holds and what
-    /// it is kept on (open problem 41).
-    pub fn published(&self, node: &str) -> impl Iterator<Item = (String, String)> {
-        self.versions.iter().map(move |held| {
-            let scope = format!("{node}/{DATABASES}/{}", held.database.word());
-            (scope, held.evidence())
-        })
-    }
+/// Where a Storage node serves Xmip Storage, what it presents, and every
+/// Storage node of the cluster, itself among them — none where it is the
+/// only one.
+pub struct Serving {
+    pub listen: String,
+    pub identity: tls::Identity,
+    pub listed: Vec<String>,
 }
 
 /// The data domains' tables `document` holds, each with its database.
@@ -144,12 +128,12 @@ pub fn domains(document: &XmipConfigurationDocument) -> Vec<Domain<'_>> {
 ///
 /// # Errors
 ///
-/// Refused at phase 3 where its roles are not role words, where the node
-/// lists Storage nodes and its program gave it no way to reach them, where
-/// it declares no Storage role and lists no Storage node, or where it is its
-/// own Storage node and a data domain's table is not one Xmip Storage reads,
-/// names a database server, or its program was not built with both embedded
-/// engines.
+/// Refused at phase 3 where its roles are not role words; where it
+/// declares no Storage role and lists no Storage node; where it lists
+/// Storage nodes and names nothing to present to them; or where it keeps
+/// Xmip Storage itself and a data domain's table is not one Xmip Storage
+/// reads, names a database server, its program was not built with both
+/// engines, or it is one of several and names nowhere to serve them.
 pub fn plan(
     document: &XmipConfigurationDocument,
     path: &str,
@@ -159,24 +143,67 @@ pub fn plan(
         return Ok(Planned::Given(Arc::clone(given)));
     }
     let refused = |problem: String| Refusal::at(StartupPhase::ValidateStartup, vec![problem]);
-    if !document.storage.nodes.is_empty() {
-        return Err(refused(
-            "[storage] nodes lists the Storage nodes this node reaches, and the identity it \
-             presents to them over Xmip's TLS is not configurable yet; its program has to \
-             hand it the client"
-                .to_string(),
-        ));
-    }
     let roles = NodeRole::declared(document.roles.as_deref().unwrap_or("")).map_err(refused)?;
-    if !roles.contains(&NodeRole::Storage) {
-        return Err(refused(
-            "this node does not declare the storage role and [storage] nodes lists no Storage \
-             node: only a node with the storage role keeps Xmip Storage, and any other reaches \
-             it through [storage] nodes"
-                .to_string(),
-        ));
-    }
+    let listed: Vec<String> = document
+        .storage
+        .nodes
+        .iter()
+        .map(|node| node.as_str().to_string())
+        .collect();
     let file = Path::new(path);
+    let presented = || -> Result<tls::Identity, Vec<String>> {
+        let named = document
+            .storage
+            .presented()
+            .map_err(|problem| vec![problem])?;
+        let presented = named.ok_or_else(|| {
+            vec![
+                "[storage] names no certificate, key and anchors: what this node presents to \
+                 the Storage nodes and trusts of them over Xmip's mutual TLS"
+                    .to_string(),
+            ]
+        })?;
+        let files = [presented.certificate, presented.key, presented.anchors];
+        crate::presented::identity(file, "storage", files).map_err(|problem| vec![problem])
+    };
+    let refused_all = |problems| Refusal::at(StartupPhase::ValidateStartup, problems);
+    if !roles.contains(&NodeRole::Storage) {
+        if listed.is_empty() {
+            return Err(refused(
+                "this node does not declare the storage role and [storage] nodes lists no \
+                 Storage node: only a node with the storage role keeps Xmip Storage, and any \
+                 other reaches it through [storage] nodes"
+                    .to_string(),
+            ));
+        }
+        let identity = presented().map_err(refused_all)?;
+        return Ok(Planned::Reaching { listed, identity });
+    }
+    let serving = match (&document.storage.listen, listed.is_empty()) {
+        (None, true) => None,
+        (None, false) => {
+            return Err(refused(
+                "this node declares the storage role and [storage] nodes lists the cluster's \
+                 Storage nodes, and [storage] names no listen to serve the others on"
+                    .to_string(),
+            ));
+        }
+        (Some(listen), _) => Some(Serving {
+            listen: listen.clone(),
+            identity: presented().map_err(refused_all)?,
+            listed,
+        }),
+    };
+    kept(document, file, linked, serving)
+}
+
+/// The node's own Storage node, held to what `linked` carries.
+fn kept(
+    document: &XmipConfigurationDocument,
+    file: &Path,
+    linked: &Linked,
+    serving: Option<Serving>,
+) -> Result<Planned, Refusal> {
     let data = document.service.data_directory(file);
     let base = file.parent().unwrap_or_else(|| Path::new(""));
     let store = document.store.resolve(&data, base);
@@ -208,8 +235,8 @@ pub fn plan(
     ] {
         if engine.is_none() {
             problems.push(format!(
-                "this node is its own Storage node (the storage role, and [storage] lists \
-                 none), and was not built with {technology}, its {database} databases' engine"
+                "this node keeps Xmip Storage itself (the storage role), and was not built \
+                 with {technology}, its {database} databases' engine"
             ));
         }
     }
@@ -230,109 +257,24 @@ pub fn plan(
             |table| base.join(&table.connection),
         )
     });
-    Ok(Planned::Embedded {
+    Ok(Planned::Kept {
         places,
         key_store: store.key_store,
         keys: store.keys,
+        serving,
     })
 }
-
-/// The administration and audit databases' engine on an embedded Storage
-/// node, by module name (`deployment-model.md` section 7).
-pub const ADMINISTRATION: &str = "xmip-core-persist-sqlite";
-
-impl Planned {
-    /// Reach it: the program's own as it is, the embedded Storage node
-    /// opened, writing Streams in chunks of `chunk` bytes (the node's
-    /// `[tuning]`, `crate::tuning::Tuning::chunk`).
-    ///
-    /// # Errors
-    ///
-    /// Refused at phase 9 where the embedded Storage node's databases do
-    /// not open: their directory cannot be made, an engine refuses —
-    /// another process holding it among the reasons — or a key does not
-    /// unwrap.
-    pub fn open(self, linked: &Linked, chunk: usize) -> Result<Reached, Refusal> {
-        let (storage, said, versions) = match self {
-            Self::Given(storage) => (
-                storage,
-                "the Xmip Storage its program opened".to_string(),
-                Vec::new(),
-            ),
-            Self::Embedded {
-                places,
-                key_store,
-                keys,
-            } => {
-                let [runtime, administration, audit] = places.each_ref().map(|p| p.display());
-                let at = format!(
-                    "runtime at {runtime}, administration at {administration}, audit at {audit}"
-                );
-                let opened = embedded(linked, &places, &key_store, &keys).map_err(|problem| {
-                    Refusal::at(
-                        StartupPhase::AcceptWork,
-                        vec![format!(
-                            "its own Storage node, {at}, did not open: {problem}"
-                        )],
-                    )
-                })?;
-                let (opened, versions) = opened;
-                let held: Vec<String> = versions
-                    .iter()
-                    .map(|held| format!("{} {}", held.database.word(), held.evidence()))
-                    .collect();
-                let held = held.join(", ");
-                let said = format!("its own Storage node, {at}, sealed under {key_store}: {held}");
-                (opened, said, versions.to_vec())
-            }
-        };
-        let said = format!("{said}, Streams in chunks of {} KiB", chunk / 1024);
-        Ok(Reached {
-            storage,
-            chunk,
-            said,
-            versions,
-        })
-    }
-}
-
-fn embedded(
-    linked: &Linked,
-    [runtime_at, administration_at, audit_at]: &[PathBuf; 3],
-    key_store: &str,
-    keys: &Path,
-) -> Result<(Arc<dyn XmipStorage>, [DatabaseVersion; 3]), String> {
-    let (Some(runtime), Some(administration), Some(key_store)) = (
-        linked.engine.as_ref(),
-        linked.administration.as_ref(),
-        linked.key_store(key_store),
-    ) else {
-        return Err("its engines or its key store are not linked".to_string());
-    };
-    for directory in [runtime_at, administration_at, audit_at] {
-        let parent = directory.parent().unwrap_or(directory);
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let keys = key_store.open(keys);
-    let kek = KekName::new(KEK).map_err(|error| error.to_string())?;
-    let opened = |engine: &crate::linked::LinkedEngine, at: &Path| {
-        engine.open(at).map_err(|error| error.to_string())
-    };
-    let runtime: Box<dyn Engine> = opened(runtime, runtime_at)?;
-    let administration_store: Box<dyn Engine> = opened(administration, administration_at)?;
-    let audit: Box<dyn Engine> = opened(administration, audit_at)?;
-    let node = Embedded::open(runtime, administration_store, audit, keys.as_ref(), &kek)
-        .map_err(|error| error.to_string())?;
-    let versions = *node.versions();
-    Ok((Arc::new(node), versions))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ledger::CHUNK;
     use crate::linked::{LinkedEngine, LinkedKeyStore};
+    use crate::tuning::Tuning;
+    use observe::Health;
+    use persist::Engine;
     use persist::PersistError;
+    use persist::storage::Embedded;
+    use secret::KekName;
     use secret::KeyStore;
 
     /// The test cluster's first node declaring [`STORAGE`], and its
@@ -407,7 +349,7 @@ mod tests {
         let path = directory.join(file);
         let reached = plan(&document(&text), path.to_str().expect("UTF-8"), &linked)
             .expect("planned")
-            .open(&linked, CHUNK)
+            .open(&linked, &Tuning::default())
             .expect("opened");
 
         assert!(directory.join("elsewhere").is_dir(), "{}", reached.said());
@@ -440,7 +382,7 @@ mod tests {
         let path = directory.join(file);
         let reached = plan(&document(&text), path.to_str().expect("UTF-8"), &linked())
             .expect("planned")
-            .open(&linked(), CHUNK)
+            .open(&linked(), &Tuning::default())
             .expect("opened");
 
         let said = reached.said();
@@ -458,12 +400,19 @@ mod tests {
         let held = format!("runtime schema version {version} on memory");
         assert!(said.contains(&held), "{said}");
         let node = &configure::fixture::test_cluster().node_scope(0);
-        let published: Vec<(String, String)> = reached.published(node).collect();
+        let published = reached.published(node);
         let at = |word: &str| format!("{node}/storage/{word}");
         assert_eq!(
-            published,
-            ["runtime", "administration", "audit"]
-                .map(|word| (at(word), format!("schema version {version} on memory")))
+            published[0],
+            (format!("{node}/storage"), Health::Fine, reached.said())
+        );
+        assert_eq!(
+            published[1..],
+            ["runtime", "administration", "audit"].map(|word| (
+                at(word),
+                Health::Fine,
+                format!("schema version {version} on memory")
+            ))
         );
         let _ = std::fs::remove_dir_all(&directory);
     }
@@ -540,12 +489,130 @@ mod tests {
         };
         let reached = plan(&document(&listed), &file, &given)
             .expect("the program's own")
-            .open(&given, CHUNK)
+            .open(&given, &Tuning::default())
             .expect("reached");
         assert!(
             reached
                 .said()
                 .starts_with("the Xmip Storage its program opened")
+        );
+    }
+
+    /// A node of the test cluster at `place` in `directory`, declaring
+    /// `roles`, reaching the Storage nodes `listed`, serving at `listen`
+    /// where it names one, presenting what `directory`'s `tls` holds.
+    fn reaching_node(
+        directory: &Path,
+        (place, roles): (usize, &str),
+        listed: &[String],
+        listen: Option<&str>,
+    ) -> (XmipConfigurationDocument, String) {
+        let cluster = configure::fixture::test_cluster();
+        let node = &cluster.node(place).name;
+        let nodes: Vec<String> = listed.iter().map(|at| format!("\"{at}\"")).collect();
+        let listen = listen
+            .map(|at| format!("listen = \"{at}\"\n"))
+            .unwrap_or_default();
+        let text = format!(
+            "roles = \"{roles}\"\n[service]\nname = \"xmip-{node}\"\ncluster_name = \"{}\"\n\
+             node_name = \"{node}\"\ndata = \"state-{place}\"\n\
+             [store]\nkey_store = \"xmip-core-secret-memory\"\n\
+             [tuning]\nstorage_silence = \"300ms\"\nstorage_beat = \"20ms\"\n\
+             [storage]\nnodes = [{}]\n{listen}certificate = \"tls/node.pem\"\n\
+             key = \"tls/node.key\"\nanchors = \"tls/anchors.pem\"\n",
+            cluster.name,
+            nodes.join(", ")
+        );
+        let path = directory.join(format!("{node}.toml"));
+        (document(&text), path.display().to_string())
+    }
+
+    fn opened(document: &XmipConfigurationDocument, path: &str) -> Reached {
+        let tuning = Tuning::read(&document.tuning).expect("tuning");
+        plan(document, path, &linked())
+            .expect("planned")
+            .open(&linked(), &tuning)
+            .expect("opened")
+    }
+
+    #[test]
+    fn a_node_reaches_the_storage_nodes_listed_and_carries_on_once_the_primary_stops() {
+        let authority = crate::fixture::Authority::new();
+        let directory = authority.directory.clone();
+        let (certificate, key, anchors) = authority.pem("node");
+        std::fs::create_dir_all(directory.join("tls")).expect("a folder");
+        for (file, pem) in [
+            ("node.pem", certificate),
+            ("node.key", key),
+            ("anchors.pem", anchors),
+        ] {
+            std::fs::write(directory.join("tls").join(file), pem).expect("written");
+        }
+        let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
+        let storage = |place: usize| {
+            let (document, path) = reaching_node(
+                &directory,
+                (place, "storage"),
+                &listed,
+                Some(&listed[place]),
+            );
+            opened(&document, &path)
+        };
+        let (first, second) = (storage(0), storage(1));
+        let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
+        let reaching = opened(&document, &path);
+        assert!(
+            first.said().contains("the primary Storage node"),
+            "{}",
+            first.said()
+        );
+        assert!(second.said().contains("a standby"), "{}", second.said());
+
+        let journey = persist::storage::JourneyRecord {
+            journey: xcore::JourneyId::new(7),
+            body: b"over the wire".to_vec(),
+            facts: persist::storage::JourneyFacts::default(),
+        };
+        reaching.storage().write_journey(&journey).expect("written");
+        let node = configure::fixture::test_cluster().node_scope(2);
+        let said = &reaching.published(&node)[0];
+        assert_eq!(said.1, Health::Fine, "{}", said.2);
+        assert!(
+            said.2.contains(&format!("{} answered", listed[0])),
+            "{}",
+            said.2
+        );
+
+        first.stop();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !second.said().contains("the primary Storage node")
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let read = reaching
+            .storage()
+            .read_journey(journey.journey)
+            .expect("read");
+        assert_eq!(read.map(|r| r.body), Some(b"over the wire".to_vec()));
+        second.stop();
+        let gone = reaching.storage().read_journey(journey.journey);
+        assert!(gone.is_err(), "no Storage node answers");
+        let said = &reaching.published(&node)[0];
+        assert_eq!(said.1, Health::Done, "{}", said.2);
+    }
+
+    #[test]
+    fn a_node_listing_storage_nodes_with_nothing_to_present_is_refused_in_words() {
+        let (head, file) = service();
+        let text = head.replace(STORAGE, "roles = \"receiving\"\n")
+            + "[storage]\nnodes = [\"storage.example:7443\"]\n";
+        let refused = plan(&document(&text), &file, &linked())
+            .err()
+            .expect("nothing to present");
+        assert!(
+            refused.problems[0].contains("names no certificate, key and anchors"),
+            "{refused}"
         );
     }
 }

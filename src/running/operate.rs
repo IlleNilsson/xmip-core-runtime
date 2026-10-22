@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use configure::operate::{Network, OperateConfiguration};
+use configure::operate::Network;
 use xaudit::program_audit::ProgramAudit;
 
 use crate::plane::local::Admitting;
@@ -83,16 +83,8 @@ fn listen(
     stated: Option<Role>,
     audit: &ProgramAudit,
 ) -> Result<Listener, String> {
-    let read = |path: &str| {
-        let file = OperateConfiguration::resolve(configuration, path);
-        std::fs::read(&file).map_err(|error| format!("[operate] {}: {error}", file.display()))
-    };
-    let identity = tls::Identity::from_pem(
-        &read(network.certificate)?,
-        &read(network.key)?,
-        &read(network.anchors)?,
-    )
-    .map_err(|failed| format!("[operate] {}", failed.message))?;
+    let files = [network.certificate, network.key, network.anchors];
+    let identity = crate::presented::identity(configuration, "operate", files)?;
     let bound = std::net::TcpListener::bind(network.listen)
         .map_err(|error| format!("[operate] listen = \"{}\": {error}", network.listen))?;
     Listener::start(bound, &identity, published, stated, audit)
