@@ -72,8 +72,21 @@ impl Libraries {
                 ) {
                     Ok(loaded) => {
                         // A unit's library holds one unit, its descriptor's
-                        // standard naming it (`process::export`).
+                        // standard naming it (`process::export`), and the
+                        // manifest declares it (`abi::ModuleUnit`).
                         let unit = loaded.descriptor().standard.clone();
+                        let declared = module.manifest.units.iter().any(|declared| {
+                            declared.name == unit
+                                && declared.capability == abi::UnitCapability::WorkProcess
+                        });
+                        if !declared {
+                            problems.push(format!(
+                                "the module '{}' holds the unit '{unit}', which its manifest \
+                                 does not declare as a {WORK_PROCESS} unit",
+                                module.name
+                            ));
+                            continue;
+                        }
                         let loaded = loaded_work_process::UnitModule::shared(loaded);
                         flows.push((module.name.clone(), unit, loaded));
                     }
