@@ -188,6 +188,8 @@ mod tests {
                 executable_path: None,
                 symbol: None,
             },
+            offline: true,
+            units: Vec::new(),
         }
     }
 

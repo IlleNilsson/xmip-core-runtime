@@ -451,6 +451,10 @@ mod tests {
             settings: configure::LocationSettings::default(),
             contract_settings: configure::LocationSettings::default(),
             accept: configure::Accept::default(),
+            prepare: Vec::new(),
+            transform: None,
+            promote: None,
+            demote: None,
         }
     }
 

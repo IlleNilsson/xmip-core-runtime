@@ -343,6 +343,8 @@ mod tests {
 [[modules]]
 name = "file"
 start = true
+[modules.manifest]
+offline = true
 [modules.manifest.identity]
 name = "file"
 version = "0.1.0"
@@ -415,6 +417,8 @@ address = "C:/archive"
 [[modules]]
 name = "file"
 start = true
+[modules.manifest]
+offline = true
 [modules.manifest.identity]
 name = "file"
 version = "0.1.0"

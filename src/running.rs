@@ -138,6 +138,12 @@ impl Running {
             .iter()
             .map(|linked| (linked.technology(), linked.settings()))
             .collect();
+        // ADR-0066, amendment 2026-10-22: a call to a compiled unit is read
+        // and validated, and running one is decided, not built.
+        let unrun = configure::step::unrun(&document, &applications);
+        if !unrun.is_empty() {
+            return Err(Refusal::at(StartupPhase::ValidateStartup, unrun));
+        }
         let (tree, _) = build_execution_tree(document, &applications, &declared)
             .map_err(|report| Refusal::at(StartupPhase::ValidateStartup, report.errors))?;
         let Checked { gates, gathering } = check(&tree, &linked)
@@ -958,6 +964,7 @@ address = "{far}"
     }
 
     const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"contract-rust\"\nstart = true\n\
+        [modules.manifest]\noffline = true\n\
         [modules.manifest.identity]\nname = \"xmip-core-contract-rust\"\nversion = \"0.1.0\"\n\
         [[modules.manifest.capabilities]]\ncapability = \"contract\"\n\
         execution_host = \"c-abi\"\ntrusted_required = false\n\

@@ -140,6 +140,10 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
         execution_style: None,
         order_key: None,
         on_failure: None,
+        prepare: Vec::new(),
+        transform: None,
+        promote: None,
+        demote: None,
     };
     shaped(&mut port);
     port

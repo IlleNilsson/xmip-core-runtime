@@ -94,6 +94,10 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
                 settings: configure::LocationSettings::default(),
                 contract_settings: configure::LocationSettings::default(),
                 accept: configure::Accept::default(),
+                prepare: Vec::new(),
+                transform: None,
+                promote: None,
+                demote: None,
             },
             gate: gate.clone(),
             transport: Box::new(Untold {

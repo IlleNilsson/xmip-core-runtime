@@ -33,7 +33,8 @@ pub const NOT_A_CLUSTER: &str = "this is a node's configuration document, not a 
 /// The reader's words when the text is not TOML.
 pub fn views(cluster: &str) -> Result<String, String> {
     let mut answer =
-        serde_json::to_value(Views::of(cluster)?).map_err(|error| error.to_string())?;
+        serde_json::to_value(Views::of(cluster)?.offering(Some(TUNING), &node::NodeRole::WORDS))
+            .map_err(|error| error.to_string())?;
     answer["document"] = match document_kind(cluster) {
         DocumentKind::Cluster => "cluster",
         DocumentKind::Node => "node",
