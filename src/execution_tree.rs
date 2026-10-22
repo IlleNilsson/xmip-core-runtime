@@ -285,6 +285,9 @@ pub fn validate_startup_configuration(
     }
 
     errors.extend(configure::binding_problems(document));
+    // Its calls to compiled units and where it attaches them (ADR-0066,
+    // amendment 2026-10-22).
+    errors.extend(configure::step::problems(document));
     // Every outward and hardware assumption, held to the runtime's own
     // declaration of them (ADR-0031, amendment 2026-10-03).
     if let Err(problems) = Tuning::read(&document.tuning) {
@@ -386,6 +389,8 @@ node_name = "<node>"
 [[modules]]
 name = "file"
 start = true
+[modules.manifest]
+offline = true
 [modules.manifest.identity]
 name = "file"
 version = "0.1.0"

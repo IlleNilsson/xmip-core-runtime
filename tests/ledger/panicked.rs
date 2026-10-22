@@ -97,6 +97,10 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                     settings: configure::LocationSettings::default(),
                     contract_settings: configure::LocationSettings::default(),
                     accept: configure::Accept::default(),
+                    prepare: Vec::new(),
+                    transform: None,
+                    promote: None,
+                    demote: None,
                 },
                 gate: gate.clone(),
                 transport: Box::new(Once {
