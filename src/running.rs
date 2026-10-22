@@ -176,7 +176,7 @@ impl Running {
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
-        let storage = reaching.open(&linked, tree.tuning.chunk())?;
+        let storage = reaching.open(&linked, &tree.tuning)?;
         let pickup = Pickup::open(
             &scope,
             configured,
@@ -344,6 +344,9 @@ impl Running {
         for service in &mut self.host_services {
             service.stop();
         }
+        // The node's own work stopped, what it serves the others stops: a
+        // primary Storage node hands its standbys what it wrote first.
+        self.storage.stop();
         #[cfg(feature = "dynamic-loading")]
         drop(self.libraries.take());
     }

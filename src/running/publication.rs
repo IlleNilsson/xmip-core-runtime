@@ -12,6 +12,7 @@
 //! <node>/system-process      alive, and the process it runs in (ADR-0053)
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
+//! <node>/storage             its Storage: Fine, or Done where none answers
 //! <node>/storage/<domain>    each database it keeps: its schema version
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
 //! <node>/send/<Location>     Done with the reason once it stopped, and
@@ -142,8 +143,7 @@ impl Running {
                 format!("loaded ({how}), serving {}", capability.capability),
             );
         }
-        let databases = self.storage.published(&node);
-        databases.for_each(|(at, said)| record(at, Health::Fine, said));
+        self.storage.publish(&node, &mut record);
         let figures = self.send.figures();
         let staged = not_started_records(&node, &self.not_started)
             .into_iter()
