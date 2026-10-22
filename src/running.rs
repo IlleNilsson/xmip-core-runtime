@@ -53,6 +53,7 @@ use crate::storage::Reached;
 
 #[cfg(test)]
 mod accepted;
+mod certificate_standing;
 mod operate;
 pub mod publication;
 mod serving;
@@ -100,6 +101,9 @@ pub struct Running {
     storage: Reached,
     /// `[operate]`, and the file it was read from ([`Running::operate`]).
     operate: Option<configure::OperateConfiguration>,
+    /// When each certificate it presents is due for renewal (ADR-0034,
+    /// amendment 2026-10-22).
+    certificates: certificate_standing::CertificateStanding,
     /// `[tuning] local_timeout`: how long a surface's local call waits.
     local_timeout: std::time::Duration,
     configuration: PathBuf,
@@ -122,6 +126,8 @@ impl Running {
         let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
         let data = document.service.data_directory(Path::new(path));
+        let base = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+        let certificates = certificate_standing::CertificateStanding::configured(&document, base);
         let operate = document.operate.clone();
         let reaching = crate::storage::plan(&document, path, &linked)?;
         let guard = crate::receive_certificate::guard(&document, Path::new(path))
@@ -256,6 +262,7 @@ impl Running {
             data,
             storage,
             operate,
+            certificates,
             local_timeout: tree.tuning.local_timeout,
             configuration: PathBuf::from(path),
             #[cfg(feature = "dynamic-loading")]

@@ -1,7 +1,7 @@
 //! `xmip_operate.h` section 20: a database's schema, its upgrade written
 //! (open problem 41; ADR-0015, amendment 2026-10-20). The export only —
 //! the schema, its versions and the scripts are `persist::storage::schema`'s;
-//! `xmip-cli database` and `Get-XmipDatabaseScript` write and render them,
+//! `xmip database` and `Get-XmipDatabaseScript` write and render them,
 //! and neither knows a table.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
