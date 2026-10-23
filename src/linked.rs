@@ -47,19 +47,33 @@ pub type Open = fn(&str, Applies, &[(String, Given)], OnNode<'_>) -> Opened;
 pub struct LinkedTransport {
     settings: &'static Settings,
     open: Open,
+    waits: Waits,
 }
+
+/// Whether a Receive Location of a technology, at an address and with its
+/// settings, waits for what is sent to it rather than going to look.
+pub type Waits = fn(&str, &[(String, Given)]) -> bool;
 
 impl LinkedTransport {
     /// The technology `T`, as its own declaration and constructor say.
     #[must_use]
     pub fn of<T: Configured + Send + Sync + 'static>() -> Self {
-        Self::new(T::SETTINGS, open::<T>)
+        Self {
+            settings: T::SETTINGS,
+            open: open::<T>,
+            waits: waits::<T>,
+        }
     }
 
-    /// A technology declared by `settings` and built by `open`.
+    /// A technology declared by `settings` and built by `open`, said to
+    /// wait for what is sent to it.
     #[must_use]
     pub const fn new(settings: &'static Settings, open: Open) -> Self {
-        Self { settings, open }
+        Self {
+            settings,
+            open,
+            waits: always,
+        }
     }
 
     /// Its module name, what a Location's `transport` names it by.
@@ -84,6 +98,28 @@ impl LinkedTransport {
     pub fn open(&self, location: &ConfiguredLocation, side: Applies, on: OnNode<'_>) -> Opened {
         (self.open)(&location.address, side, &location.settings.given(), on)
     }
+
+    /// Whether a Receive Location of it at `location` waits for what is
+    /// sent to it — listens — rather than going to look, as the technology
+    /// says of itself (`transport::Waiting`): what an environment opens its
+    /// firewall for. One it refuses to build is said to, so nothing a
+    /// configuration might listen on goes unsaid.
+    #[must_use]
+    pub fn waits(&self, location: &ConfiguredLocation) -> bool {
+        (self.waits)(&location.address, &location.settings.given())
+    }
+}
+
+/// Whether `T`, built for a Receive Location at `address`, waits.
+fn waits<T: Configured + Send + Sync + 'static>(address: &str, given: &[(String, Given)]) -> bool {
+    T::open(address, Applies::Receive, given).map_or(true, |built| {
+        matches!(built.waiting(), transport::Waiting::Waits(_))
+    })
+}
+
+/// Said to wait, where nothing else is known.
+const fn always(_: &str, _: &[(String, Given)]) -> bool {
+    true
 }
 
 /// `T` built from a Location and given its node, once, as it is built (the
