@@ -41,6 +41,11 @@ pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
                 .map(|held| held.message_id.value()),
             origin: held(journey).map(|received| received.origin),
             open: held(journey).is_some_and(|received| open(journey.state, received.skips)),
+            group_delivery: journey.group.as_ref().map(|group| group.delivery),
+            group_open: journey
+                .group
+                .as_ref()
+                .is_some_and(|group| open(journey.state, group.skips)),
             ..JourneyFacts::default()
         },
     }
@@ -54,7 +59,8 @@ fn held(journey: &Journey) -> Option<&journey::Received> {
 }
 
 /// Whether a Journey in `state` still keeps its Stream's places in the
-/// sequences it holds end to end: until it is completed or dismissed, and,
+/// sequences it holds end to end, or its delivery's in its Send Port
+/// Group's: until it is completed or dismissed, and,
 /// where its sequences block on a failure, while it waits failed for an
 /// operator (`crate::sequence`).
 const fn open(state: JourneyState, skips: bool) -> bool {

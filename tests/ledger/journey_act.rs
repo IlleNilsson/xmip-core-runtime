@@ -31,7 +31,7 @@ use super::sending::{
 };
 
 /// A far end refusing `order <refused>` for good until `fixed`.
-fn broken_for(refused: u32, fixed: &Arc<AtomicBool>) -> Answer {
+pub(super) fn broken_for(refused: u32, fixed: &Arc<AtomicBool>) -> Answer {
     let fixed = Arc::clone(fixed);
     let refusing = format!("order {refused}");
     Box::new(move |bytes| {

@@ -66,6 +66,7 @@ impl ResolvedSet {
                 KeyWord::ReceiveLocation => journey.received().map(|r| r.location.as_str()),
                 KeyWord::ReceivePort => journey.received().map(|r| r.port.as_str()),
                 KeyWord::WorkProcess => Some(work_process),
+                KeyWord::SendPortGroup => journey.group.as_ref().map(|group| group.name.as_str()),
                 KeyWord::SendPort => journey.send_port.as_deref(),
                 KeyWord::Context(name) => promoted.get(name),
                 KeyWord::Journey(value) => {

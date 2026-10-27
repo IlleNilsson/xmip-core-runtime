@@ -81,6 +81,7 @@ fn fan_out(
             groups: vec![SendPortGroup {
                 name: "All".to_string(),
                 send_ports: PORTS.iter().map(ToString::to_string).collect(),
+                correlation: None,
             }],
             points: Vec::new(),
         },

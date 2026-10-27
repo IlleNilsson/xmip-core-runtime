@@ -12,9 +12,8 @@
 use std::time::{Duration, Instant};
 
 use configure::{Retry, SendPortGroup};
-use path::expression::Expression;
 use persist::storage::XmipStorage;
-use route::{Subscriber, Subscription};
+use route::Subscriber;
 use xcore::JourneyId;
 use xmip_core_runtime::departure::Progress;
 use xmip_core_runtime::fixture::{FarEnd, Operation};
@@ -24,20 +23,11 @@ use xmip_core_runtime::pool::hardware_threads;
 use xmip_core_runtime::send_step::{Departure, Found, read};
 
 use super::receive_cycle::{node, on_node, on_runtime};
+use super::send_group::to_both;
 use super::sending::{
     dispatching, interleaving, journey, memory, onward, order, out, port, refusing, sender,
     senders, taking, took, until,
 };
-
-/// The Subscription `both`, matching everything to the Group of `Bad` and
-/// `Out`.
-fn to_both() -> [Subscription; 1] {
-    [Subscription::new(
-        "both",
-        Subscriber::SendGroup("Both".to_string()),
-        Expression::parse("xmip.transport.mechanism = 'circumstance'").expect("compiles"),
-    )]
-}
 
 /// `Bad`, whose far end `bad` refuses every send in a way that may mend and
 /// is retried after an hour, and `Out`, whose far end `out_end` takes all.
@@ -45,6 +35,7 @@ fn bad_and_out(bad: FarEnd, out_end: FarEnd) -> super::receive_cycle::Sender {
     let group = SendPortGroup {
         name: "Both".to_string(),
         send_ports: vec!["Bad".to_string(), "Out".to_string()],
+        correlation: None,
     };
     let retried = port("Bad", |port| {
         port.retry = Some(Retry {

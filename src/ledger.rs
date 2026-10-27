@@ -47,8 +47,8 @@ mod publication;
 mod record;
 
 pub use audit_chain::verify_audit_chain;
-pub(crate) use publication::opened;
 pub use publication::{Opened, Published, Publisher, publish};
+pub(crate) use publication::{opened, through};
 pub(crate) use record::{audit_entry, audited, journey_record, message_record};
 
 /// The TCP segments one chunk holds: 44 of them, 64,240 bytes, just under
