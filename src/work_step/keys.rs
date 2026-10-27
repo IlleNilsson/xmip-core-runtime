@@ -13,7 +13,7 @@ use journey::Journey;
 use message::Message;
 use route::{Gathering, Promoted};
 
-pub use configure::correlation::KeyWord;
+pub use configure::correlation::{JourneyValue, KeyWord};
 
 /// A correlation set, its keys read once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,12 +61,17 @@ impl ResolvedSet {
     ) -> Result<String, String> {
         let mut text = String::new();
         for key in &self.keys {
+            let owned;
             let value = match key {
                 KeyWord::ReceiveLocation => journey.received().map(|r| r.location.as_str()),
                 KeyWord::ReceivePort => journey.received().map(|r| r.port.as_str()),
                 KeyWord::WorkProcess => Some(work_process),
                 KeyWord::SendPort => journey.send_port.as_deref(),
                 KeyWord::Context(name) => promoted.get(name),
+                KeyWord::Journey(value) => {
+                    owned = journey_value(journey, *value);
+                    owned.as_deref()
+                }
             };
             let Some(value) = value else {
                 return Err(format!(
@@ -78,6 +83,17 @@ impl ResolvedSet {
             text.push_str(&format!("{}:{value};", value.len()));
         }
         Ok(text)
+    }
+}
+
+/// The Journey Context value `value` of `journey`, where it carries one.
+fn journey_value(journey: &Journey, value: JourneyValue) -> Option<String> {
+    match value {
+        JourneyValue::Origin => journey.received().map(|r| r.origin.to_string()),
+        JourneyValue::Subscription => journey.cause().map(|c| c.subscription_id.clone()),
+        JourneyValue::Previous => journey
+            .previous_journey_id()
+            .map(|id| id.value().to_string()),
     }
 }
 
@@ -106,5 +122,42 @@ mod tests {
         );
         assert!(KeyWord::read("journey:Step").is_err());
         assert!(ResolvedSet::read("Empty", &[]).is_err());
+    }
+
+    #[test]
+    fn a_journey_key_reads_what_the_journey_carries() {
+        use journey::{ChainCause, ChainLimit, Received};
+        use xcore::JourneyId;
+        let first = Journey::new(JourneyId::new(7)).received_as(Received {
+            location: "In".into(),
+            port: "Orders".into(),
+            origin: 42,
+            sequences: Vec::new(),
+            skips: false,
+        });
+        let next = Journey::following(
+            JourneyId::new(8),
+            &first,
+            ChainCause::subscription("billing"),
+            ChainLimit::DEFAULT,
+        )
+        .expect("within the limit");
+        let set = ResolvedSet::read(
+            "Batch",
+            &[
+                "journey:origin".into(),
+                "journey:subscription".into(),
+                "journey:previous".into(),
+            ],
+        )
+        .expect("reads");
+        let text = set
+            .text(&next, &Promoted::default(), "")
+            .expect("every value");
+        assert_eq!(text, "2:42;7:billing;1:7;");
+        let refused = set
+            .text(&first, &Promoted::default(), "")
+            .expect_err("the first Journey has no subscription");
+        assert!(refused.contains("journey:subscription"), "{refused}");
     }
 }
