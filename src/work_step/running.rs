@@ -11,13 +11,14 @@ use route::{Gathering, Source, Subscriber};
 use xcore::IdGenerator;
 
 use super::keys::ResolvedSet;
+use crate::split::Split;
 
 /// What a Work Process's work on a Message calls: the units a step names
 /// by module and unit (ADR-0066, amendment 2026-10-22), handed in, never
 /// looked up by name here.
 pub trait WorkUnits: Send + Sync {
     /// `call` done on `message`: the Messages it made, the one the flow
-    /// goes on with first; a split's parts, all of them.
+    /// goes on with first.
     ///
     /// # Errors
     /// What it threw: its code and why, caught by the flow's scopes.
@@ -27,7 +28,19 @@ pub trait WorkUnits: Send + Sync {
         message: &Message,
         ids: &dyn IdGenerator,
     ) -> Result<Vec<Message>, Thrown>;
+
+    /// The splitting unit `call` names, ready for one Message: a Debatch
+    /// feeds it through [`crate::split`], the implementation the receive
+    /// calls too.
+    ///
+    /// # Errors
+    /// What it threw: its code and why, caught by the flow's scopes.
+    fn splitter(&self, call: &Call) -> Result<Box<dyn Split>, Thrown>;
 }
+
+/// The code a Debatch throws where its unit refused any record — all or
+/// nothing — its reason the summary and each failed record's position.
+pub const RECORD_REFUSED: &str = "record-refused";
 
 /// An error a unit threw.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,15 +55,25 @@ pub const NO_UNIT: &str = "no-unit";
 /// No unit at all: every call throws [`NO_UNIT`].
 pub struct NoUnits;
 
-impl WorkUnits for NoUnits {
-    fn call(&self, call: &Call, _: &Message, _: &dyn IdGenerator) -> Result<Vec<Message>, Thrown> {
-        Err(Thrown {
+impl NoUnits {
+    fn none(call: &Call) -> Thrown {
+        Thrown {
             code: NO_UNIT.to_string(),
             reason: format!(
                 "this node carries no unit '{}' of '{}'",
                 call.unit, call.module
             ),
-        })
+        }
+    }
+}
+
+impl WorkUnits for NoUnits {
+    fn call(&self, call: &Call, _: &Message, _: &dyn IdGenerator) -> Result<Vec<Message>, Thrown> {
+        Err(Self::none(call))
+    }
+
+    fn splitter(&self, call: &Call) -> Result<Box<dyn Split>, Thrown> {
+        Err(Self::none(call))
     }
 }
 

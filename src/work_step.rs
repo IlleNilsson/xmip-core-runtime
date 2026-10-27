@@ -50,7 +50,7 @@ pub use dispatch::{dispatch, turn_due};
 pub use keys::{KeyWord, ResolvedSet};
 #[cfg(feature = "dynamic-loading")]
 pub use opened::opened;
-pub use running::{NO_UNIT, NoUnits, Running, Thrown, WorkUnits};
+pub use running::{NO_UNIT, NoUnits, RECORD_REFUSED, Running, Thrown, WorkUnits};
 pub use turning::Turned;
 
 /// How long a claim on a Journey bound for a Work Process holds before it

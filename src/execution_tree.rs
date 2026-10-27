@@ -137,12 +137,11 @@ pub fn build_execution_tree(
         .flat_map(|application| application.work_processes.iter())
         .filter_map(|process| Some((process.name.clone(), process.correlation_set.clone()?)))
         .collect();
-    let named = points_named(&bound, &work_process_sets);
-    let named: Vec<(&str, &str, &str)> = named
-        .iter()
-        .map(|(kind, name, set)| (*kind, name.as_str(), set.as_str()))
-        .collect();
-    let unset = configure::correlation::problems(&document.correlation_sets, &named);
+    let unset = configure::correlation::bound_problems(
+        &document.correlation_sets,
+        &bound,
+        &work_process_sets,
+    );
     if !unset.is_empty() {
         report.errors.extend(unset);
         return Err(report);
@@ -205,34 +204,6 @@ pub fn build_execution_tree(
         },
         report,
     ))
-}
-
-/// Every point the bound Applications name a correlation set at: its kind,
-/// its name and the set.
-fn points_named(
-    bound: &configure::Bound,
-    work_process_sets: &[(String, String)],
-) -> Vec<(&'static str, String, String)> {
-    let mut named = Vec::new();
-    for port in &bound.receive_ports {
-        if let Some(set) = &port.correlation_set {
-            named.push(("Receive Port", port.name.clone(), set.clone()));
-        }
-        for location in &port.receive_locations {
-            if let Some(set) = &location.correlation_set {
-                named.push(("Receive Location", location.name.clone(), set.clone()));
-            }
-        }
-    }
-    for port in &bound.send_ports {
-        if let Some(set) = &port.correlation_set {
-            named.push(("Send Port", port.name.clone(), set.clone()));
-        }
-    }
-    for (name, set) in work_process_sets {
-        named.push(("Work Process", name.clone(), set.clone()));
-    }
-    named
 }
 
 /// The locations that start, the node's own and those its bindings give it

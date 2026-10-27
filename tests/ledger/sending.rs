@@ -144,6 +144,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
         transform: None,
         promote: None,
         demote: None,
+        debatch: None,
     };
     shaped(&mut port);
     port

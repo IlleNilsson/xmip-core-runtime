@@ -10,13 +10,13 @@ use std::collections::HashMap;
 
 use journey::{ChainCause, ChainLimit, Journey, JourneyMessageRef};
 use message::{Message, MessageCreationSource, MessageSection};
-use process::program::Work;
+use process::program::{Call, Work};
 use process::{Arrival, Event};
 use route::Subscriber;
 use xcore::{JourneyId, MessageId};
 
 use super::keys::promoted;
-use super::running::Running;
+use super::running::{RECORD_REFUSED, Running, Thrown};
 use crate::ledger::Opened;
 use crate::message_path::Runtime;
 use crate::pickup::Pickup;
@@ -68,17 +68,8 @@ pub(super) fn work(
                 context,
             )])
         }
-        Work::Unit(call) | Work::Debatch(call) => {
-            running.units.call(call, &message, runtime.ids).map(|made| {
-                if matches!(work, Work::Debatch(_)) {
-                    made.into_iter()
-                        .map(|part| debatched(&message, part))
-                        .collect()
-                } else {
-                    made
-                }
-            })
-        }
+        Work::Unit(call) => running.units.call(call, &message, runtime.ids),
+        Work::Debatch(call) => debatch(runtime, running, call, &message)?,
     };
     match outcome {
         Ok(messages) => {
@@ -99,14 +90,32 @@ pub(super) fn work(
     }
 }
 
-/// A split's part as the generation after the Message it was split from.
-fn debatched(from: &Message, part: Message) -> Message {
-    from.transformed(
-        part.message_id(),
-        part.sections().to_vec(),
-        part.context().clone(),
-        MessageCreationSource::Debatch,
-    )
+/// `message` split by the unit `call` names, through the one splitting
+/// implementation (`crate::split`): its parts, or — where the unit refused
+/// any record, all or nothing — [`RECORD_REFUSED`], its reason the summary
+/// and every failed record's position, for the flow's scopes.
+///
+/// # Errors
+/// A Section that could not be read, or a part Xmip Storage did not take.
+fn debatch(
+    runtime: &Runtime<'_>,
+    running: &Running,
+    call: &Call,
+    message: &Message,
+) -> Result<Result<Vec<Message>, Thrown>, String> {
+    let mut split = match running.units.splitter(call) {
+        Ok(split) => split,
+        Err(thrown) => return Ok(Err(thrown)),
+    };
+    let parts = crate::split::whole(
+        (runtime.storage, runtime.ids, runtime.chunk),
+        message,
+        split.as_mut(),
+    )?;
+    Ok(parts.map_err(|refused| Thrown {
+        code: RECORD_REFUSED.to_string(),
+        reason: format!("'{}' of '{}': {refused}", call.unit, call.module),
+    }))
 }
 
 /// The Messages `messages` made one at `node`: their Sections in order,

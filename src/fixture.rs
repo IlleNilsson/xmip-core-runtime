@@ -16,10 +16,12 @@ use xcore::{Layer, Mechanism, mechanism};
 pub mod authority;
 mod drain;
 mod failing;
+mod lines;
 
 pub use authority::Authority;
 pub use drain::Drain;
 pub use failing::{Failing, Interleaved, Operation};
+pub use lines::{Lines, LinesUnits};
 
 /// Verifies every claim of its mechanism with the verdict it was given.
 pub struct Always(pub Mechanism, pub Verified);
@@ -113,6 +115,7 @@ impl FarEnd {
                 transform: None,
                 promote: None,
                 demote: None,
+                debatch: None,
             },
             chain: send::SendChain::default(),
             transport: Box::new(self),
