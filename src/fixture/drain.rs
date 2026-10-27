@@ -1,10 +1,10 @@
 //! A Send Location's far end that takes each body as it is sent, a piece at
 //! a time, and keeps only how long it was: what a test of what a send holds
 //! sends large Messages to, as a transport that streams sends them — at the
-//! machine's pace, or at a far end's.
+//! machine's pace, or at a far end's — or one that stops taking until let go.
 
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// A far end that reads every body it is sent as it comes and keeps its
@@ -15,9 +15,54 @@ pub struct Drain {
     /// How long it takes over each piece, where it is slower than the
     /// machine: a network's far end.
     pace: Option<Duration>,
+    /// Where it stops taking once it took a piece, until let go.
+    stall: Option<Stopped>,
+}
+
+/// Whether a stalled far end was let go, and the word it waits on.
+type Stopped = Arc<(Mutex<bool>, Condvar)>;
+
+/// A far end stopped: let go by [`Stall::release`], or once dropped, so a
+/// test that fails never leaves a send waiting for good.
+pub struct Stall(Stopped);
+
+impl Stall {
+    /// The far end takes again.
+    pub fn release(&self) {
+        let (released, word) = &*self.0;
+        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        word.notify_all();
+    }
+}
+
+impl Drop for Stall {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Waits until the far end stopped by `stopped` is let go.
+fn stopped_until_released(stopped: &Stopped) {
+    let (released, word) = &**stopped;
+    let mut held = released.lock().unwrap_or_else(PoisonError::into_inner);
+    while !*held {
+        held = word.wait(held).unwrap_or_else(PoisonError::into_inner);
+    }
 }
 
 impl Drain {
+    /// A far end that takes its first piece and then stops, taking nothing
+    /// until the [`Stall`] is released or dropped: a stuck Send Port.
+    #[must_use]
+    pub fn stalled() -> (Self, Stall) {
+        let stopped = Stopped::default();
+        let drain = Self {
+            stall: Some(Arc::clone(&stopped)),
+            ..Self::default()
+        };
+        (drain, Stall(stopped))
+    }
+
     /// A far end that takes over each piece written to it at least `pace`,
     /// as a far end across a network sets a send's pace.
     #[must_use]
@@ -47,14 +92,19 @@ impl Drain {
 }
 
 /// Bytes counted as they are written, and let go of — each piece taken
-/// over at least `pace`, where there is one.
+/// over at least `pace`, where there is one, and none past the first while
+/// stopped.
 struct Counted {
     bytes: u64,
     pace: Option<Duration>,
+    stall: Option<Stopped>,
 }
 
 impl Write for Counted {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(stopped) = self.stall.as_ref().filter(|_| self.bytes > 0) {
+            stopped_until_released(stopped);
+        }
         if let Some(pace) = self.pace {
             // A far end's pace, held to the microsecond: a sleep ends on the
             // system's tick.
@@ -101,6 +151,7 @@ impl transport::Transport for Drain {
         let mut counted = Counted {
             bytes: 0,
             pace: self.pace,
+            stall: self.stall.clone(),
         };
         let length = outgoing.write_to(&mut counted)?;
         let key = outgoing.key().unwrap_or_default().to_string();

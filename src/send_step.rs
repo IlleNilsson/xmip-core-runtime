@@ -253,7 +253,7 @@ impl SendStep {
         Self {
             cluster: cluster.to_string(),
             node: node.to_string(),
-            share: StreamShare::new(Arc::clone(&storage)),
+            share: StreamShare::new(Arc::clone(&storage), tuning.stream_stall),
             storage,
             lease: tuning.send_lease,
             scan: tuning.send_scan,

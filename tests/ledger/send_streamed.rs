@@ -7,6 +7,9 @@
 //!   counted;
 //! - departures kept to their far ends' pace take each chunk from one read
 //!   of it, lent, rather than each reading it again;
+//! - a far end that stops taking holds the other departures of its Stream
+//!   back only for `[tuning] stream_stall`, and once let go reads what it
+//!   missed and ends;
 //! - a send whose transport gathers the whole body holds it within the
 //!   node's byte budget for sends: two that do not fit together are sent
 //!   one after the other.
@@ -21,7 +24,7 @@ use persist::storage::XmipStorage;
 use receive::ReceivedStream;
 use route::{Subscriber, Subscription};
 use xmip_core_runtime::budget::{CARRY_CHUNKS, STREAM_CHUNKS};
-use xmip_core_runtime::fixture::{Drain, Failing, FarEnd, Operation};
+use xmip_core_runtime::fixture::{Drain, Failing, FarEnd, Operation, Stall};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{Carried, ReceiveCycle, carry};
 use xmip_core_runtime::pool::hardware_threads;
@@ -29,7 +32,7 @@ use xmip_core_runtime::sending::Sends;
 
 use super::bounded::{Made, alone, measured};
 use super::receive_cycle::{Sender, node, on_node};
-use super::sending::{dispatching, interleaving, onward, order, out, port, quick, sender};
+use super::sending::{Told, dispatching, interleaving, onward, order, out, port, quick, sender};
 use super::{directory, test_node};
 
 /// The Send Ports of the fan-out.
@@ -44,11 +47,24 @@ fn to_all() -> [Subscription; 1] {
     )]
 }
 
+/// Waits until every Journey of `carried` completed.
+fn every_sent(told: &Told, carried: &Carried) {
+    for journey in &carried.journeys {
+        told.wait_for(journey.journey_id(), "completed");
+    }
+}
+
 /// What a fan-out of a Message of `length` bytes to [`PORTS`], each to its
-/// far end in `drains`, came to once every Journey completed: the most this
-/// process held at once while they were sent, and the chunks read from Xmip
-/// Storage for them.
-fn fan_out(test: &str, length: u64, drains: &[Drain]) -> (usize, u64) {
+/// far end in `drains`, came to once `sent` saw its Journeys completed: the
+/// most this process held at once while they were sent, and the chunks read
+/// from Xmip Storage for them. What `sent` holds is let go as it returns or
+/// fails, before the node stops.
+fn fan_out(
+    test: &str,
+    length: u64,
+    drains: &[Drain],
+    sent: impl FnOnce(&Told, &Carried),
+) -> (usize, u64) {
     // On disk, as a node's runtime database is: a Storage node in this
     // process's memory would hold every chunk where the count looks.
     let place = directory(test);
@@ -89,19 +105,14 @@ fn fan_out(test: &str, length: u64, drains: &[Drain]) -> (usize, u64) {
                 carried
             };
             let ((carried, most, read), _) = dispatching(runtime, |told| {
-                let sent = |carried: &Carried| {
-                    for journey in &carried.journeys {
-                        told.wait_for(journey.journey_id(), "completed");
-                    }
-                };
                 // A small one first, so the Send pool's threads are started
                 // and wait for work, as a node's that has been sending do.
-                sent(&fan_out(order(0)));
+                every_sent(told, &fan_out(order(0)));
                 let read_before = failing.asked_times(Operation::ReadChunk);
                 let (carried, most) = measured(|| {
                     let made = ReceivedStream::new(Made::of(length), "tcp://127.0.0.1:1");
                     let carried = fan_out(made);
-                    sent(&carried);
+                    sent(told, &carried);
                     carried
                 });
                 let read = failing.asked_times(Operation::ReadChunk) - read_before;
@@ -130,7 +141,7 @@ fn a_fan_out_of_a_large_message_is_sent_in_bounded_memory() {
 fn sent_in_bounded_memory() {
     const LENGTH: u64 = 64 * 1024 * 1024;
     let drains: Vec<Drain> = PORTS.iter().map(|_| Drain::default()).collect();
-    let (most, read) = fan_out("send-streamed-large", LENGTH, &drains);
+    let (most, read) = fan_out("send-streamed-large", LENGTH, &drains, every_sent);
     let chunks = LENGTH.div_ceil(CHUNK as u64);
     eprintln!(
         "STREAMED {} sends of {LENGTH} bytes held {most} bytes at most; {read} chunk reads \
@@ -154,7 +165,7 @@ fn departures_at_their_far_ends_pace_share_one_read_of_each_chunk() {
         .iter()
         .map(|_| Drain::paced(Duration::from_micros(100)))
         .collect();
-    let (_, read) = fan_out("send-streamed-paced", LENGTH, &drains);
+    let (_, read) = fan_out("send-streamed-paced", LENGTH, &drains, every_sent);
     let chunks = LENGTH.div_ceil(CHUNK as u64) + 1;
     eprintln!(
         "SHARED {} sends at a far end's pace: {read} chunk reads for {chunks}",
@@ -164,6 +175,35 @@ fn departures_at_their_far_ends_pace_share_one_read_of_each_chunk() {
     // read once, and a send begun two chunks late reads on by itself.
     assert!(read < 2 * chunks, "{read} chunk reads for {chunks} chunks");
 }
+
+#[test]
+fn a_stalled_far_end_frees_the_other_sends_of_its_stream() {
+    // Far more chunks than a read keeps for the one stalled: held back for
+    // it for good, the others would never finish.
+    const LENGTH: u64 = 8 * 1024 * 1024;
+    let (stalled, stall): (Drain, Stall) = Drain::stalled();
+    let drains: Vec<Drain> = std::iter::once(stalled.clone())
+        .chain(PORTS[1..].iter().map(|_| Drain::default()))
+        .collect();
+    fan_out(
+        "send-streamed-stalled",
+        LENGTH,
+        &drains,
+        move |told, carried| {
+            // Every send but the stalled one's ends while it takes nothing:
+            // it is left behind once it took nothing for the stall.
+            for journey in &carried.journeys[1..] {
+                told.wait_for(journey.journey_id(), "completed");
+            }
+            let stuck = stalled.taken().iter().all(|(length, _)| *length < LENGTH);
+            assert!(stuck, "the stalled far end took nothing whole yet");
+            // Let go, it reads what it missed from Xmip Storage and ends.
+            stall.release();
+            told.wait_for(carried.journeys[0].journey_id(), "completed");
+        },
+    );
+}
+
 #[test]
 fn sends_that_gather_more_than_the_byte_budget_holds_go_one_at_a_time() {
     let (_, storage) = interleaving();

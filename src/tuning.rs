@@ -30,6 +30,7 @@
 //! send_scan = "1s"                            # send_step::SEND_SCAN
 //! failed_window = 100                         # send_step::FAILED_WINDOW
 //! send_chunks_per_thread = 16                 # budget::SEND_CHUNKS_PER_THREAD
+//! stream_stall = "100ms"                      # stream_share::STREAM_STALL
 //! storage_timeout = "5s"                      # persist's client::TIMEOUT
 //! storage_pass_over = "5s"                    # persist's client::PASS_OVER
 //! storage_beat = "100ms"                      # persist's standby::BEAT
@@ -75,6 +76,7 @@ pub struct Tuning {
     pub send_scan: Duration,
     pub failed_window: usize,
     pub send_chunks_per_thread: usize,
+    pub stream_stall: Duration,
     pub storage_timeout: Duration,
     pub storage_pass_over: Duration,
     pub storage_beat: Duration,
@@ -140,6 +142,7 @@ impl Tuning {
             send_scan: duration("send_scan"),
             failed_window: count("failed_window"),
             send_chunks_per_thread: count("send_chunks_per_thread"),
+            stream_stall: duration("stream_stall"),
             storage_timeout: duration("storage_timeout"),
             storage_pass_over: duration("storage_pass_over"),
             storage_beat: duration("storage_beat"),
@@ -259,6 +262,7 @@ mod tests {
             (SEND_IDLE, SEND_LEASE, SEND_SCAN)
         );
         assert_eq!(tuning.failed_window, FAILED_WINDOW);
+        assert_eq!(tuning.stream_stall, crate::stream_share::STREAM_STALL);
         assert_eq!(
             tuning.node_receive().most,
             NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
@@ -282,7 +286,7 @@ mod tests {
              receive_sweep = \"3s\"\n\
              receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n\
              node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
-             send_chunks_per_thread = 9\n",
+             send_chunks_per_thread = 9\nstream_stall = \"40ms\"\n",
         )
         .expect("reads");
         assert_eq!(tuning.failed_window, 12);
@@ -301,6 +305,7 @@ mod tests {
         assert_eq!(tuning.send().most, 3 * crate::pool::hardware_threads());
         assert_eq!(tuning.send_lease, Duration::from_secs(5));
         assert_eq!(tuning.send_scan, Duration::from_millis(200));
+        assert_eq!(tuning.stream_stall, Duration::from_millis(40));
         assert_eq!(
             tuning.pace(),
             Pace {
