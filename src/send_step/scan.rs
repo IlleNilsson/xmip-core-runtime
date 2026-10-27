@@ -54,7 +54,8 @@ fn scanning(
     waits: &mut Due,
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
-    let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty();
+    let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty()
+        || crate::sequence::grouped(runtime.sends, to);
     let mut present = HashSet::new();
     let mut found = Vec::new();
     let mut reading = Reading::of(step, queue);

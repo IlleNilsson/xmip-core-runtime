@@ -57,6 +57,18 @@ pub struct Opened {
     pub journey: Journey,
     pub subscription: String,
     pub to: Subscriber,
+    /// The Send Port Group it was opened through, where its Subscription
+    /// routes to one (`crate::sequence::delivered`).
+    pub group: Option<String>,
+}
+
+/// The Send Port Group a Journey routed to `destination` is opened
+/// through, where it is one.
+pub(crate) fn through(destination: &Subscriber) -> Option<String> {
+    match destination {
+        Subscriber::SendGroup(group) => Some(group.clone()),
+        Subscriber::SendPort(_) | Subscriber::WorkProcess(_) => None,
+    }
 }
 
 /// A Journey for every Subscription `routing` matched and every Send Port
@@ -82,6 +94,7 @@ pub(crate) fn opened(
                     ChainCause::subscription(name)
                 }
             };
+            let group = through(&evaluation.destination);
             pickup
                 .reaches(name, &evaluation.destination)
                 .into_iter()
@@ -96,6 +109,7 @@ pub(crate) fn opened(
                         journey,
                         subscription: name.clone(),
                         to,
+                        group: group.clone(),
                     }
                 })
         })
@@ -141,6 +155,9 @@ pub fn publish(
     for one in &mut opened {
         one.journey = one.journey.clone().received_as(received.clone());
     }
+    // The members of each delivery by a Send Port Group naming a
+    // Correlation know their delivery (`crate::sequence::delivered`).
+    crate::sequence::delivered(publisher.sends, &mut opened, publisher.ids);
     // A Stream holding sequences end to end has its Journeys take no place
     // where they are bound yet: each takes its places once its Stream heads
     // its own, so destinations hold Streams in the order they are let

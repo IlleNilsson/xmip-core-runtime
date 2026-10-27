@@ -14,9 +14,10 @@
 //!
 //! - **A sequence is a queue in the Ledger**, one per point and key: the
 //!   point — a Receive Location, a Receive Port, a Work Process, a Send
-//!   Port — the Correlation named there, and the key's values written
-//!   out in full ([`Point::queue`]). Equal keys share it; different keys
-//!   are different queues and run in parallel.
+//!   Port Group, a Send Port, a Send Location — the Correlation named
+//!   there, and the key's values written out in full ([`Point::queue`]).
+//!   Equal keys share it; different keys are different queues and run in
+//!   parallel.
 //! - **A place is held from the write that brings work to the point**, in
 //!   that write, and work there goes on only while it holds the first
 //!   place ([`heads`]). Nothing waits on a thread: what does not head its
@@ -26,14 +27,19 @@
 //!   received as — until the last Journey born from it ends, which Xmip
 //!   Storage counts (`persist::storage`'s origin). A Work Process's and a
 //!   Send Port's is the Journey's, held while it is at that point.
+//! - **A Send Port Group's is its delivery's** (`group`): held for the
+//!   member Journeys one Publication opens through the Group until every
+//!   member has succeeded or failed, which Xmip Storage counts too.
 //! - **A Receive Location heads its own by default**: one Stream at a time,
 //!   keyed by its own name, until it names a set that spreads the work.
 
 mod configured;
+mod group;
 mod late;
 
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
+pub use group::{delivered, group_heads, group_placed, grouped, waits_for_group};
 use journey::{Journey, Received, Sequenced};
 pub use late::{Placing, heading, take_late, waits_for_places};
 
@@ -53,6 +59,7 @@ pub enum PointKind {
     ReceiveLocation,
     ReceivePort,
     WorkProcess,
+    SendPortGroup,
     SendPort,
     SendLocation,
 }
@@ -65,6 +72,7 @@ impl PointKind {
             Self::ReceiveLocation => "receive-location",
             Self::ReceivePort => "receive-port",
             Self::WorkProcess => "work-process",
+            Self::SendPortGroup => "send-port-group",
             Self::SendPort => "send-port",
             Self::SendLocation => "send-location",
         }
@@ -181,8 +189,9 @@ pub fn received(
 }
 
 /// The places the Journeys `opened` take in the sequences of the points
-/// they are bound for — a Send Port, the Send Locations it may leave by, or
-/// a Work Process, each naming a Correlation — their keys read from
+/// they are bound for — a Send Port Group's for their delivery, a Send
+/// Port, the Send Locations it may leave by, or a Work Process, each naming
+/// a Correlation — their keys read from
 /// `promoted`, each Journey told its places: taken in the write that opens
 /// them, so the order is the Ledger's.
 ///
@@ -196,6 +205,7 @@ pub fn places(
 ) -> Result<Vec<Hold>, String> {
     let mut places = Vec::new();
     for one in opened {
+        places.extend(group_placed(cluster, sends, &mut one.journey, promoted)?);
         places.extend(placed(
             cluster,
             &points_of(sends, &one.to),

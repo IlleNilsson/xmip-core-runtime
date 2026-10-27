@@ -69,9 +69,9 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
     Ok((port.name.clone(), points))
 }
 
-/// The sequences of the Send Ports, Send Locations and Work Processes the
-/// node reads that name a Correlation: every Send Port of its bound
-/// Applications and every Send Location its document holds, sent here or
+/// The sequences of the Send Port Groups, Send Ports, Send Locations and
+/// Work Processes the node reads that name a Correlation: every Send Port
+/// Group and Send Port of its bound Applications and every Send Location its document holds, sent here or
 /// not, since a Journey published here takes its places whichever node
 /// sends it.
 ///
@@ -79,6 +79,10 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
 /// Every point naming a set that is not declared, or broken, in words.
 pub fn destinations(tree: &ExecutionTree) -> Result<Vec<Point>, Vec<String>> {
     let sets = &tree.correlations;
+    let groups = tree.send_port_groups.iter().filter_map(|group| {
+        let set = group.correlation.as_deref()?;
+        Some(point(sets, (PointKind::SendPortGroup, &group.name), set))
+    });
     let named = tree
         .designed_send_ports
         .iter()
@@ -86,6 +90,7 @@ pub fn destinations(tree: &ExecutionTree) -> Result<Vec<Point>, Vec<String>> {
             let set = port.correlation.as_deref()?;
             Some(point(sets, (PointKind::SendPort, &port.name), set))
         })
+        .chain(groups)
         .chain(
             tree.send_location_sets
                 .iter()

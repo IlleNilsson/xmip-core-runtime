@@ -28,7 +28,7 @@ use super::sending::{
 };
 
 /// The Subscription `both`, matching everything to the Group `Both`.
-fn to_both() -> [Subscription; 1] {
+pub(super) fn to_both() -> [Subscription; 1] {
     [Subscription::new(
         "both",
         Subscriber::SendGroup("Both".to_string()),
@@ -44,6 +44,7 @@ fn a_send_port_group_opens_one_journey_per_port_each_sent_alone() {
     let group = SendPortGroup {
         name: "Both".to_string(),
         send_ports: vec!["Out".to_string(), "Archive".to_string()],
+        correlation: None,
     };
     let sending = senders(
         node(),

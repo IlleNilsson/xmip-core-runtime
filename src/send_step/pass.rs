@@ -267,12 +267,15 @@ pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
 }
 
 /// Whether `departure` may be sent now: its Stream heads every sequence it
-/// holds end to end, and it heads every sequence of its Send Port and of
+/// holds end to end, its delivery its Send Port Group's, and it heads every sequence of its Send Port and of
 /// the Send Locations it may leave by (`crate::sequence`), told it in the
 /// write that brought it to the Port.
 fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
     let storage = runtime.storage.as_ref();
     if !crate::sequence::stream_heads(storage, &departure.work.journey)? {
+        return Ok(false);
+    }
+    if !crate::sequence::group_heads(storage, &departure.work.journey)? {
         return Ok(false);
     }
     let member = departure.work.journey.journey_id().value();

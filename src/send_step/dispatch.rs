@@ -144,11 +144,14 @@ impl SendStep {
             Ended::Behind => {
                 drop(state);
                 let _ = self.storage.release(&departure.claim);
-                // One that only waits for its places, its Stream heading: its
-                // queue read at once, so the scan takes them in order now.
+                // One that only waits for its places, its Stream and its
+                // Group delivery heading: its queue read at once, so the
+                // scan takes them in order now.
                 let journey = &departure.work.journey;
                 let ask = journey.sequences.is_empty()
                     && crate::sequence::stream_heads(self.storage.as_ref(), journey)
+                        .unwrap_or(false)
+                    && crate::sequence::group_heads(self.storage.as_ref(), journey)
                         .unwrap_or(false);
                 state = self.lock();
                 if ask && !state.asked.contains(&departure.queue) {
@@ -251,6 +254,7 @@ fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: D
         .journey
         .received()
         .is_some_and(|received| !received.sequences.is_empty())
+        || departure.work.journey.group.is_some()
         || !crate::sequence::points_of(runtime.sends, &departure.to).is_empty();
     let closed = sequenced && matches!(ended, Ended::Completed(_) | Ended::Failed { .. });
     if let Some(departure) = sending.departure.take() {

@@ -31,7 +31,8 @@ pub enum Placing {
 }
 
 /// `journey`'s Stream asked whether it heads its own sequences and, where
-/// it does, its places at `to` taken ([`take_late`]).
+/// it does, its places at `to` taken ([`take_late`]): its Send Port Group's
+/// for its delivery first, and the rest once the delivery heads it.
 ///
 /// # Errors
 /// As [`take_late`], or Xmip Storage not answering.
@@ -41,24 +42,36 @@ pub fn heading(
     (journey, message, to): (&mut Journey, &Message, &Subscriber),
     claimed: (&Claim, Duration),
 ) -> Result<Placing, String> {
+    let (_, sends, _) = configured;
     if !super::stream_heads(storage, journey)? {
         return Ok(Placing::Behind);
     }
-    if take_late(storage, configured, (journey, message, to), claimed)? {
-        Ok(Placing::Placed)
-    } else {
-        Ok(Placing::Lost)
+    // A Send Port Group's place first, and the places after it once its
+    // delivery heads the Group's sequence: in path order.
+    loop {
+        if !super::group_heads(storage, journey)? {
+            return Ok(Placing::Behind);
+        }
+        if !waits_for_places(sends, journey, to) {
+            return Ok(Placing::Placed);
+        }
+        if !take_late(storage, configured, (journey, message, to), claimed)? {
+            return Ok(Placing::Lost);
+        }
     }
 }
 
 /// Whether `journey`, bound for `to`, still waits for its places there:
-/// its point names a set and it holds no place yet.
+/// its Send Port Group's for its delivery, or its point names a set and it
+/// holds no place yet.
 #[must_use]
 pub fn waits_for_places(sends: &Sends, journey: &Journey, to: &Subscriber) -> bool {
-    journey.sequences.is_empty() && !points_of(sends, to).is_empty()
+    super::waits_for_group(sends, journey)
+        || (journey.sequences.is_empty() && !points_of(sends, to).is_empty())
 }
 
-/// `journey`'s places at `to`, taken now under `claim` in one write — the
+/// `journey`'s places at `to` — its Send Port Group's alone where it has
+/// not taken that yet — taken now under `claim` in one write — the
 /// Journey told them, the claim kept a `lease` on — where it still waits
 /// for them ([`waits_for_places`]) and its Stream heads its end-to-end
 /// sequences, as the caller has asked. `false` where the claim was not its
@@ -77,7 +90,10 @@ pub fn take_late(
     }
     let promoted = gathering.promote(message).map_err(|why| why.to_string())?;
     let mut placed = journey.clone();
-    let queued = super::placed(cluster, &points_of(sends, to), &mut placed, &promoted)?;
+    let queued = match super::group_placed(cluster, sends, &mut placed, &promoted)? {
+        Some(place) => vec![place],
+        None => super::placed(cluster, &points_of(sends, to), &mut placed, &promoted)?,
+    };
     let hand_on = HandOn {
         claim: claim.clone(),
         result: crate::ledger::journey_record(&placed),

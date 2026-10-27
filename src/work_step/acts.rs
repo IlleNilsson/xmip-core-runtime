@@ -216,6 +216,7 @@ pub(super) fn publish(
                 journey,
                 subscription: name.clone(),
                 to,
+                group: crate::ledger::through(&evaluation.destination),
             });
         }
     }
@@ -228,6 +229,7 @@ pub(super) fn publish(
     if !made.new.contains(&message) {
         made.new.push(message);
     }
+    crate::sequence::delivered(runtime.sends, &mut opened, runtime.ids);
     let cluster = runtime.work.cluster();
     let places = crate::sequence::places(cluster, runtime.sends, &mut opened, &promoted)?;
     made.holds.extend(places);

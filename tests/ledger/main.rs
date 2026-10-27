@@ -31,9 +31,11 @@
 //! and Completed written, a retry's backoff holding no thread and its count
 //! surviving a restart, a Sequential Send Port's order; `send_group.rs` a
 //! Send Port Group's one Journey per Port, and the deduplication key every
-//! send carries; `journey_act.rs` an operator's Retry and Dismiss of a
-//! Journey that failed; `send_killed.rs` the send step killed before it sent
-//! and mid-send, and what another node, or the node restarted, sends;
+//! send carries; `group_correlation.rs` a Group naming a Correlation, its
+//! key held for a delivery until every member has ended, blocking or
+//! skipping on a failure; `journey_act.rs` an operator's Retry and Dismiss
+//! of a Journey that failed; `send_killed.rs` the send step killed before it
+//! sent and mid-send, and what another node, or the node restarted, sends;
 //! `searched.rs` a Publication found by its searchable columns;
 //! `send_raced.rs` another writer landing between a read and a claim;
 //! `send_bounded.rs` a panicking send, a scan and a Publication bounded by
@@ -61,6 +63,7 @@ mod child_process;
 mod dead_message_queue;
 mod drained;
 mod fenced;
+mod group_correlation;
 mod halts_at_publication;
 mod held;
 mod journey_act;
