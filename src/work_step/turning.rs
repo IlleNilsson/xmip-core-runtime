@@ -56,7 +56,7 @@ pub(super) fn turn(
         let _ = step.storage.release(&claim);
         Turned::Waits(why)
     };
-    let work = match read(runtime, id, &held.hold.body) {
+    let mut work = match read(runtime, id, &held.hold.body) {
         Ok(Found::Waiting(found)) => found.0,
         Ok(_) => return release("it is not one to take a turn of".to_string()),
         Err(why) => return release(why),
@@ -64,6 +64,18 @@ pub(super) fn turn(
     match stream_heads(step.storage.as_ref(), &work.journey) {
         Ok(true) => {}
         Ok(false) => return release("its Stream waits behind another".to_string()),
+        Err(why) => return release(why),
+    }
+    // Its place at the Work Process, taken now its Stream heads.
+    let to = route::Subscriber::WorkProcess(running.name.clone());
+    match crate::sequence::take_late(
+        step.storage.as_ref(),
+        (step.cluster(), runtime.sends, runtime.gathering),
+        (&mut work.journey, &work.message, &to),
+        (&claim, step.lease),
+    ) {
+        Ok(true) => {}
+        Ok(false) => return Turned::Waits("its claim was another's".to_string()),
         Err(why) => return release(why),
     }
     // A Journey bound for a Work Process holds one place at it: the Work

@@ -30,10 +30,12 @@
 //!   keyed by its own name, until it names a set that spreads the work.
 
 mod configured;
+mod late;
 
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
 use journey::{Journey, Received, Sequenced};
+pub use late::{take_late, waits_for_places};
 
 use crate::ledger::Opened;
 use message::Message;
@@ -194,15 +196,36 @@ pub fn places(
 ) -> Result<Vec<Hold>, String> {
     let mut places = Vec::new();
     for one in opened {
-        for point in points_of(sends, &one.to) {
-            let member = one.journey.journey_id().value();
-            let place = point.place(cluster, member, (&one.journey, promoted))?;
-            one.journey.sequences.push(Sequenced {
-                queue: place.queue,
-                skips: point.on_failure == OnFailure::Skip,
-            });
-            places.push(place);
-        }
+        places.extend(placed(
+            cluster,
+            &points_of(sends, &one.to),
+            &mut one.journey,
+            promoted,
+        )?);
+    }
+    Ok(places)
+}
+
+/// The places `journey` takes in the sequences of `points`, its key read
+/// from `promoted`, the Journey told each.
+///
+/// # Errors
+/// A key part its Message lacks, in words.
+pub fn placed(
+    cluster: &str,
+    points: &[&Point],
+    journey: &mut Journey,
+    promoted: &Promoted,
+) -> Result<Vec<Hold>, String> {
+    let mut places = Vec::with_capacity(points.len());
+    for point in points {
+        let member = journey.journey_id().value();
+        let place = point.place(cluster, member, (journey, promoted))?;
+        journey.sequences.push(Sequenced {
+            queue: place.queue,
+            skips: point.on_failure == OnFailure::Skip,
+        });
+        places.push(place);
     }
     Ok(places)
 }

@@ -86,14 +86,22 @@ impl SendStep {
     /// answer holds none another node has taken up since, so a Journey sent
     /// meanwhile is never sent a second time from here.
     pub(crate) fn confirmed(&self, lined: &mut LinedUp, holds: &[Claim]) {
+        // Each claim as Xmip Storage holds it: with the fence it set.
         let held = |claim: &Claim| {
             holds
                 .iter()
-                .any(|kept| kept.journey == claim.journey && kept.token == claim.token)
+                .find(|kept| kept.journey == claim.journey && kept.token == claim.token)
+                .cloned()
         };
         let before = lined.claimed.len();
-        lined.claimed.retain(|(_, _, _, claim)| held(claim));
-        lined.claims.retain(held);
+        lined.claimed = std::mem::take(&mut lined.claimed)
+            .into_iter()
+            .filter_map(|(id, to, queue, claim)| Some((id, to, queue, held(&claim)?)))
+            .collect();
+        lined.claims = std::mem::take(&mut lined.claims)
+            .into_iter()
+            .filter_map(|claim| held(&claim))
+            .collect();
         let gone = before - lined.claimed.len();
         lined.admitted = lined.admitted.saturating_sub(gone);
         self.withdraw(gone);
