@@ -139,8 +139,8 @@ impl XmipStorage for HaltsAtPublication {
         self.0.read_instance(instance)
     }
 
-    fn read_correlation(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
-        self.0.read_correlation(correlation)
+    fn read_instance_key(&self, correlation: u128) -> Result<Option<u128>, PersistError> {
+        self.0.read_instance_key(correlation)
     }
 
     fn write_audit(&self, entry: &AuditEntry) -> Result<(), PersistError> {

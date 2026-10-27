@@ -49,11 +49,11 @@ const BATCHES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     xmlns:xmip="urn:xmip:process:1" id="D" targetNamespace="urn:example:orders">
   <bpmn:process id="Batches" isExecutable="true">
     <bpmn:startEvent id="First">
-      <bpmn:extensionElements><xmip:correlate set="PerClient"/></bpmn:extensionElements>
+      <bpmn:extensionElements><xmip:correlate correlation="PerClient"/></bpmn:extensionElements>
     </bpmn:startEvent>
     <bpmn:receiveTask id="Collect">
       <bpmn:extensionElements>
-        <xmip:correlate set="PerClient"/>
+        <xmip:correlate correlation="PerClient"/>
         <xmip:batch most="3"/>
       </bpmn:extensionElements>
     </bpmn:receiveTask>

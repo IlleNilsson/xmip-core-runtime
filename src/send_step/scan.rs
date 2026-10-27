@@ -54,6 +54,7 @@ fn scanning(
     waits: &mut Due,
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
+    let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty();
     let mut present = HashSet::new();
     let mut found = Vec::new();
     let mut reading = Reading::of(step, queue);
@@ -104,22 +105,56 @@ fn scanning(
             step.starve(queue);
             return (found, false);
         }
-        // Claimed on a send thread, so a backlog's claims share their
-        // commits rather than wait one by one here.
         step.lock().taking.insert(id);
-        found.push(Ready::Unclaimed(Unclaimed {
+        let unclaimed = Unclaimed {
             to: to.clone(),
             queue,
             place,
             body: held.hold.body.clone(),
-        }));
+        };
+        if sequenced {
+            // Claimed here, in the queue's order, so the places a Journey
+            // takes once its Stream heads follow the Ledger's order: no
+            // two send threads race for them (`crate::sequence::heading`).
+            match placed(runtime, &unclaimed) {
+                Some(departure) => found.push(Ready::Claimed(Box::new(departure))),
+                None => step.untake(id),
+            }
+        } else {
+            // Claimed on a send thread, so a backlog's claims share their
+            // commits rather than wait one by one here.
+            found.push(Ready::Unclaimed(unclaimed));
+        }
     }
+}
+
+/// `unclaimed`, on a destination naming a Correlation, claimed and its
+/// places taken where it still waits for them and its Stream heads.
+fn placed(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Departure> {
+    let mut departure = take(runtime, unclaimed)?;
+    if crate::sequence::waits_for_places(runtime.sends, &departure.work.journey, &departure.to) {
+        // Behind another Stream or not, its pass says: one still waiting
+        // for its places is passed, its claim given back.
+        let _ = crate::sequence::heading(
+            runtime.storage.as_ref(),
+            (runtime.work.cluster(), runtime.sends, runtime.gathering),
+            (
+                &mut departure.work.journey,
+                &departure.work.message,
+                &departure.to,
+            ),
+            (&departure.claim, runtime.send.lease()),
+        );
+    }
+    Some(departure)
 }
 
 /// What a scan found to send.
 pub(super) enum Ready {
     /// Under a place admitted, to be claimed and read on a send thread.
     Unclaimed(Unclaimed),
+    /// Claimed already, in the queue's order, its places taken.
+    Claimed(Box<Departure>),
 }
 
 /// A Journey a scan found that no live claim holds: where it leads, its

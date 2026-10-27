@@ -4,7 +4,7 @@
 
 use journey::{Journey, JourneyState};
 use persist::storage::{
-    Claim, Correlation, Failure, HandOn, Held, InstanceRecord, InstanceWrite, Turn, Wait, named,
+    Claim, Failure, HandOn, Held, InstanceKey, InstanceRecord, InstanceWrite, Turn, Wait, named,
 };
 use process::{Act, Event, Instance, Outcome, Refused, form};
 
@@ -207,7 +207,7 @@ impl Taking<'_> {
         let storage = &self.runtime.work.storage;
         for key in keys {
             if let Some(instance) = storage
-                .read_correlation(self.correlation(key))
+                .read_instance_key(self.correlation(key))
                 .map_err(|why| why.to_string())?
             {
                 let record = storage
@@ -340,18 +340,18 @@ impl Taking<'_> {
                 },
                 over,
             }],
-            correlations: if finished {
+            keys: if finished {
                 Vec::new()
             } else {
                 correlations
                     .iter()
-                    .map(|correlation| Correlation {
-                        correlation: *correlation,
+                    .map(|key| InstanceKey {
+                        key: *key,
                         instance: instance_id,
                     })
                     .collect()
             },
-            uncorrelated: if finished { correlations } else { Vec::new() },
+            unkeyed: if finished { correlations } else { Vec::new() },
         }
     }
 

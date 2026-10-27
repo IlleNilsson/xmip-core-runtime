@@ -112,12 +112,21 @@ fn scan<'env>(
         let after = u64::try_from(next - due.read_unix_nanos).unwrap_or(0);
         step.noted(running.queue, Duration::from_nanos(after));
     }
+    // A Work Process naming a Correlation takes its turns here, in its
+    // queue's order, so the place each takes once its Stream heads follows
+    // the Ledger's order (`crate::sequence::heading`).
+    let to = route::Subscriber::WorkProcess(running.name.clone());
+    let sequenced = !crate::sequence::points_of(runtime.sends, &to).is_empty();
     let mut seen = HashSet::new();
     for held in due.held {
         if held.failed || !seen.insert(held.hold.journey) || !step.own(held.hold.journey) {
             continue;
         }
-        take(pool, runtime, pickup, running, held);
+        if sequenced {
+            settled(runtime, pickup, running, &held);
+        } else {
+            take(pool, runtime, pickup, running, held);
+        }
     }
 }
 
@@ -148,22 +157,25 @@ fn take<'env>(
     running: &'env Running,
     held: Held,
 ) {
-    pool.run(Box::new(move || {
-        let step = runtime.work;
-        let journey: JourneyId = held.hold.journey;
-        let turned = turn(runtime, pickup, running, &held);
-        match &turned {
-            Turned::Failed(why) => step.failed(&format!("{}: {why}", running.name)),
-            Turned::Unwritten(why) => step.failed(why),
-            _ => {}
-        }
-        let done = matches!(turned, Turned::Done);
-        step.disown(journey, running.queue, done);
-        // A turn may have ended what a Stream held a sequence for: what
-        // waits behind it in either step may go on now.
-        if done {
-            runtime.send.rescan();
-            step.ask_every();
-        }
-    }));
+    pool.run(Box::new(move || settled(runtime, pickup, running, &held)));
+}
+
+/// A turn of the Journey `held` names taken, and what it ended as told.
+fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, held: &Held) {
+    let step = runtime.work;
+    let journey: JourneyId = held.hold.journey;
+    let turned = turn(runtime, pickup, running, held);
+    match &turned {
+        Turned::Failed(why) => step.failed(&format!("{}: {why}", running.name)),
+        Turned::Unwritten(why) => step.failed(why),
+        _ => {}
+    }
+    let done = matches!(turned, Turned::Done);
+    step.disown(journey, running.queue, done);
+    // A turn may have ended what a Stream held a sequence for: what waits
+    // behind it in either step may go on now.
+    if done {
+        runtime.send.rescan();
+        step.ask_every();
+    }
 }
