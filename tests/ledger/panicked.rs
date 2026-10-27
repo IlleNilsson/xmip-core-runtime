@@ -102,6 +102,7 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                     promote: None,
                     demote: None,
                     debatch: None,
+                    correlation_set: None,
                 },
                 gate: gate.clone(),
                 transport: Box::new(Once {

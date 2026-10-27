@@ -429,7 +429,7 @@ impl SendStep {
 /// Send Port naming a correlation set, or a Group with one among its Ports.
 pub(crate) fn sequential(sends: &Sends, to: &Subscriber) -> bool {
     match sends.to(to) {
-        Destination::Ports(ports) => ports.iter().any(|port| port.point.is_some()),
+        Destination::Ports(ports) => ports.iter().any(|port| !port.points.is_empty()),
         Destination::Process | Destination::Nowhere => false,
     }
 }

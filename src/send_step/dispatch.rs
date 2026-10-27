@@ -237,7 +237,7 @@ fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: D
         .journey
         .received()
         .is_some_and(|received| !received.sequences.is_empty())
-        || crate::sequence::point_of(runtime.sends, &departure.to).is_some();
+        || !crate::sequence::points_of(runtime.sends, &departure.to).is_empty();
     let closed = sequenced && matches!(ended, Ended::Completed(_) | Ended::Failed { .. });
     if let Some(departure) = sending.departure.take() {
         runtime.send.settle(settled, departure, ended);

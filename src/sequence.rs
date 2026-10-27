@@ -52,6 +52,7 @@ pub enum PointKind {
     ReceivePort,
     WorkProcess,
     SendPort,
+    SendLocation,
 }
 
 impl PointKind {
@@ -63,6 +64,7 @@ impl PointKind {
             Self::ReceivePort => "receive-port",
             Self::WorkProcess => "work-process",
             Self::SendPort => "send-port",
+            Self::SendLocation => "send-location",
         }
     }
 
@@ -177,9 +179,10 @@ pub fn received(
 }
 
 /// The places the Journeys `opened` take in the sequences of the points
-/// they are bound for — a Send Port or a Work Process naming a correlation
-/// set — their keys read from `promoted`, each Journey told its place:
-/// taken in the write that opens them, so the order is the Ledger's.
+/// they are bound for — a Send Port, the Send Locations it may leave by, or
+/// a Work Process, each naming a correlation set — their keys read from
+/// `promoted`, each Journey told its places: taken in the write that opens
+/// them, so the order is the Ledger's.
 ///
 /// # Errors
 /// A key part a Message lacks, in words.
@@ -191,10 +194,10 @@ pub fn places(
 ) -> Result<Vec<Hold>, String> {
     let mut places = Vec::new();
     for one in opened {
-        if let Some(point) = point_of(sends, &one.to) {
+        for point in points_of(sends, &one.to) {
             let member = one.journey.journey_id().value();
             let place = point.place(cluster, member, (&one.journey, promoted))?;
-            one.journey.sequence = Some(Sequenced {
+            one.journey.sequences.push(Sequenced {
                 queue: place.queue,
                 skips: point.on_failure == OnFailure::Skip,
             });
@@ -204,18 +207,20 @@ pub fn places(
     Ok(places)
 }
 
-/// The sequence what is bound for `to` passes its point in, where its Send
-/// Port or its Work Process names a correlation set.
+/// The sequences what is bound for `to` passes its point in: its Work
+/// Process's, or its Send Port's and those of the Send Locations the Port
+/// may leave by, each where it names a correlation set.
 #[must_use]
-pub fn point_of<'a>(sends: &'a Sends, to: &'a Subscriber) -> Option<&'a Point> {
+pub fn points_of<'a>(sends: &'a Sends, to: &'a Subscriber) -> Vec<&'a Point> {
     match to {
         Subscriber::WorkProcess(name) => sends
             .points
             .iter()
-            .find(|point| point.kind == PointKind::WorkProcess && point.name == *name),
+            .filter(|point| point.kind == PointKind::WorkProcess && point.name == *name)
+            .collect(),
         _ => match sends.to(to) {
-            Destination::Ports(ports) => ports.iter().find_map(|port| port.point),
-            Destination::Process | Destination::Nowhere => None,
+            Destination::Ports(ports) => ports.into_iter().flat_map(|port| port.points).collect(),
+            Destination::Process | Destination::Nowhere => Vec::new(),
         },
     }
 }

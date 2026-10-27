@@ -116,6 +116,7 @@ impl FarEnd {
                 promote: None,
                 demote: None,
                 debatch: None,
+                correlation_set: None,
             },
             chain: send::SendChain::default(),
             transport: Box::new(self),
