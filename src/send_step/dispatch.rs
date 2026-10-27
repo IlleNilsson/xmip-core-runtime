@@ -69,8 +69,12 @@ pub fn dispatch<'scope, 'env>(
                 continue;
             }
             for ready in scan(runtime, to, *queue) {
-                let Ready::Unclaimed(unclaimed) = ready;
-                take(&pool, runtime, settled, unclaimed);
+                match ready {
+                    Ready::Unclaimed(unclaimed) => take(&pool, runtime, settled, unclaimed),
+                    Ready::Claimed(departure) => {
+                        pool.run(Box::new(move || sent(runtime, settled, *departure)));
+                    }
+                }
             }
         }
         if all {
@@ -140,7 +144,17 @@ impl SendStep {
             Ended::Behind => {
                 drop(state);
                 let _ = self.storage.release(&departure.claim);
+                // One that only waits for its places, its Stream heading: its
+                // queue read at once, so the scan takes them in order now.
+                let journey = &departure.work.journey;
+                let ask = journey.sequences.is_empty()
+                    && crate::sequence::stream_heads(self.storage.as_ref(), journey)
+                        .unwrap_or(false);
                 state = self.lock();
+                if ask && !state.asked.contains(&departure.queue) {
+                    state.asked.push(departure.queue);
+                    self.wake.notify_all();
+                }
             }
             Ended::Untried => {
                 drop(state);
