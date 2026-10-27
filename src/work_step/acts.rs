@@ -16,7 +16,7 @@ use route::Subscriber;
 use xcore::{JourneyId, MessageId};
 
 use super::keys::promoted;
-use super::running::{RECORD_REFUSED, Running, Thrown};
+use super::running::{Running, Thrown};
 use crate::ledger::Opened;
 use crate::message_path::Runtime;
 use crate::pickup::Pickup;
@@ -92,8 +92,8 @@ pub(super) fn work(
 
 /// `message` split by the unit `call` names, through the one splitting
 /// implementation (`crate::split`): its parts, or — where the unit refused
-/// any record, all or nothing — [`RECORD_REFUSED`], its reason the summary
-/// and every failed record's position, for the flow's scopes.
+/// any record, all or nothing — `split::REFUSED`, its reason the report:
+/// a summary line, then each failed record's block, for the flow's scopes.
 ///
 /// # Errors
 /// A Section that could not be read, or a part Xmip Storage did not take.
@@ -107,14 +107,15 @@ fn debatch(
         Ok(split) => split,
         Err(thrown) => return Ok(Err(thrown)),
     };
+    let unit = format!("unit '{}' of '{}'", call.unit, call.module);
     let parts = crate::split::whole(
         (runtime.storage, runtime.ids, runtime.chunk),
         message,
-        split.as_mut(),
+        (split.as_mut(), Some(unit)),
     )?;
-    Ok(parts.map_err(|refused| Thrown {
-        code: RECORD_REFUSED.to_string(),
-        reason: format!("'{}' of '{}': {refused}", call.unit, call.module),
+    Ok(parts.map_err(|failures| Thrown {
+        code: crate::split::REFUSED.to_string(),
+        reason: failures.to_string(),
     }))
 }
 

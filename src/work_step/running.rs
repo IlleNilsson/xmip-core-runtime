@@ -38,10 +38,6 @@ pub trait WorkUnits: Send + Sync {
     fn splitter(&self, call: &Call) -> Result<Box<dyn Split>, Thrown>;
 }
 
-/// The code a Debatch throws where its unit refused any record — all or
-/// nothing — its reason the summary and each failed record's position.
-pub const RECORD_REFUSED: &str = "record-refused";
-
 /// An error a unit threw.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Thrown {

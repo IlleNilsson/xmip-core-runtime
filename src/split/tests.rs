@@ -32,7 +32,7 @@ fn a_message_split_whole_makes_a_part_per_record_in_order_each_kept_together() {
     let storage = crate::ledger::in_memory();
     let from = received(&ids, b"one\ntwo\nthree");
     // A chunk of two bytes, so records end across chunks.
-    let parts = whole((storage, &ids, 2), &from, &mut Lines::default())
+    let parts = whole((storage, &ids, 2), &from, (&mut Lines::default(), None))
         .expect("split")
         .expect("every record");
 
@@ -68,30 +68,39 @@ fn every_refused_record_is_gathered_and_the_split_fails_once_with_a_summary() {
     let failures = whole(
         (crate::ledger::in_memory(), &ids, 64),
         &from,
-        &mut Lines::default(),
+        (
+            &mut Lines::default(),
+            Some("unit 'Lines' of 'Units'".into()),
+        ),
     )
     .expect("split")
     .expect_err("all or nothing");
 
     assert_eq!(failures.total, 5, "every record is still split");
-    let positions: Vec<u64> = failures.failed.iter().map(|f| f.position).collect();
-    assert_eq!(positions, [2, 4]);
+    let positions: Vec<Option<u64>> = failures.failed.iter().map(|f| f.at.position).collect();
+    assert_eq!(positions, [Some(2), Some(4)]);
+    for failed in &failures.failed {
+        assert_eq!(failed.code, super::REFUSED);
+        assert_eq!(failed.stage, "debatch");
+        assert_eq!(failed.artifact.as_deref(), Some("unit 'Lines' of 'Units'"));
+    }
     let said = failures.to_string();
     assert!(
-        said.starts_with("debatch: 2 of 5 records failed; record 2: "),
+        said.starts_with(
+            "error: debatch: 2 of 5 records failed\n\
+             error[record-refused]: the line 'bad!' is no record\n  \
+             --> debatch, unit 'Lines' of 'Units', record 2"
+        ),
         "{said}"
     );
-    assert!(
-        said.contains("record 4: ") && said.contains("worse!"),
-        "{said}"
-    );
+    assert!(said.contains("worse!"), "{said}");
 }
 
 #[test]
 fn fed_a_chunk_at_a_time_each_record_is_written_as_soon_as_it_is_complete() {
     let ids = UuidV7Generator;
     let mut lines = Lines::default();
-    let mut splitting = Splitting::new((crate::ledger::in_memory(), &ids, 64), &mut lines);
+    let mut splitting = Splitting::new((crate::ledger::in_memory(), &ids, 64), (&mut lines, None));
 
     splitting.feed(b"one\ntw").expect("fed");
     assert_eq!(

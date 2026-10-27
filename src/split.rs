@@ -35,6 +35,10 @@ pub const STAGE: &str = "debatch";
 /// What one of a debatch's items is called.
 pub const ITEM: &str = "record";
 
+/// The code of a record its splitting unit refused, and the code a Work
+/// Process's Debatch throws where any was.
+pub const REFUSED: &str = "record-refused";
+
 use crate::ledger::write_stream;
 
 /// The context value naming the Message a record was split from — a draft
@@ -82,14 +86,17 @@ pub struct Splitting<'a> {
     records: Vec<Record>,
     written: Vec<MessageSection>,
     failures: Failures,
+    /// The unit splitting, as a failure names it.
+    artifact: Option<String>,
 }
 
 impl<'a> Splitting<'a> {
-    /// A splitting by `split`, each record's Stream written to `storage` in
-    /// chunks of `chunk` bytes, its identifiers taken from `ids`.
+    /// A splitting by `split`, the unit `artifact` names where one does,
+    /// each record's Stream written to `storage` in chunks of `chunk`
+    /// bytes, its identifiers taken from `ids`.
     pub fn new(
         (storage, ids, chunk): (&'a Arc<dyn XmipStorage>, &'a dyn IdGenerator, usize),
-        split: &'a mut dyn Split,
+        (split, artifact): (&'a mut dyn Split, Option<String>),
     ) -> Self {
         Self {
             storage,
@@ -99,6 +106,7 @@ impl<'a> Splitting<'a> {
             records: Vec::new(),
             written: Vec::new(),
             failures: Failures::new(STAGE, ITEM),
+            artifact,
         }
     }
 
@@ -144,7 +152,10 @@ impl<'a> Splitting<'a> {
                     self.written.push(section);
                 }
                 Record::Part(_) => {}
-                Record::Refused(reason) => self.failures.fail(position, reason),
+                Record::Refused(reason) => {
+                    let artifact = self.artifact.clone();
+                    self.failures.fail((REFUSED, reason), artifact, position);
+                }
             }
         }
         Ok(())
@@ -194,16 +205,17 @@ pub fn parts(
 }
 
 /// `from` split by `split` whole, its Sections' bytes fed in their order a
-/// chunk of `chunk` bytes at a time: its parts, or every record's failure —
-/// a Work Process's Debatch, and the receive's.
+/// chunk of `chunk` bytes at a time, the unit `artifact` names where one
+/// does: its parts, or every record's failure — a Work Process's Debatch,
+/// and the receive's.
 ///
 /// # Errors
 /// A Section that could not be read, or a record's Stream Xmip Storage did
 /// not take.
-pub fn whole(
-    (storage, ids, chunk): (&Arc<dyn XmipStorage>, &dyn IdGenerator, usize),
+pub fn whole<'a>(
+    (storage, ids, chunk): (&'a Arc<dyn XmipStorage>, &'a dyn IdGenerator, usize),
     from: &Message,
-    split: &mut dyn Split,
+    split: (&'a mut dyn Split, Option<String>),
 ) -> Result<Result<Vec<Message>, Failures>, String> {
     let mut splitting = Splitting::new((storage, ids, chunk), split);
     let mut buffer = vec![0; chunk.max(1)];
