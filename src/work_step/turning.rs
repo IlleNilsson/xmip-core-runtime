@@ -16,7 +16,7 @@ use crate::ledger::{journey_record, message_record};
 use crate::message_path::Runtime;
 use crate::pickup::Pickup;
 use crate::send_step::{Found, read};
-use crate::sequence::{heads, stream_heads};
+use crate::sequence::{Placing, heads};
 
 /// The most acts one turn carries out: a flow that keeps asking for work
 /// without waiting is stopped, never run forever.
@@ -61,21 +61,14 @@ pub(super) fn turn(
         Ok(_) => return release("it is not one to take a turn of".to_string()),
         Err(why) => return release(why),
     };
-    match stream_heads(step.storage.as_ref(), &work.journey) {
-        Ok(true) => {}
-        Ok(false) => return release("its Stream waits behind another".to_string()),
-        Err(why) => return release(why),
-    }
-    // Its place at the Work Process, taken now its Stream heads.
+    // Its place at the Work Process, taken once its Stream heads its own.
     let to = route::Subscriber::WorkProcess(running.name.clone());
-    match crate::sequence::take_late(
-        step.storage.as_ref(),
-        (step.cluster(), runtime.sends, runtime.gathering),
-        (&mut work.journey, &work.message, &to),
-        (&claim, step.lease),
-    ) {
-        Ok(true) => {}
-        Ok(false) => return Turned::Waits("its claim was another's".to_string()),
+    let configured = (step.cluster(), runtime.sends, runtime.gathering);
+    let at = (&mut work.journey, &work.message, &to);
+    match crate::sequence::heading(step.storage.as_ref(), configured, at, (&claim, step.lease)) {
+        Ok(Placing::Placed) => {}
+        Ok(Placing::Behind) => return release("its Stream waits behind another".to_string()),
+        Ok(Placing::Lost) => return Turned::Waits("its claim was another's".to_string()),
         Err(why) => return release(why),
     }
     // A Journey bound for a Work Process holds one place at it: the Work
@@ -121,7 +114,7 @@ struct Taking<'a> {
     body: &'a [u8],
     made: Made,
     /// Its place in its Work Process's sequence, where the Work Process names
-    /// a correlation set, and whether a failure lets it go.
+    /// a Correlation, and whether a failure lets it go.
     point: Option<(u128, bool)>,
 }
 

@@ -10,7 +10,7 @@
 //! that order; a Send Port Group reaches each of its Ports by a Journey of
 //! its own, opened at its Publication. Each Port's
 //! policy — `retry` and `failover` (ADR-0031, amendment 2026-10-01) — is
-//! its design's; the correlation set it names is the sequence its Journeys
+//! its design's; the Correlation it names is the sequence its Journeys
 //! pass it in, one at a time per key (`crate::sequence`).
 
 use std::time::Duration;
@@ -94,7 +94,7 @@ pub struct Sends {
     pub groups: Vec<SendPortGroup>,
     pub ports: Vec<DesignedSendPort>,
     /// The sequences of the Send Ports, the Send Locations and the Work
-    /// Processes that name a correlation set, each by its kind and name.
+    /// Processes that name a Correlation, each by its kind and name.
     pub points: Vec<Point>,
 }
 

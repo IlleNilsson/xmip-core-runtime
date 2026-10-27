@@ -103,7 +103,7 @@ pub fn on_node<T>(
     run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
 ) -> T {
     // The send side's tests carry Streams side by side, as a Location whose
-    // correlation set gives every Stream a key of its own does: its gate
+    // Correlation gives every Stream a key of its own does: its gate
     // holds no sequence. A Location's own sequence is `work_process.rs`'s.
     on_working_node(
         storage,

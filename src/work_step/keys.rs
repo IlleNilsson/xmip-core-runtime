@@ -1,4 +1,4 @@
-//! A Journey's key in a correlation set: the tuple of the values its set's
+//! A Journey's key in a Correlation: the tuple of the values its set's
 //! keys read, each read as a Subscription's filter reads a name (ADR-0024
 //! and ADR-0066, amendments 2026-10-22).
 //!
@@ -15,7 +15,7 @@ use route::{Gathering, Promoted};
 
 pub use configure::correlation::{JourneyValue, KeyWord};
 
-/// A correlation set, its keys read once.
+/// A Correlation, its keys read once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedSet {
     pub name: String,
@@ -29,13 +29,13 @@ impl ResolvedSet {
     /// A key that is no key word, or no key at all.
     pub fn read(name: &str, keys: &[String]) -> Result<Self, String> {
         if keys.is_empty() {
-            return Err(format!("the correlation set '{name}' has no key"));
+            return Err(format!("the Correlation '{name}' has no key"));
         }
         let keys = keys
             .iter()
             .map(|key| KeyWord::read(key))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|why| format!("the correlation set '{name}': {why}"))?;
+            .map_err(|why| format!("the Correlation '{name}': {why}"))?;
         Ok(Self {
             name: name.to_string(),
             keys,
@@ -75,7 +75,7 @@ impl ResolvedSet {
             };
             let Some(value) = value else {
                 return Err(format!(
-                    "the Message carries no {}, which the correlation set '{}' keys by",
+                    "the Message carries no {}, which the Correlation '{}' keys by",
                     key.shown(),
                     self.name
                 ));

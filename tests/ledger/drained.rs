@@ -128,7 +128,7 @@ fn location(
             promote: None,
             demote: None,
             debatch: None,
-            correlation_set: None,
+            correlation: None,
         },
         gate: gate.clone(),
         transport,

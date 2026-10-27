@@ -9,7 +9,7 @@
 //!               same key waits, so a key's Messages never overtake
 //! -> claim      through Xmip Storage
 //! -> turn       its Instance read from the Ledger, found by its key in a
-//!               correlation set, or a new one; the unit advanced, its acts
+//!               Correlation, or a new one; the unit advanced, its acts
 //!               carried out — work on a Message, a Message published
 //!               back through routing — until it waits or ends
 //! -> hand on    one write (`XmipStorage::turn`): the Journey, the

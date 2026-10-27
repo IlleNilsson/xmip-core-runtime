@@ -14,7 +14,7 @@
 //!
 //! - **A sequence is a queue in the Ledger**, one per point and key: the
 //!   point — a Receive Location, a Receive Port, a Work Process, a Send
-//!   Port — the correlation set named there, and the key's values written
+//!   Port — the Correlation named there, and the key's values written
 //!   out in full ([`Point::queue`]). Equal keys share it; different keys
 //!   are different queues and run in parallel.
 //! - **A place is held from the write that brings work to the point**, in
@@ -35,7 +35,7 @@ mod late;
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
 use journey::{Journey, Received, Sequenced};
-pub use late::{take_late, waits_for_places};
+pub use late::{Placing, heading, take_late, waits_for_places};
 
 use crate::ledger::Opened;
 use message::Message;
@@ -77,7 +77,7 @@ impl PointKind {
     }
 }
 
-/// One point a correlation set governs.
+/// One point a Correlation governs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
     pub kind: PointKind,
@@ -182,7 +182,7 @@ pub fn received(
 
 /// The places the Journeys `opened` take in the sequences of the points
 /// they are bound for — a Send Port, the Send Locations it may leave by, or
-/// a Work Process, each naming a correlation set — their keys read from
+/// a Work Process, each naming a Correlation — their keys read from
 /// `promoted`, each Journey told its places: taken in the write that opens
 /// them, so the order is the Ledger's.
 ///
@@ -232,7 +232,7 @@ pub fn placed(
 
 /// The sequences what is bound for `to` passes its point in: its Work
 /// Process's, or its Send Port's and those of the Send Locations the Port
-/// may leave by, each where it names a correlation set.
+/// may leave by, each where it names a Correlation.
 #[must_use]
 pub fn points_of<'a>(sends: &'a Sends, to: &'a Subscriber) -> Vec<&'a Point> {
     match to {

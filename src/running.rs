@@ -526,7 +526,7 @@ address = "{far}"
     }
 
     /// [`node`], its Send Port `Out` stating `policy` — its `retry`,
-    /// its `correlation_set` and the rest, one key a line.
+    /// its `correlation` and the rest, one key a line.
     fn node_sending(receive: &str, far: &str, policy: &str) -> String {
         node(receive, far).replace(
             "[[xmip_applications.send_ports]]\nname = \"Out\"\n",
@@ -778,7 +778,7 @@ address = "{far}"
     #[test]
     fn eight_senders_at_once_are_carried_side_by_side() {
         // A Receive Location carries one Stream at a time end to end unless a
-        // correlation set spreads them (`crate::sequence`): this one's is keyed
+        // Correlation spreads them (`crate::sequence`): this one's is keyed
         // by the sender each request names, so one sender's Streams go one at
         // a time and eight senders' side by side, their Ledger writes sharing a
         // group commit's disk sync.
@@ -787,10 +787,10 @@ address = "{far}"
         let (far, far_address) = kept_far_end();
         let receive = unheld().to_string();
         let spread = format!(
-            "{}\n[[correlation_sets]]\nname = \"PerSender\"\nkeys = [\"http.header.x-sender\"]\n",
+            "{}\n[[correlations]]\nname = \"PerSender\"\nkeys = [\"http.header.x-sender\"]\n",
             node_keeping_connections(&receive, &far_address).replace(
                 "receive_port = \"Loopback\"\n",
-                "receive_port = \"Loopback\"\ncorrelation_set = \"PerSender\"\n",
+                "receive_port = \"Loopback\"\ncorrelation = \"PerSender\"\n",
             )
         );
         let path = written("eight", &spread);
@@ -1101,9 +1101,9 @@ address = "{far}"
         let receive = unheld().to_string();
         // In order: a Send Port naming a set keyed by itself keeps it, one
         // Journey at a time (`crate::sequence`).
-        let sequential = "correlation_set = \"InOrder\"";
+        let sequential = "correlation = \"InOrder\"";
         let configured = format!(
-            "{}\n[[correlation_sets]]\nname = \"InOrder\"\nkeys = [\"send-port\"]\n",
+            "{}\n[[correlations]]\nname = \"InOrder\"\nkeys = [\"send-port\"]\n",
             node_sending(&receive, &far_address, sequential)
         );
         let path = written("paused", &configured);

@@ -59,7 +59,7 @@
 //! no Location is tried again from here. A send already under way keeps the
 //! Journey's identifier as its deduplication key.
 //!
-//! **A Send Port naming a correlation set keeps its order** per key, and a
+//! **A Send Port naming a Correlation keeps its order** per key, and a
 //! Journey of a Stream that holds its Receive Location's sequence waits for
 //! it: a Journey that does not head its sequences is passed, its claim given
 //! back, and taken up once it does; one that failed blocks its sequence, or
@@ -427,7 +427,7 @@ impl SendStep {
 }
 
 /// Whether what is bound for `to` passes its Send Port in a sequence: a
-/// Send Port naming a correlation set, or a Group with one among its Ports.
+/// Send Port naming a Correlation, or a Group with one among its Ports.
 pub(crate) fn sequential(sends: &Sends, to: &Subscriber) -> bool {
     match sends.to(to) {
         Destination::Ports(ports) => ports.iter().any(|port| !port.points.is_empty()),

@@ -21,6 +21,36 @@ use route::{Gathering, Subscriber};
 use super::points_of;
 use crate::sending::Sends;
 
+/// Where a Journey stands as a step takes it up: its Stream behind
+/// another's, its places at its destination held, or its claim another's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placing {
+    Behind,
+    Placed,
+    Lost,
+}
+
+/// `journey`'s Stream asked whether it heads its own sequences and, where
+/// it does, its places at `to` taken ([`take_late`]).
+///
+/// # Errors
+/// As [`take_late`], or Xmip Storage not answering.
+pub fn heading(
+    storage: &dyn XmipStorage,
+    configured: (&str, &Sends, &Gathering),
+    (journey, message, to): (&mut Journey, &Message, &Subscriber),
+    claimed: (&Claim, Duration),
+) -> Result<Placing, String> {
+    if !super::stream_heads(storage, journey)? {
+        return Ok(Placing::Behind);
+    }
+    if take_late(storage, configured, (journey, message, to), claimed)? {
+        Ok(Placing::Placed)
+    } else {
+        Ok(Placing::Lost)
+    }
+}
+
 /// Whether `journey`, bound for `to`, still waits for its places there:
 /// its point names a set and it holds no place yet.
 #[must_use]

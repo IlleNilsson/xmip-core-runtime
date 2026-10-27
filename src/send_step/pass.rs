@@ -273,15 +273,12 @@ pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
 /// Stream heads its own sequences (`crate::sequence::take_late`): `false`
 /// where its claim was another's.
 fn placed(runtime: &Runtime<'_>, departure: &mut Departure) -> Result<bool, String> {
-    let storage = runtime.storage.as_ref();
     let journey = &departure.work.journey;
-    if !crate::sequence::waits_for_places(runtime.sends, journey, &departure.to)
-        || !crate::sequence::stream_heads(storage, journey)?
-    {
+    if !crate::sequence::waits_for_places(runtime.sends, journey, &departure.to) {
         return Ok(true);
     }
-    crate::sequence::take_late(
-        storage,
+    let placing = crate::sequence::heading(
+        runtime.storage.as_ref(),
         (runtime.work.cluster(), runtime.sends, runtime.gathering),
         (
             &mut departure.work.journey,
@@ -289,7 +286,9 @@ fn placed(runtime: &Runtime<'_>, departure: &mut Departure) -> Result<bool, Stri
             &departure.to,
         ),
         (&departure.claim, runtime.send.lease()),
-    )
+    )?;
+    // Behind another Stream, its places wait: `heads` says it is behind.
+    Ok(placing != crate::sequence::Placing::Lost)
 }
 
 fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {

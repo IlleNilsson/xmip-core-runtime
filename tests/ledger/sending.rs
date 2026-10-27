@@ -139,7 +139,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
         send_locations: Vec::new(),
         retry: None,
         failover: None,
-        correlation_set: None,
+        correlation: None,
         prepare: Vec::new(),
         transform: None,
         promote: None,
@@ -155,7 +155,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
 /// names is `InOrder` and the failure its words.
 pub fn in_order(on_failure: OnFailure) -> impl FnOnce(&mut DesignedSendPort) {
     move |port| {
-        port.correlation_set = Some(match on_failure {
+        port.correlation = Some(match on_failure {
             OnFailure::Block => IN_ORDER.to_string(),
             OnFailure::Skip => format!("{IN_ORDER}Skipping"),
         });
@@ -171,7 +171,7 @@ pub fn points(ports: &[DesignedSendPort]) -> Vec<Point> {
     ports
         .iter()
         .filter_map(|port| {
-            let set = port.correlation_set.clone()?;
+            let set = port.correlation.clone()?;
             Some(Point {
                 kind: PointKind::SendPort,
                 name: port.name.clone(),

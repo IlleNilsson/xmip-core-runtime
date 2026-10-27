@@ -65,10 +65,10 @@ pub struct ExecutionTree {
     /// identity resolves to, and what a Receive Location's `accept.party`
     /// names (ADR-0019 clauses 1 and 4).
     pub parties: Vec<configure::PartyConfiguration>,
-    /// What work is spread over, `[[correlation_sets]]`, and each Work
+    /// What work is spread over, `[[correlations]]`, and each Work
     /// Process of a bound Application that names one, with it
     /// (`crate::sequence`).
-    pub correlation_sets: Vec<configure::CorrelationSet>,
+    pub correlations: Vec<configure::Correlation>,
     pub work_process_sets: Vec<(String, String)>,
 }
 
@@ -138,13 +138,10 @@ pub fn build_execution_tree(
     let work_process_sets: Vec<(String, String)> = applications
         .iter()
         .flat_map(|application| application.work_processes.iter())
-        .filter_map(|process| Some((process.name.clone(), process.correlation_set.clone()?)))
+        .filter_map(|process| Some((process.name.clone(), process.correlation.clone()?)))
         .collect();
-    let unset = configure::correlation::bound_problems(
-        &document.correlation_sets,
-        &bound,
-        &work_process_sets,
-    );
+    let unset =
+        configure::correlation::bound_problems(&document.correlations, &bound, &work_process_sets);
     if !unset.is_empty() {
         report.errors.extend(unset);
         return Err(report);
@@ -204,7 +201,7 @@ pub fn build_execution_tree(
             send_port_groups: bound.send_port_groups,
             tuning,
             parties: document.parties,
-            correlation_sets: document.correlation_sets,
+            correlations: document.correlations,
             work_process_sets,
         },
         report,
@@ -594,14 +591,14 @@ depth = "light"
 
 [[xmip_applications.send_ports]]
 name = "Billing"
-correlation_set = "PerParty"
+correlation = "PerParty"
 
 [[xmip_applications.subscriptions]]
 id = "billing"
 destination = {{ send-port = "Billing" }}
 filter = "MessageType = 'Order'"
 
-[[correlation_sets]]
+[[correlations]]
 name = "PerParty"
 keys = ["context:Party"]
 "#,
@@ -645,11 +642,8 @@ keys = ["context:Party"]
         let design = application(&document);
         let (tree, _) =
             build_execution_tree(document, &[design], &Declarations::new()).expect("binds");
-        assert_eq!(
-            tree.send_ports[0].correlation_set.as_deref(),
-            Some("PerParty")
-        );
-        assert_eq!(tree.correlation_sets[0].name, "PerParty");
+        assert_eq!(tree.send_ports[0].correlation.as_deref(), Some("PerParty"));
+        assert_eq!(tree.correlations[0].name, "PerParty");
         assert_eq!(tree.receive_ports, [] as [BoundReceivePort; 0]);
     }
 
@@ -665,9 +659,9 @@ keys = ["context:Party"]
     }
 
     /// Startup phase 3 refuses a Receive Location without its Receive Port,
-    /// and a Send Port naming a correlation set the cluster does not declare.
+    /// and a Send Port naming a Correlation the cluster does not declare.
     #[test]
-    fn a_location_without_its_port_and_an_undeclared_correlation_set_are_refused() {
+    fn a_location_without_its_port_and_an_undeclared_correlation_are_refused() {
         let text = orders_text(0).replace("receive_port = \"Orders\"\n", "");
         let document = configure::parse_toml(&text).expect("parses");
         let report = validate_startup_configuration(&document, &Declarations::new());
@@ -683,7 +677,7 @@ keys = ["context:Party"]
         let report =
             build_execution_tree(document, &[design], &Declarations::new()).expect_err("refused");
         assert!(
-            report.errors[0].contains("names the correlation set 'PerParty'"),
+            report.errors[0].contains("names the Correlation 'PerParty'"),
             "{:?}",
             report.errors
         );
