@@ -79,6 +79,7 @@ mod send_streamed;
 mod send_waiting;
 mod sending;
 mod sequenced_cost;
+mod stream_order;
 mod untold;
 mod work_debatch;
 mod work_process;
