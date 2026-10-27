@@ -41,16 +41,14 @@ pub const REFUSED: &str = "record-refused";
 
 use crate::ledger::write_stream;
 
-/// The context value naming the Message a record was split from — a draft
-/// name, the owner's to decide.
+/// The context value naming the Message a record was split from.
 pub const BATCH: &str = "debatch.message";
 
 /// The context value giving a record's position in the Message it was split
-/// from, from one — a draft name, the owner's to decide.
+/// from, from one.
 pub const POSITION: &str = "debatch.position";
 
-/// The context value giving how many records the Message was split into — a
-/// draft name, the owner's to decide.
+/// The context value giving how many records the Message was split into.
 pub const COUNT: &str = "debatch.count";
 
 /// One record a [`Split`] found complete.

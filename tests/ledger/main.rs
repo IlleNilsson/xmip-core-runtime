@@ -59,6 +59,7 @@ mod bounded;
 mod child_process;
 mod dead_message_queue;
 mod drained;
+mod fenced;
 mod halts_at_publication;
 mod held;
 mod journey_act;
@@ -160,6 +161,7 @@ fn child() {
         "halt" => receive_until_killed(&halting(test_node(&place))),
         "publish" => send_killed::publish_until_killed(&test_node(&place)),
         "sending" => send_killed::send_until_killed(&test_node(&place)),
+        "fenced" => fenced::send_in_order_until_killed(&test_node(&place)),
         "working" => work_process::work_until_killed(&test_node(&place)),
         other => panic!("no child does '{other}'"),
     }

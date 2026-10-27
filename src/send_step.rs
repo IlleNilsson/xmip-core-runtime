@@ -314,6 +314,7 @@ impl SendStep {
                     holder: self.node.clone(),
                     token: ids.next_u128(),
                     until_unix_nanos: 0,
+                    fence: 0,
                 };
                 lined.claims.push(claim.clone());
                 lined.claimed.push((journey, (*to).clone(), queue, claim));
