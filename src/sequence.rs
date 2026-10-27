@@ -259,14 +259,19 @@ pub fn heads(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<boo
     let page = storage
         .read_held(queue, 0, 1)
         .map_err(|why| why.to_string())?;
-    let first = page
-        .held
-        .first()
-        .is_none_or(|first| first.hold.journey.value() == member);
-    if first {
-        headed().remember((queue, member));
+    // A page that reads nothing while the queue still holds places is no
+    // head: only an empty queue is (corrected 2026-10-27; an empty page
+    // read mid-write let a Journey overtake under load).
+    // Only a place seen at the head is remembered: an empty queue says
+    // nothing of a place taken later.
+    match page.held.first() {
+        Some(first) if first.hold.journey.value() == member => {
+            headed().remember((queue, member));
+            Ok(true)
+        }
+        Some(_) => Ok(false),
+        None => Ok(page.count == 0),
     }
-    Ok(first)
 }
 
 /// What this process has seen head its sequence. A place that heads a
