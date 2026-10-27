@@ -456,6 +456,7 @@ mod tests {
             promote: None,
             demote: None,
             debatch: None,
+            correlation_set: None,
         }
     }
 

@@ -66,9 +66,12 @@ pub(super) fn turn(
         Ok(false) => return release("its Stream waits behind another".to_string()),
         Err(why) => return release(why),
     }
+    // A Journey bound for a Work Process holds one place at it: the Work
+    // Process's own sequence, where it names a set.
     let point = work
         .journey
-        .sequence
+        .sequences
+        .first()
         .map(|sequenced| (sequenced.queue, sequenced.skips));
     if let Some((queue, _)) = point {
         match heads(step.storage.as_ref(), queue, id.value()) {

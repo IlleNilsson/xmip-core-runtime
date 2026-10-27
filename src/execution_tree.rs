@@ -39,9 +39,12 @@ pub struct ExecutionTree {
     pub receive_ports: Vec<BoundReceivePort>,
     pub send_locations_to_start: Vec<ConfiguredLocation>,
     /// The Send Ports the node takes of the Applications it binds, with
-    /// their policy: Send Locations in order, retry, failover, execution
-    /// style, order key and failure policy (the same amendment).
+    /// their policy: Send Locations in order, retry and failover.
     pub send_ports: Vec<DesignedSendPort>,
+    /// Every Send Port of the bound Applications, taken here or not, and
+    /// each Send Location the node reads that names a set (`crate::sequence`).
+    pub designed_send_ports: Vec<DesignedSendPort>,
+    pub send_location_sets: Vec<(String, String)>,
     /// The Receive Locations, and the Send Locations and bound Send Ports,
     /// the node knows and does not start: their `start` does not say
     /// `true` (the owner, 2026-10-13). Named, so a surface shows each as
@@ -192,6 +195,8 @@ pub fn build_execution_tree(
             receive_ports: bound.receive_ports,
             send_locations_to_start,
             send_ports: bound.send_ports,
+            designed_send_ports: bound.designed_send_ports,
+            send_location_sets: bound.send_location_sets,
             receive_locations_not_started,
             send_locations_not_started,
             verified_extensions,

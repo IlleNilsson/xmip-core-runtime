@@ -292,7 +292,7 @@ pub(crate) fn open(
             Sends {
                 locations,
                 groups: tree.send_port_groups.clone(),
-                ports: tree.send_ports.clone(),
+                ports: tree.designed_send_ports.clone(),
                 points: crate::sequence::destinations(tree)
                     .map_err(|why| why.join("; "))
                     .unwrap_or_default(),

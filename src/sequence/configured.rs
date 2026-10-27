@@ -69,20 +69,28 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
     Ok((port.name.clone(), points))
 }
 
-/// The sequences of the node's Send Ports and Work Processes that name a
-/// correlation set.
+/// The sequences of the Send Ports, Send Locations and Work Processes the
+/// node reads that name a correlation set: every Send Port of its bound
+/// Applications and every Send Location its document holds, sent here or
+/// not, since a Journey published here takes its places whichever node
+/// sends it.
 ///
 /// # Errors
 /// Every point naming a set that is not declared, or broken, in words.
 pub fn destinations(tree: &ExecutionTree) -> Result<Vec<Point>, Vec<String>> {
     let sets = &tree.correlation_sets;
     let named = tree
-        .send_ports
+        .designed_send_ports
         .iter()
         .filter_map(|port| {
             let set = port.correlation_set.as_deref()?;
             Some(point(sets, (PointKind::SendPort, &port.name), set))
         })
+        .chain(
+            tree.send_location_sets
+                .iter()
+                .map(|(name, set)| point(sets, (PointKind::SendLocation, name), set)),
+        )
         .chain(
             tree.work_process_sets
                 .iter()

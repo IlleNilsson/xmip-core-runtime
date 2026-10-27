@@ -99,6 +99,7 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
                 promote: None,
                 demote: None,
                 debatch: None,
+                correlation_set: None,
             },
             gate: gate.clone(),
             transport: Box::new(Untold {

@@ -81,7 +81,7 @@ impl SendStep {
             _ => format!("Journey {id} dismissed by {who}; its history is kept"),
         };
         let retry = act == Act::Retry;
-        let sequenced = kept.sequence;
+        let sequenced: Vec<u128> = kept.sequences.iter().map(|s| s.queue).collect();
         let hand_on = HandOn {
             claim: claim.clone(),
             result: journey_record(&acted(kept, act, &said)),
@@ -92,9 +92,7 @@ impl SendStep {
             leaves: if retry {
                 Vec::new()
             } else {
-                std::iter::once(queue)
-                    .chain(sequenced.map(|s| s.queue))
-                    .collect()
+                std::iter::once(queue).chain(sequenced).collect()
             },
             queued: Vec::new(),
             requeued: if retry && !blocks {

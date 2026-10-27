@@ -183,16 +183,21 @@ fn written(
         state,
     );
     journey.attempts = departure.progress.attempts();
-    // Its place in its Send Port's sequence is let go once it is sent, or
-    // once it failed where a failure lets the rest pass.
-    let leaves_point = match point(departure) {
-        Some((queue, skips)) => match state {
-            JourneyState::Completed => Some(queue),
-            JourneyState::Failed if skips => Some(queue),
-            _ => None,
-        },
-        None => None,
-    };
+    // Its places in its Send Port's and its Send Locations' sequences are
+    // let go once it is sent, or once it failed, each where a failure lets
+    // the rest pass.
+    let leaves_point: Vec<u128> = departure
+        .work
+        .journey
+        .sequences
+        .iter()
+        .filter(|sequenced| match state {
+            JourneyState::Completed => true,
+            JourneyState::Failed => sequenced.skips,
+            _ => false,
+        })
+        .map(|sequenced| sequenced.queue)
+        .collect();
     let hand_on = HandOn {
         claim: departure.claim.clone(),
         result: crate::ledger::journey_record(&journey),
@@ -239,38 +244,35 @@ fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
 }
 
 /// Whether a Journey bound for `to` that failed blocks its sequence:
-/// a Send Port naming a correlation set whose `on_failure` is `block`.
+/// a Send Port, or a Send Location it may leave by, naming a correlation
+/// set whose `on_failure` is `block`.
 pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
     match runtime.sends.to(to) {
         Destination::Ports(ports) => ports.iter().any(|port| {
-            port.point
-                .is_some_and(|point| point.on_failure == OnFailure::Block)
+            port.points
+                .iter()
+                .any(|point| point.on_failure == OnFailure::Block)
         }),
         Destination::Process | Destination::Nowhere => false,
     }
 }
 
-/// The place `departure` holds in its Send Port's sequence, where the Port
-/// names a correlation set: its queue, and whether a failure lets it go.
-/// The Journey was told it in the write that brought it to the Port.
-fn point(departure: &Departure) -> Option<(u128, bool)> {
-    let sequenced = departure.work.journey.sequence?;
-    Some((sequenced.queue, sequenced.skips))
-}
-
 /// Whether `departure` may be sent now: its Stream heads every sequence it
-/// holds end to end, and it heads its Send Port's (`crate::sequence`).
+/// holds end to end, and it heads every sequence of its Send Port and of
+/// the Send Locations it may leave by (`crate::sequence`), told it in the
+/// write that brought it to the Port.
 fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
     let storage = runtime.storage.as_ref();
     if !crate::sequence::stream_heads(storage, &departure.work.journey)? {
         return Ok(false);
     }
-    match point(departure) {
-        Some((queue, _)) => {
-            crate::sequence::heads(storage, queue, departure.work.journey.journey_id().value())
+    let member = departure.work.journey.journey_id().value();
+    for sequenced in &departure.work.journey.sequences {
+        if !crate::sequence::heads(storage, sequenced.queue, member)? {
+            return Ok(false);
         }
-        None => Ok(true),
     }
+    Ok(true)
 }
 
 /// What the Ledger holds of a Journey in a queue.

@@ -40,8 +40,9 @@ pub struct Port<'a> {
     pub name: &'a str,
     pub locations: Vec<&'a Sending>,
     pub policy: Option<&'a DesignedSendPort>,
-    /// The sequence its Journeys pass it in, where it names a set.
-    pub point: Option<&'a Point>,
+    /// The sequences its Journeys pass it in: its own, where it names a
+    /// set, and those of the Send Locations it may leave by that name one.
+    pub points: Vec<&'a Point>,
 }
 
 impl Port<'_> {
@@ -92,8 +93,8 @@ pub struct Sends {
     pub locations: Vec<Sending>,
     pub groups: Vec<SendPortGroup>,
     pub ports: Vec<DesignedSendPort>,
-    /// The sequences of the Send Ports and the Work Processes that name a
-    /// correlation set, each by its kind and name.
+    /// The sequences of the Send Ports, the Send Locations and the Work
+    /// Processes that name a correlation set, each by its kind and name.
     pub points: Vec<Point>,
 }
 
@@ -163,6 +164,15 @@ impl Sends {
             }
             _ => vec![name],
         };
+        let points = self
+            .points
+            .iter()
+            .filter(|point| match point.kind {
+                PointKind::SendPort => point.name == name,
+                PointKind::SendLocation => named.contains(&point.name.as_str()),
+                _ => false,
+            })
+            .collect();
         Port {
             name,
             locations: named
@@ -170,10 +180,7 @@ impl Sends {
                 .filter_map(|location| self.location(location))
                 .collect(),
             policy,
-            point: self
-                .points
-                .iter()
-                .find(|point| point.kind == PointKind::SendPort && point.name == name),
+            points,
         }
     }
 
