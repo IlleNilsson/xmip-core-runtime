@@ -1,5 +1,5 @@
 //! One Work Process this node runs: its unit opened as a flow, the
-//! correlation sets it follows read from the cluster's, the names its
+//! Correlations it follows read from the cluster's, the names its
 //! decisions and its keys read compiled once, and its queue.
 
 use std::sync::Arc;
@@ -111,7 +111,7 @@ impl Running {
                     .cloned()
                     .ok_or_else(|| {
                         format!(
-                            "the Work Process '{name}' follows the correlation set '{set}', \
+                            "the Work Process '{name}' follows the Correlation '{set}', \
                          which the cluster does not declare"
                         )
                     })

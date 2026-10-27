@@ -1,7 +1,7 @@
 //! A Work Process run from the Ledger (`runtime-model.md` section 22;
 //! ADR-0066, amendment 2026-10-22): a BPMN 2.0 design compiled to its
 //! program, opened as a flow, and Messages carried through a node's
-//! receive path into it — correlated by a cluster's correlation set to one
+//! receive path into it — correlated by a cluster's Correlation to one
 //! Instance, collected in a Batch in the order they were received, the
 //! batch published back through routing to a Send Port — its state in the
 //! Ledger between turns, never in a thread:
@@ -76,7 +76,7 @@ pub(super) fn client() -> String {
     context::property::header("http", "x-client")
 }
 
-/// The cluster's correlation set keyed by the client.
+/// The cluster's Correlation keyed by the client.
 fn per_client() -> ResolvedSet {
     ResolvedSet {
         name: "PerClient".to_string(),

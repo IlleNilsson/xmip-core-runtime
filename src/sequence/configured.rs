@@ -1,5 +1,5 @@
 //! The sequences a node's configuration names: each point that names a
-//! correlation set, read once as the node starts, and the default every
+//! Correlation, read once as the node starts, and the default every
 //! Receive Location has (`super`).
 //!
 //! The owner, 2026-10-22: *Of course that is why the stages exist, Receive
@@ -8,7 +8,7 @@
 //! Receive Location. When there is a more complicated Correlation Set, Xmip
 //! is the tool.*
 
-use configure::{CorrelationSet, OnFailure};
+use configure::{Correlation, OnFailure};
 
 use super::{Point, PointKind};
 use crate::execution_tree::ExecutionTree;
@@ -19,7 +19,7 @@ use crate::work_step::ResolvedSet;
 /// # Errors
 /// The set is not declared, or a key of it is no key word.
 pub fn point(
-    sets: &[CorrelationSet],
+    sets: &[Correlation],
     (kind, name): (PointKind, &str),
     set: &str,
 ) -> Result<Point, String> {
@@ -28,7 +28,7 @@ pub fn point(
         .find(|declared| declared.name == set)
         .ok_or_else(|| {
             format!(
-                "the {} '{name}' names the correlation set '{set}', which the cluster does not \
+                "the {} '{name}' names the Correlation '{set}', which the cluster does not \
                  declare",
                 kind.word()
             )
@@ -57,20 +57,20 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
     let Some((port, designed)) = at else {
         return Ok((String::new(), vec![Point::receive_location(location)]));
     };
-    let sets = &tree.correlation_sets;
-    let own = match &designed.correlation_set {
+    let sets = &tree.correlations;
+    let own = match &designed.correlation {
         Some(set) => point(sets, (PointKind::ReceiveLocation, location), set)?,
         None => Point::receive_location(location),
     };
     let mut points = vec![own];
-    if let Some(set) = &port.correlation_set {
+    if let Some(set) = &port.correlation {
         points.push(point(sets, (PointKind::ReceivePort, &port.name), set)?);
     }
     Ok((port.name.clone(), points))
 }
 
 /// The sequences of the Send Ports, Send Locations and Work Processes the
-/// node reads that name a correlation set: every Send Port of its bound
+/// node reads that name a Correlation: every Send Port of its bound
 /// Applications and every Send Location its document holds, sent here or
 /// not, since a Journey published here takes its places whichever node
 /// sends it.
@@ -78,12 +78,12 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
 /// # Errors
 /// Every point naming a set that is not declared, or broken, in words.
 pub fn destinations(tree: &ExecutionTree) -> Result<Vec<Point>, Vec<String>> {
-    let sets = &tree.correlation_sets;
+    let sets = &tree.correlations;
     let named = tree
         .designed_send_ports
         .iter()
         .filter_map(|port| {
-            let set = port.correlation_set.as_deref()?;
+            let set = port.correlation.as_deref()?;
             Some(point(sets, (PointKind::SendPort, &port.name), set))
         })
         .chain(

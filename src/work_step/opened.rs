@@ -1,6 +1,6 @@
 //! The Work Processes a node runs, opened as it starts: each that names a
 //! compiled unit (`module` and `unit`) taken from the library its module
-//! was opened from, the correlation sets it follows read from the
+//! was opened from, the Correlations it follows read from the
 //! cluster's, its names compiled through the route technologies the
 //! program linked.
 
@@ -28,7 +28,7 @@ pub fn opened(
 ) -> Result<Vec<Running>, Vec<String>> {
     let mut problems = Vec::new();
     let sets: Vec<ResolvedSet> = tree
-        .correlation_sets
+        .correlations
         .iter()
         .filter_map(|set| match ResolvedSet::read(&set.name, &set.keys) {
             Ok(set) => Some(set),

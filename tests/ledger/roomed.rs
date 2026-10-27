@@ -134,7 +134,7 @@ fn location(name: &str, backlog: Backlog, gate: &ReceiveGate, most: usize) -> Re
             promote: None,
             demote: None,
             debatch: None,
-            correlation_set: None,
+            correlation: None,
         },
         gate: gate.clone(),
         transport: Box::new(backlog),
