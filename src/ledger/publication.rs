@@ -141,12 +141,20 @@ pub fn publish(
     for one in &mut opened {
         one.journey = one.journey.clone().received_as(received.clone());
     }
-    let promoted = publisher
-        .gathering
-        .promote(message)
-        .map_err(|why| why.to_string())?;
-    let send_places =
-        crate::sequence::places(publisher.cluster, publisher.sends, &mut opened, &promoted)?;
+    // A Stream holding sequences end to end has its Journeys take no place
+    // where they are bound yet: each takes its places once its Stream heads
+    // its own, so destinations hold Streams in the order they are let
+    // through (`crate::sequence::take_late`). One holding none takes them
+    // now, in this write.
+    let send_places = if received.sequences.is_empty() {
+        let promoted = publisher
+            .gathering
+            .promote(message)
+            .map_err(|why| why.to_string())?;
+        crate::sequence::places(publisher.cluster, publisher.sends, &mut opened, &promoted)?
+    } else {
+        Vec::new()
+    };
     let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
     let (holding, mut lined, dead) = if journeys.is_empty() {
         let now = publisher.clock.unix_timestamp_nanos();

@@ -69,6 +69,11 @@ pub enum Ended {
 /// pass that tried nothing ([`Ended::Untried`]).
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let step = runtime.send;
+    match placed(runtime, departure) {
+        Ok(true) => {}
+        Ok(false) => return Ended::Lost(Vec::new()),
+        Err(why) => return Ended::Unwritten(why),
+    }
     match heads(runtime, departure) {
         Ok(true) => {}
         Ok(false) => return Ended::Behind,
@@ -264,6 +269,29 @@ pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
 /// holds end to end, and it heads every sequence of its Send Port and of
 /// the Send Locations it may leave by (`crate::sequence`), told it in the
 /// write that brought it to the Port.
+/// `departure`'s places at its Send Port and Send Locations, taken once its
+/// Stream heads its own sequences (`crate::sequence::take_late`): `false`
+/// where its claim was another's.
+fn placed(runtime: &Runtime<'_>, departure: &mut Departure) -> Result<bool, String> {
+    let storage = runtime.storage.as_ref();
+    let journey = &departure.work.journey;
+    if !crate::sequence::waits_for_places(runtime.sends, journey, &departure.to)
+        || !crate::sequence::stream_heads(storage, journey)?
+    {
+        return Ok(true);
+    }
+    crate::sequence::take_late(
+        storage,
+        (runtime.work.cluster(), runtime.sends, runtime.gathering),
+        (
+            &mut departure.work.journey,
+            &departure.work.message,
+            &departure.to,
+        ),
+        (&departure.claim, runtime.send.lease()),
+    )
+}
+
 fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
     let storage = runtime.storage.as_ref();
     if !crate::sequence::stream_heads(storage, &departure.work.journey)? {
