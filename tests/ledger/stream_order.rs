@@ -110,7 +110,7 @@ fn a_stream_behind_another_takes_its_send_place_only_once_the_first_has_ended() 
         |runtime, pickup, gate| {
             assert!(!gate.points.is_empty(), "the Location's own sequence");
             dispatching(runtime, |_| {
-                for (text, route) in [("S1", "process"), ("S2", "direct")] {
+                for (text, route) in [("first stream", "process"), ("second stream", "direct")] {
                     let carried = carry(runtime, pickup, gate, stream(text, route));
                     assert_eq!(carried.cycle(), ReceiveCycle::Completed, "{text}");
                 }
@@ -125,7 +125,7 @@ fn a_stream_behind_another_takes_its_send_place_only_once_the_first_has_ended() 
     );
     assert_eq!(
         took(&taken),
-        ["S1", "S2"],
+        ["first stream", "second stream"],
         "S1, through its Work Process, before S2, and neither waits for ever"
     );
 }
