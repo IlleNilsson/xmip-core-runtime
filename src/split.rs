@@ -16,7 +16,7 @@
 //! `sequenceSize`, with no flag for the last), so a Work Process can take
 //! them up together. A record the unit refuses does not end the splitting:
 //! every record is still split and every failure gathered with its position
-//! (`xcore::Failures`; the owner, 2026-10-27: *Failures … shall be
+//! (`xcore::Outcomes`; the owner, 2026-10-27: *Outcomes … shall be
 //! accumulated. The caller shall get a summary and detailed information of
 //! what failed*), nothing more is written once one failed, and nothing is
 //! made: the split fails once, its summary — how many records, how many
@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use message::{Message, MessageSection};
 use persist::storage::XmipStorage;
-use xcore::{Failures, IdGenerator, MessageId, ScalarValue, SectionId, StreamId};
+use xcore::{IdGenerator, MessageId, Outcomes, ScalarValue, SectionId, StreamId};
 
 /// The stage a debatch reports its failures as.
 pub const STAGE: &str = "debatch";
@@ -83,7 +83,7 @@ pub struct Splitting<'a> {
     split: &'a mut dyn Split,
     records: Vec<Record>,
     written: Vec<MessageSection>,
-    failures: Failures,
+    failures: Outcomes,
     /// The unit splitting, as a failure names it.
     artifact: Option<String>,
 }
@@ -103,7 +103,7 @@ impl<'a> Splitting<'a> {
             split,
             records: Vec::new(),
             written: Vec::new(),
-            failures: Failures::new(STAGE, ITEM),
+            failures: Outcomes::new(STAGE, ITEM),
             artifact,
         }
     }
@@ -123,7 +123,7 @@ impl<'a> Splitting<'a> {
     ///
     /// # Errors
     /// As [`Splitting::feed`].
-    pub fn end(mut self) -> Result<Result<Vec<MessageSection>, Failures>, String> {
+    pub fn end(mut self) -> Result<Result<Vec<MessageSection>, Outcomes>, String> {
         self.split.end(&mut self.records);
         self.write()?;
         if self.failures.is_empty() {
@@ -148,8 +148,9 @@ impl<'a> Splitting<'a> {
                 Record::Part(bytes) if self.failures.is_empty() => {
                     let section = self.section(&bytes)?;
                     self.written.push(section);
+                    self.failures.succeed(position, None);
                 }
-                Record::Part(_) => {}
+                Record::Part(_) => self.failures.succeed(position, None),
                 Record::Refused(reason) => {
                     let artifact = self.artifact.clone();
                     self.failures.fail((REFUSED, reason), artifact, position);
@@ -181,9 +182,9 @@ impl<'a> Splitting<'a> {
 /// The failures: how many records, how many failed, and each.
 pub fn parts(
     from: &Message,
-    split: Result<Vec<MessageSection>, Failures>,
+    split: Result<Vec<MessageSection>, Outcomes>,
     ids: &dyn IdGenerator,
-) -> Result<Vec<Message>, Failures> {
+) -> Result<Vec<Message>, Outcomes> {
     let sections = split?;
     let count = i64::try_from(sections.len()).unwrap_or(i64::MAX);
     let batch = ScalarValue::Text(from.message_id().to_string());
@@ -214,7 +215,7 @@ pub fn whole<'a>(
     (storage, ids, chunk): (&'a Arc<dyn XmipStorage>, &'a dyn IdGenerator, usize),
     from: &Message,
     split: (&'a mut dyn Split, Option<String>),
-) -> Result<Result<Vec<Message>, Failures>, String> {
+) -> Result<Result<Vec<Message>, Outcomes>, String> {
     let mut splitting = Splitting::new((storage, ids, chunk), split);
     let mut buffer = vec![0; chunk.max(1)];
     for section in from.sections() {

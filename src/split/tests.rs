@@ -87,7 +87,7 @@ fn every_refused_record_is_gathered_and_the_split_fails_once_with_a_summary() {
     let said = failures.to_string();
     assert!(
         said.starts_with(
-            "error: debatch: 2 of 5 records failed\n\
+            "error: debatch: 5 records, 3 succeeded, 2 failed\n\
              error[record-refused]: the line 'bad!' is no record\n  \
              --> debatch, unit 'Lines' of 'Units', record 2"
         ),
