@@ -26,7 +26,7 @@ use super::{STARTED, directory, say, test_node};
 /// Carry orders one after the other through `runtime`, saying each whose
 /// receive cycle completed — what its sender is acknowledged for — with
 /// its Journey.
-fn receive_saying(
+pub(super) fn receive_saying(
     runtime: &xmip_core_runtime::message_path::Runtime<'_>,
     pickup: &xmip_core_runtime::pickup::Pickup,
     gate: &xmip_core_runtime::receiving::ReceiveGate,
@@ -73,7 +73,7 @@ pub fn send_until_killed(storage: &Arc<dyn XmipStorage>) {
 }
 
 /// One acknowledged receive as a child said it: its number and Journey.
-fn acknowledged(said: &str) -> (u32, JourneyId) {
+pub(super) fn acknowledged(said: &str) -> (u32, JourneyId) {
     let mut words = said.split_whitespace();
     let number = words.next().expect("a number").parse().expect("a number");
     let journey = words.next().expect("a Journey").parse().expect("a Journey");
@@ -81,7 +81,10 @@ fn acknowledged(said: &str) -> (u32, JourneyId) {
 }
 
 /// Every receive the child said was acknowledged, before and as it died.
-fn every_acknowledged(first: Vec<(u32, JourneyId)>, said: &[String]) -> Vec<(u32, JourneyId)> {
+pub(super) fn every_acknowledged(
+    first: Vec<(u32, JourneyId)>,
+    said: &[String],
+) -> Vec<(u32, JourneyId)> {
     let mut all = first;
     all.extend(
         said.iter()
@@ -98,12 +101,24 @@ fn sent_by(
     place: &std::path::Path,
     acknowledged: &[(u32, JourneyId)],
 ) -> Vec<String> {
+    sent_through(node, place, acknowledged, out(|_| {})).0
+}
+
+/// As [`sent_by`], through the Send Port `port`: what its far end took,
+/// in order, and the fence each send carried.
+pub(super) fn sent_through(
+    node: String,
+    place: &std::path::Path,
+    acknowledged: &[(u32, JourneyId)],
+    port: configure::DesignedSendPort,
+) -> (Vec<String>, Vec<u64>) {
     let storage = test_node(place);
     let (far, taken) = FarEnd::answering(Box::new(|_| Ok(())));
+    let fences = far.fences();
     on_node(
         &storage,
         (CHUNK, &onward()),
-        sender(node, far, out(|_| {})),
+        sender(node, far, port),
         |runtime, _, _| {
             dispatching(runtime, |told| {
                 for (_, journey) in acknowledged {
@@ -114,12 +129,17 @@ fn sent_by(
     );
     drop(storage);
     let taken: &Mutex<Vec<Vec<u8>>> = &taken;
-    taken
+    let taken = taken
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .iter()
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-        .collect()
+        .collect();
+    let fences = fences
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    (taken, fences)
 }
 
 #[test]

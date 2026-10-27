@@ -69,11 +69,12 @@ impl Authorizer for Open {
 pub type Answer = Box<dyn Fn(&[u8]) -> transport::Result<()> + Send + Sync>;
 
 /// A Send Location's far end in a test: every Stream it took, in the order
-/// it took them, the deduplication key every send carried, and the answer
-/// it gives each send.
+/// it took them, the deduplication key and the fence every send carried,
+/// and the answer it gives each send.
 pub struct FarEnd {
     taken: Arc<Mutex<Vec<Vec<u8>>>>,
     keys: Arc<Mutex<Vec<String>>>,
+    fences: Arc<Mutex<Vec<u64>>>,
     answer: Answer,
 }
 
@@ -85,6 +86,7 @@ impl FarEnd {
         let far = Self {
             taken: Arc::clone(&taken),
             keys: Arc::default(),
+            fences: Arc::default(),
             answer,
         };
         (far, taken)
@@ -95,6 +97,21 @@ impl FarEnd {
     #[must_use]
     pub fn keys(&self) -> Arc<Mutex<Vec<String>>> {
         Arc::clone(&self.keys)
+    }
+
+    /// The fence every send it was asked carried, in the order asked; the
+    /// same list `fences` where it is given one.
+    #[must_use]
+    pub fn fences(&self) -> Arc<Mutex<Vec<u64>>> {
+        Arc::clone(&self.fences)
+    }
+
+    /// It keeps the fences it is asked in `fences`, a list the answer may
+    /// read before it answers.
+    #[must_use]
+    pub fn fencing(mut self, fences: Arc<Mutex<Vec<u64>>>) -> Self {
+        self.fences = fences;
+        self
     }
 
     /// The Send Location `name` sending to it.
@@ -154,6 +171,10 @@ impl transport::Transport for FarEnd {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(outgoing.key().unwrap_or_default().to_string());
+        self.fences
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(outgoing.fence());
         let bytes: &[u8] = &outgoing.gather()?;
         (self.answer)(bytes)?;
         self.taken

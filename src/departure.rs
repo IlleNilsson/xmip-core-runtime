@@ -129,6 +129,9 @@ pub struct Progress {
     pub tries: u32,
     /// Every Location failed its tries: why, in words. Not tried again.
     pub given_up: Option<String>,
+    /// The fence of the claim this pass is made under, handed to the far
+    /// end beside the deduplication key; zero where it is made under none.
+    pub fence: u64,
 }
 
 impl Progress {
@@ -217,7 +220,7 @@ fn depart_port(
             departed.push(Departed::NoSuchDestination { to });
             return departed;
         };
-        let asked = (*sending, owned, kept);
+        let asked = (*sending, owned, kept, standing.fence);
         let Some(one) = depart_one(runtime, (work, facts), to.clone(), asked) else {
             return departed;
         };
@@ -252,7 +255,7 @@ fn depart_one(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
     to: Subscriber,
-    (sending, owned, kept): (&Sending, &dyn Fn() -> bool, &Kept<'_>),
+    (sending, owned, kept, fence): (&Sending, &dyn Fn() -> bool, &Kept<'_>, u64),
 ) -> Option<Departed> {
     let location = &sending.configured;
 
@@ -331,6 +334,7 @@ fn depart_one(
         Ok(Box::new(share.reader(id, length)) as Box<dyn Read + '_>)
     })
     .keyed(&key)
+    .fenced(fence)
     .checked(&still)
     .kept_by(&durable)
     .carrying(work.message.context())

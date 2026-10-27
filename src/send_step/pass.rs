@@ -80,8 +80,11 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         to,
         progress,
         durable,
+        claim,
         ..
     } = departure;
+    // The far end is told the claim's fence beside the deduplication key.
+    progress.fence = claim.fence;
     let id = work.journey.journey_id();
     let owned = || step.holds(id);
     let kept = || {

@@ -234,6 +234,7 @@ mod tests {
             holder: configure::fixture::test_cluster().node_scope(0),
             token,
             until_unix_nanos: 0,
+            fence: 0,
         }
     }
 
