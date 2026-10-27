@@ -455,6 +455,7 @@ mod tests {
             transform: None,
             promote: None,
             demote: None,
+            debatch: None,
         }
     }
 

@@ -92,6 +92,8 @@ pub mod service;
 #[cfg(feature = "node")]
 pub mod service_control;
 #[cfg(feature = "node")]
+pub mod split;
+#[cfg(feature = "node")]
 pub mod start;
 #[cfg(feature = "node")]
 mod startup;

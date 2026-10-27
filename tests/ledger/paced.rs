@@ -125,6 +125,7 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
                 transform: None,
                 promote: None,
                 demote: None,
+                debatch: None,
             },
             gate: gate.clone(),
             transport: Box::new(idle),

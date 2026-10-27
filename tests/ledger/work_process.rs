@@ -72,7 +72,7 @@ const BATCHES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </bpmn:definitions>"#;
 
 /// The header a client is told apart by.
-fn client() -> String {
+pub(super) fn client() -> String {
     context::property::header("http", "x-client")
 }
 
@@ -132,12 +132,27 @@ fn opened(gate: &ReceiveGate) -> ReceiveGate {
     gate
 }
 
-fn order(who: &str, number: u32) -> ReceivedStream {
-    ReceivedStream::new(
-        Cursor::new(format!("{who} {number}").into_bytes()),
-        "tcp://127.0.0.1:1",
+/// `text` from the client `who`, as a Receive Location takes it.
+pub(super) fn from_client(who: &str, text: &str) -> ReceivedStream {
+    ReceivedStream::new(Cursor::new(text.as_bytes().to_vec()), "tcp://127.0.0.1:1").with_header(
+        "http",
+        "x-client",
+        ScalarValue::Text(who.to_string()),
     )
-    .with_header("http", "x-client", ScalarValue::Text(who.to_string()))
+}
+
+fn order(who: &str, number: u32) -> ReceivedStream {
+    from_client(who, &format!("{who} {number}"))
+}
+
+/// A node that sends nothing itself: `Out` has no Location here.
+pub(super) fn sending_nothing() -> Sender {
+    Sender {
+        sends: xmip_core_runtime::sending::Sends::default(),
+        tuning: xmip_core_runtime::tuning::Tuning::default(),
+        node: node(),
+        audit: None,
+    }
 }
 
 /// On a working node over `storage`, `run`.
@@ -145,25 +160,24 @@ fn working<T>(
     storage: &Arc<dyn XmipStorage>,
     run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
 ) -> T {
-    let sender = Sender {
-        sends: xmip_core_runtime::sending::Sends::default(),
-        tuning: xmip_core_runtime::tuning::Tuning::default(),
-        node: node(),
-        audit: None,
-    };
     on_working_node(
         storage,
         (CHUNK, &routes()),
-        (sender, vec![batches()]),
+        (sending_nothing(), vec![batches()]),
         |r, p, g| run(r, p, &opened(g)),
     )
 }
 
-/// Each batch published to `Out`: the Messages its Sections came from, in
-/// order, by the text they hold.
+/// Each batch published to `Out`.
 fn published(storage: &Arc<dyn XmipStorage>) -> Vec<Vec<String>> {
+    published_to(storage, "Out")
+}
+
+/// Each Message published to the Send Port `port`, in the order its queue
+/// holds them: the text of each of its Sections, in order.
+pub(super) fn published_to(storage: &Arc<dyn XmipStorage>, port: &str) -> Vec<Vec<String>> {
     let cluster = configure::fixture::test_cluster().scope();
-    let out = xmip_core_runtime::sending::queue(&cluster, &Subscriber::SendPort("Out".into()));
+    let out = xmip_core_runtime::sending::queue(&cluster, &Subscriber::SendPort(port.into()));
     let held = storage.read_held(out, 0, 100).expect("read").held;
     held.iter()
         .map(|held| {

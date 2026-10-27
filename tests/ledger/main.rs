@@ -50,7 +50,9 @@
 //! budget; `sending.rs` the test node that sends they run, and its far end;
 //! `untold.rs` a far end that could not be told, audited once per reason;
 //! `audited.rs` a Publication's audit record carrying its Message and its
-//! Stream's bytes, verified when read (ADR-0070).
+//! Stream's bytes, verified when read (ADR-0070); `work_process.rs` a Work
+//! Process's Instances correlated, batched and finished after a kill;
+//! `work_debatch.rs` its Debatch through the one splitting implementation.
 
 mod audited;
 mod bounded;
@@ -76,6 +78,7 @@ mod send_streamed;
 mod send_waiting;
 mod sending;
 mod untold;
+mod work_debatch;
 mod work_process;
 
 use std::io::Write;
