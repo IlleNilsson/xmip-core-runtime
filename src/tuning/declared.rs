@@ -14,6 +14,7 @@ use crate::receiving::{RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWE
 use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
 };
+use crate::stream_share::STREAM_STALL;
 
 /// What `[tuning]` may say, each key's kind, bounds and default.
 pub const TUNING: &Settings = &Settings {
@@ -172,6 +173,14 @@ pub const TUNING: &Settings = &Settings {
             presence: Presence::Default(Fixed::Integer(as_integer(SEND_CHUNKS_PER_THREAD))),
             meaning: "The chunks of Messages the node's sends hold at once, per thread of the \
                       Send pool.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "stream_stall",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(STREAM_STALL)),
+            meaning: "How long a send taking no chunk of a Stream holds the sends of it ahead \
+                      back before they leave it behind to read from Storage.",
             applies: Applies::Both,
         },
         Setting {

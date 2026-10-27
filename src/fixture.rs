@@ -19,7 +19,7 @@ mod failing;
 mod lines;
 
 pub use authority::Authority;
-pub use drain::Drain;
+pub use drain::{Drain, Stall};
 pub use failing::{Failing, Interleaved, Operation};
 pub use lines::{Lines, LinesUnits};
 

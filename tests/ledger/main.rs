@@ -44,7 +44,8 @@
 //! in the Ledger holding no claim and no place, a healthy Port sent past
 //! them, and a pass that tried nothing writing nothing; `send_streamed.rs`
 //! a fan-out of a Message far larger than a chunk sent in bounded memory,
-//! each chunk read once, and sends that gather waiting for room in the
+//! each chunk read once, a stalled far end freeing the others of its
+//! Stream, and sends that gather waiting for room in the
 //! node's byte budget; `roomed.rs` receives taking no more than their pool
 //! and the node have room for, and the bytes carries hold within the node's
 //! budget; `sending.rs` the test node that sends they run, and its far end;

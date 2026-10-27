@@ -1,7 +1,7 @@
 //! One read of a Stream from Xmip Storage, the last chunks it took, and
 //! the departures taking from it (`super`): what it keeps for them, which
-//! departure one more may join it at, and how long one ahead is held back
-//! for one about to be left behind.
+//! departure one more may join it at, and when one ahead waits for one
+//! behind and when it leaves that one behind.
 
 use std::collections::VecDeque;
 use std::io;
@@ -13,11 +13,13 @@ use xcore::wake::Wake;
 
 use super::{KEPT_PER_READER, lock};
 
-/// One read of Xmip Storage and the last chunks it took, and the word a
-/// departure held back waits on.
+/// One read of Xmip Storage and the last chunks it took, the word a
+/// departure held back waits on, and how long one taking nothing is
+/// waited for (`[tuning] stream_stall`).
 pub(super) struct OneRead {
     pub(super) source: Mutex<Source>,
     took: Wake,
+    stall: Duration,
 }
 
 pub(super) struct Source {
@@ -31,17 +33,14 @@ pub(super) struct Source {
     failed: Option<(io::ErrorKind, String)>,
     /// The departures taking from it.
     pub(super) readers: Vec<Reader>,
-    /// When it began its first chunk from Xmip Storage, and how many it
-    /// took since: its pace.
-    paced: Option<(Instant, u32)>,
 }
 
 /// A departure taking from a read: its number, the place of the next chunk
-/// it takes, and how long departures ahead of it were held back for it.
+/// it takes, and when it last took one, or joined.
 pub(super) struct Reader {
     number: u64,
     next: u64,
-    waited: Duration,
+    took: Instant,
 }
 
 /// What a read gives a departure for the chunk at its place.
@@ -71,30 +70,27 @@ impl Source {
 
     /// Departure `number` taking from it from `place` on.
     pub(super) fn join(&mut self, number: u64, place: u64) {
-        let waited = Duration::ZERO;
         self.readers.push(Reader {
             number,
             next: place,
-            waited,
+            took: Instant::now(),
         });
     }
 
-    /// The departure the next chunk would leave behind — whose next is the
-    /// first kept, with the read keeping all it may — and how much longer
-    /// a departure ahead may be held back for it: what the chunks kept
-    /// take the read to pass at its pace, over the whole Stream.
-    fn behind(&self) -> Option<(u64, Duration)> {
-        let (began, read) = self.paced?;
-        if self.window.len() < kept(self.readers.len()) || read == 0 {
+    /// How much longer the next chunk waits: the read keeps all it may,
+    /// and a departure whose next is the first kept took a chunk less than
+    /// `stall` ago — the shortest such wait left. One that took nothing
+    /// for `stall` is left behind.
+    fn waits(&self, stall: Duration) -> Option<Duration> {
+        if self.window.len() < kept(self.readers.len()) {
             return None;
         }
-        let worth = began.elapsed() / read * u32::try_from(self.window.len()).ok()?;
-        let reader = self
-            .readers
+        self.readers
             .iter()
-            .find(|reader| reader.next == self.first)?;
-        let left = worth.checked_sub(reader.waited)?;
-        (!left.is_zero()).then_some((reader.number, left))
+            .filter(|reader| reader.next == self.first)
+            .filter_map(|reader| stall.checked_sub(reader.took.elapsed()))
+            .filter(|left| !left.is_zero())
+            .min()
     }
 
     fn reader(&mut self, number: u64) -> Option<&mut Reader> {
@@ -105,8 +101,9 @@ impl Source {
 }
 
 impl OneRead {
-    /// `reader`, read on from `place`, its chunk next.
-    pub(super) fn opened(reader: ChunkReader<'static>, place: u64) -> Self {
+    /// `reader`, read on from `place`, its chunk next; one of its
+    /// departures taking nothing for `stall` is left behind.
+    pub(super) fn opened(reader: ChunkReader<'static>, place: u64, stall: Duration) -> Self {
         Self {
             source: Mutex::new(Source {
                 reader,
@@ -115,16 +112,16 @@ impl OneRead {
                 ended: false,
                 failed: None,
                 readers: Vec::new(),
-                paced: None,
             }),
             took: Wake::new(),
+            stall,
         }
     }
 
     /// The chunk at `place` for departure `number`: kept, or read on to —
     /// the chunks between kept for those behind it, and the next held back
-    /// while one of them is about to take the first kept and may still be
-    /// waited for ([`Source::behind`]).
+    /// while one of them is to take the first kept and is still taking
+    /// ([`Source::waits`]).
     pub(super) fn chunk(&self, number: u64, place: u64) -> io::Result<Next> {
         let mut source = lock(&self.source);
         loop {
@@ -138,6 +135,7 @@ impl OneRead {
             if let Some(chunk) = source.window.get(ahead).map(Arc::clone) {
                 if let Some(me) = source.reader(number) {
                     me.next = place + 1;
+                    me.took = Instant::now();
                 }
                 drop(source);
                 self.took.notify_all();
@@ -146,18 +144,12 @@ impl OneRead {
             if source.ended {
                 return Ok(Next::End);
             }
-            if let Some((behind, left)) = source.behind() {
-                let began = Instant::now();
+            if let Some(left) = source.waits(self.stall) {
                 source = self.took.wait_timeout(&self.source, source, left).0;
-                if let Some(behind) = source.reader(behind) {
-                    behind.waited += began.elapsed();
-                }
                 continue;
             }
-            let (began, read) = source.paced.unwrap_or((Instant::now(), 0));
             match source.reader.next_chunk() {
                 Ok(Some(chunk)) => {
-                    source.paced = Some((began, read + 1));
                     source.window.push_back(Arc::new(chunk));
                     while source.window.len() > kept(source.readers.len()) {
                         source.window.pop_front();

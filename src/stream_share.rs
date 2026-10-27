@@ -14,14 +14,15 @@
 //! [`KEPT_PER_READER`] for each other departure reading it, the room each
 //! one's own read of Xmip Storage would have held (`budget::STREAM_CHUNKS`).
 //!
-//! **One kept from its processor holds the one ahead back a while.**
+//! **One behind holds the one ahead back while it is still taking.**
 //! Departures paced alike by their far ends never close a gap a stall
 //! opened, so a departure about to let go of the chunk another of its read
-//! is to take next waits for that one to take it — at most what the kept
-//! chunks take the read to pass at its pace, over the whole Stream for each
-//! departure waited for, so a slow Send Port holds the others back no
-//! longer than that, once, and is then left behind (ADR-0018 clause 11, the
-//! bulkhead; ADR-0018, amendment 2026-10-20).
+//! is to take next waits for that one to take it, for as long as that one
+//! keeps taking: what the read keeps is counted in chunks, never in time.
+//! One that took nothing for [`STREAM_STALL`] (`[tuning] stream_stall`) —
+//! its far end stopped — is left behind, so a stalled Send Port holds the
+//! others back no longer than that (ADR-0018 clause 11, the bulkhead;
+//! ADR-0018, amendments 2026-10-20 and 2026-10-27).
 //!
 //! **A departure behind the kept chunks reads on from where it is, and
 //! comes back.** One begun late, or whose far end is slower, asks Xmip
@@ -42,6 +43,7 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 use persist::storage::{ChunkReader, XmipStorage};
 use xcore::StreamId;
@@ -54,15 +56,22 @@ use one_read::{Next, OneRead, leave};
 /// but for the chunk it is lent.
 pub const KEPT_PER_READER: usize = crate::budget::STREAM_CHUNKS as usize - 1;
 
+/// How long a departure behind takes no chunk before the one ahead of it
+/// stops waiting and leaves it behind: its far end stopped, never a
+/// processor taken from it a moment (`[tuning] stream_stall`).
+pub const STREAM_STALL: Duration = Duration::from_millis(100);
+
 /// The Streams this node's departures read now, each read once.
 pub struct StreamShare {
     storage: Arc<dyn XmipStorage>,
+    stall: Duration,
     streams: Mutex<HashMap<StreamId, Weak<Shared>>>,
 }
 
 /// One Stream's reads on this node, in the order they were opened.
 struct Shared {
     storage: Arc<dyn XmipStorage>,
+    stall: Duration,
     stream: StreamId,
     length: u64,
     reads: Mutex<Vec<Arc<OneRead>>>,
@@ -71,11 +80,13 @@ struct Shared {
 }
 
 impl StreamShare {
-    /// Reads of Streams kept in the Ledger behind `storage`.
+    /// Reads of Streams kept in the Ledger behind `storage`, a departure
+    /// taking nothing for `stall` left behind ([`STREAM_STALL`]).
     #[must_use]
-    pub fn new(storage: Arc<dyn XmipStorage>) -> Self {
+    pub fn new(storage: Arc<dyn XmipStorage>, stall: Duration) -> Self {
         Self {
             storage,
+            stall,
             streams: Mutex::default(),
         }
     }
@@ -95,6 +106,7 @@ impl StreamShare {
                 .unwrap_or_else(|| {
                     let fresh = Arc::new(Shared {
                         storage: Arc::clone(&self.storage),
+                        stall: self.stall,
                         stream,
                         length,
                         reads: Mutex::default(),
@@ -156,7 +168,7 @@ impl Shared {
                 let storage = Arc::clone(&self.storage);
                 let from =
                     ChunkReader::shared_from(storage, self.stream, self.length, (chunk, taken));
-                let opened = Arc::new(OneRead::opened(from, place));
+                let opened = Arc::new(OneRead::opened(from, place, self.stall));
                 reads.push(Arc::clone(&opened));
                 opened
             },
@@ -304,7 +316,7 @@ mod tests {
         let failing = Failing::over(Arc::clone(crate::ledger::in_memory()));
         let length = kept_stream(failing.as_ref(), stream, chunks, size);
         let storage: Arc<dyn XmipStorage> = failing.clone();
-        (StreamShare::new(storage), failing, length)
+        (StreamShare::new(storage, STREAM_STALL), failing, length)
     }
 
     /// How many reads of its Stream there are now.
@@ -488,45 +500,24 @@ mod tests {
     }
 
     #[test]
-    fn one_kept_from_its_processor_a_while_holds_the_one_ahead_back_and_nothing_is_read_twice() {
+    fn one_behind_still_taking_holds_the_one_ahead_back_and_nothing_is_read_twice() {
         use xcore::latency::spin;
         let stream = StreamId::new(0x5_0007);
         let chunks = 24;
         let (share, failing, length) = counted(stream, chunks, 500);
-        // The read's first chunk slow to come, as from a Storage node across
-        // a network, so its pace makes the kept chunks worth some hundreds
-        // of milliseconds: the one behind may be kept from its processor
-        // that long by the machine and still not be left behind.
-        failing.before(
-            Operation::ReadChunk,
-            Box::new(|| std::thread::sleep(Duration::from_millis(500))),
-        );
-        let pace = Duration::from_millis(2);
         let (mut ahead, mut behind) = (share.reader(stream, length), share.reader(stream, length));
-        let went = AtomicU64::new(0);
-        let mut piece = [0u8; 500];
-        behind.read_exact(&mut piece).expect("its first chunk");
+        // The one ahead takes as fast as it may; the one behind more slowly,
+        // its far end slower, but never stopping for the stall: what is kept
+        // is counted in chunks, so the one ahead waits for it every time.
+        let pace = STREAM_STALL / 50;
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 let mut piece = [0u8; 500];
-                while ahead.read(&mut piece).expect("ahead") > 0 {
-                    went.fetch_add(1, Ordering::Release);
-                    spin(pace);
-                }
+                while ahead.read(&mut piece).expect("ahead") > 0 {}
             });
-            // Kept from its processor until the one ahead has gone as far as
-            // the kept chunks let it, and longer than a chunk takes it.
-            let most = 1 + KEPT_PER_READER as u64;
-            while went.load(Ordering::Acquire) < most {
-                spin(pace / 10);
-            }
-            spin(2 * pace);
-            assert_eq!(
-                went.load(Ordering::Acquire),
-                most,
-                "held back for the one behind"
-            );
+            let mut piece = [0u8; 500];
             while behind.read(&mut piece).expect("behind") > 0 {
+                assert_eq!(reads(&behind), 1, "never left behind");
                 spin(pace);
             }
         });
@@ -538,22 +529,18 @@ mod tests {
     }
 
     #[test]
-    fn one_that_stops_taking_holds_the_one_ahead_back_only_for_the_time_kept() {
-        use xcore::latency::spin;
+    fn one_that_stops_taking_holds_the_one_ahead_back_only_for_the_stall() {
         let stream = StreamId::new(0x5_0008);
         let chunks = 24;
         let (share, _, length) = counted(stream, chunks, 500);
-        let pace = Duration::from_millis(1);
         let (mut ahead, mut stopped) = (share.reader(stream, length), share.reader(stream, length));
         let mut piece = [0u8; 500];
         stopped.read_exact(&mut piece).expect("its first chunk");
         // The one whose far end stopped takes nothing more; the one ahead
-        // goes to the end, held back for it no longer than the kept chunks
-        // take the read to pass.
+        // goes to the end, held back for it once, for the stall.
         let (began, mut went) = (Instant::now(), 0);
         while ahead.read(&mut piece).expect("ahead") > 0 {
             went += 1;
-            spin(pace);
         }
         assert_eq!(went, chunks, "the one ahead took every chunk");
         assert!(
@@ -572,7 +559,7 @@ mod tests {
         let storage = Arc::clone(crate::ledger::in_memory());
         let stream = StreamId::new(0x5_0003);
         let length = kept_stream(storage.as_ref(), stream, 2, 100);
-        let share = StreamShare::new(Arc::clone(&storage));
+        let share = StreamShare::new(Arc::clone(&storage), STREAM_STALL);
         let (mut one, mut two) = (
             share.reader(stream, length + 1),
             share.reader(stream, length + 1),
