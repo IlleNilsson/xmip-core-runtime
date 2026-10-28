@@ -142,7 +142,7 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # One real route technology, so a test proves arrival reads a prefixed
 # property through what a node loads rather than through a stand-in.
 # A Work Process the tests run is drawn in BPMN 2.0 and compiled here.
-process-bpmn = { package = "xmip-core-process-bpmn", path = "../../core/capability/process/bpmn" }
+process-bpmn = { package = "xmip-core-process-bpmn", git = "https://github.com/IlleNilsson/xmip-core-process-bpmn", branch = "main" }
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
 # The tests write a Subscription's filter as the expression it is (ADR-0066).
 path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
