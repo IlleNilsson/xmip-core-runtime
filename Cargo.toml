@@ -99,7 +99,8 @@ zeroize = "1"
 # A test authority and each end's certificate, for the operate plane's
 # tests (`fixture::authority`): only the test-support feature turns it on.
 rcgen = { version = "0.13", optional = true }
-# The one byte cursor a loaded contract reads the content through.
+# The one byte cursor a loaded contract reads the content through, and the
+# percent-encoding of a call's refusal.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 
 # A directory watch (`directory_watch`): a change notification and the
@@ -206,7 +207,6 @@ node = [
     "dep:transport",
     "dep:persist",
     "dep:secret",
-    "dep:codec",
     "dep:nix",
 ]
 # A surface that follows nodes on other machines and runs none, the phone
@@ -218,9 +218,10 @@ node = [
 # (`xmip_operator_request_v1`, a person's key and request, and its two
 # halves around a keeper's signature, `xmip_operator_information_v1` and
 # `xmip_operator_assemble_v1`, and the chain and anchors kept whole,
-# `xmip_operator_keep_v1`). Built alone with
+# `xmip_operator_keep_v1`), and a refusal's message percent-encoded on the
+# call (`codec::percent`). Built alone with
 # `--no-default-features --features remote`.
-remote = []
+remote = ["dep:codec"]
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
 # them are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
