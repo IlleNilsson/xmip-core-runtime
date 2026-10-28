@@ -89,7 +89,7 @@ pub fn refusal(name: &str, why: &str) -> Response {
     Response::new(200)
         .header("content-type", grpc::CONTENT_TYPE_JSON)
         .trailer(grpc::STATUS, &grpc::code(name).to_string())
-        .trailer(grpc::MESSAGE, &net::percent::encode(why, false))
+        .trailer(grpc::MESSAGE, &codec::percent::encode(why, false))
 }
 
 /// The message an answer carries.
@@ -112,7 +112,7 @@ pub fn answered(response: &Response) -> Result<Value, String> {
     };
     let status = field(grpc::STATUS).unwrap_or("2");
     if status != "0" {
-        let said = field(grpc::MESSAGE).map_or_else(String::new, net::percent::decode);
+        let said = field(grpc::MESSAGE).map_or_else(String::new, codec::percent::decode);
         return Err(format!("{REFUSED_CALL} ({status}): {said}"));
     }
     let (message, _) = grpc::unframe(&response.body).map_err(|failed| failed.message)?;
