@@ -413,7 +413,11 @@ mod tests {
         };
         assert_eq!(code, status::AUTH);
         let said = String::from_utf8_lossy(&report[..length]).to_string();
-        assert!(said.contains("the secret 'partner-x'") && !said.contains("not-a-real-value"));
+        // Decided before the call is read: by its method, never its contents.
+        assert!(
+            said.contains("may not set a secret") && !said.contains("not-a-real-value"),
+            "{said}"
+        );
         // SAFETY: as above.
         let code = unsafe {
             crate::ffi::remote::xmip_secrets_v1(
@@ -424,7 +428,7 @@ mod tests {
                 &raw mut length,
             )
         };
-        assert_eq!(code, status::NOT_FOUND);
+        assert_eq!(code, status::AUTH, "an Observer lists no secrets");
 
         let ended = Instant::now();
         // SAFETY: `remote` and `served` are live, and freed once each.

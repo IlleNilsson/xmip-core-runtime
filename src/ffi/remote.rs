@@ -339,6 +339,8 @@ pub unsafe extern "C" fn xmip_secrets_v1(
             };
             (code, text)
         }
+        // Refused by role, `REFUSED.`, or by the node, `REFUSED:`.
+        Err(why) if why.starts_with("REFUSED.") => (status::AUTH, why),
         Err(why) if why.starts_with("REFUSED") => (status::NOT_FOUND, why),
         Err(why) if why.starts_with("FAILED") => (status::IO, why),
         Err(why) => (status::UNAVAILABLE, why),

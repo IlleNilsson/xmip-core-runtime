@@ -168,7 +168,9 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
         .expect("it answers");
     assert_eq!(outcome, Outcome::Denied);
     assert!(
-        said.starts_with("REFUSED. CN=surface may not pause a Subscription 'orders'"),
+        // Decided by its method before the call is read (ADR-0009, amendment
+        // 2026-10-29), so the refusal names the method, not the Subscription.
+        said.starts_with("REFUSED. CN=surface may not act on this node"),
         "{said}"
     );
     let file = audit.file().expect("an audit file");
@@ -181,7 +183,8 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
     let (outcome, said) = surface
         .act(&absent_node(), "subscription", "orders", "remove")
         .expect("it answers");
-    assert_eq!(outcome, Outcome::Invalid, "{said}");
+    // Who may ask is decided first: an Observer is told so, whatever it asks.
+    assert_eq!(outcome, Outcome::Denied, "{said}");
 }
 
 #[test]

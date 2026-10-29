@@ -221,7 +221,7 @@ node = [
 # `xmip_operator_keep_v1`), and a refusal's message percent-encoded on the
 # call (`codec::percent`). Built alone with
 # `--no-default-features --features remote`.
-remote = ["dep:codec"]
+remote = ["dep:codec", "dep:authorize"]
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
 # them are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
