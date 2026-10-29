@@ -500,7 +500,6 @@ name = "Orders"
 [[xmip_applications.receive_locations]]
 name = "OrdersIn"
 receive_port = "Orders"
-interaction = "data-transfer"
 depth = "light"
 
 [[xmip_applications.send_ports]]

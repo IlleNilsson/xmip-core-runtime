@@ -757,7 +757,6 @@ name = "Orders"
 [[xmip_applications.receive_locations]]
 name = "party-x"
 receive_port = "Orders"
-interaction = "data-transfer"
 depth = "context"
 
 [[xmip_applications.send_ports]]
