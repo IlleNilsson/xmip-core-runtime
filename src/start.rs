@@ -191,10 +191,7 @@ pub fn start(path: &str) -> Snapshot {
                 scope: format!("{node}/{stage}/{}", location.name),
                 health: Health::Stressed,
                 severity: 50,
-                evidence: format!(
-                    "planned, not started; {} at {}",
-                    location.transport, location.address
-                ),
+                evidence: format!("planned, not started at {}", location.address),
                 observed_unix_nanos: now,
             });
         }
@@ -365,18 +362,16 @@ extensions = []
 [[receive_locations]]
 name = "orders-in"
 start = true
-transport = "file"
 address = "C:/in"
 
 [[send_locations]]
 name = "billing-out"
 start = true
-transport = "file"
 address = "C:/out"
 
 [[send_locations]]
 name = "archive-out"
-transport = "file"
+start = false
 address = "C:/archive"
 "#
             ),
@@ -449,18 +444,19 @@ symbol = "xmip_create_module_v1"
     }
 
     #[test]
-    fn a_location_missing_transport_is_refused_and_missing_start_is_not_started() {
+    fn a_location_missing_its_address_is_refused_and_one_with_it_is_enough() {
         let (head, _) = service();
-        let no_start = format!(
-            "{head}[[receive_locations]]\nname = \"in\"\ntransport = \"file\"\naddress = \"a\"\n"
-        );
-        let no_transport =
-            format!("{head}[[send_locations]]\nname = \"out\"\nstart = true\naddress = \"a\"\n");
+        let addressed = format!("{head}[[receive_locations]]\nname = \"in\"\naddress = \"a\"\n");
+        let no_address = format!("{head}[[send_locations]]\nname = \"out\"\n");
 
-        assert!(validate(&no_start).is_empty(), "{:?}", validate(&no_start));
-        let problems = validate(&no_transport);
+        assert!(
+            validate(&addressed).is_empty(),
+            "{:?}",
+            validate(&addressed)
+        );
+        let problems = validate(&no_address);
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("transport"), "{}", problems[0]);
+        assert!(problems[0].contains("address"), "{}", problems[0]);
     }
 
     #[test]
@@ -493,7 +489,6 @@ name = "Orders"
 name = "OrdersIn"
 node = "{node}"
 start = true
-transport = "xmip-core-transport-file"
 address = "/var/xmip/in/orders"
 
 [[xmip_applications]]

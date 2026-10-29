@@ -90,7 +90,6 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                 configured: configure::ConfiguredLocation {
                     name: "In".to_string(),
                     start: true,
-                    transport: "once".to_string(),
                     address: "once://in".to_string(),
                     credentials: None,
                     contract: None,

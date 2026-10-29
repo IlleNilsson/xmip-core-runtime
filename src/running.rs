@@ -134,11 +134,7 @@ impl Running {
         let guard = crate::receive_certificate::guard(&document, Path::new(path))
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
 
-        let declared: Declarations = linked
-            .transports
-            .iter()
-            .map(|linked| (linked.technology(), linked.settings()))
-            .collect();
+        let declared: Declarations = linked.declarations();
         // ADR-0066, amendment 2026-10-22: a call to a compiled unit is read
         // and validated, and running one is decided, not built.
         let unrun = configure::step::unrun(&document, &applications);
@@ -185,7 +181,11 @@ impl Running {
         // The handshake read under its own bound, `[tuning]
         // receive_handshake`, apart from each Location's own wait.
         let guard = guard.map(|guard| guard.handshaking_within(tree.tuning.receive_handshake));
-        let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref()))
+        // The keys its far ends presented first, kept across restarts
+        // (ADR-0019, amendment 2026-10-28).
+        let pins =
+            std::sync::Arc::new(transport::Pinned::kept_at(data.join(crate::linked::PINNED)));
+        let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref(), &pins))
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
@@ -448,8 +448,8 @@ mod tests {
         ));
         Linked {
             transports: vec![
-                LinkedTransport::new(TcpTransport::SETTINGS, counted::<TcpTransport>),
-                LinkedTransport::new(HttpTransport::SETTINGS, counted::<HttpTransport>),
+                LinkedTransport::opened_by::<TcpTransport>(counted::<TcpTransport>),
+                LinkedTransport::opened_by::<HttpTransport>(counted::<HttpTransport>),
             ],
             authenticators: vec![Box::new(Always::circumstance())],
             policies: vec![Box::new(Open)],
@@ -507,8 +507,7 @@ name = "Loopback"
 name = "In"
 node = "{node}"
 start = true
-transport = "xmip-core-transport-tcp"
-address = "{receive}"
+address = "tcp://{receive}"
 [applications.receive_locations.settings]
 timeout = "100ms"
 [applications.receive_locations.accept]
@@ -518,8 +517,7 @@ mechanism = ["circumstance"]
 name = "Out"
 node = "{node}"
 start = true
-transport = "xmip-core-transport-tcp"
-address = "{far}"
+address = "tcp://{far}"
 {APPLICATION}"#,
             cluster = cluster.name
         )
@@ -588,8 +586,7 @@ address = "{far}"
     /// where raw TCP spends one a Message, each waiting minutes to close on
     /// its sender's side.
     fn node_keeping_connections(receive: &str, far: &str) -> String {
-        node(receive, &format!("http://{far}/orders"))
-            .replace("xmip-core-transport-tcp", "xmip-core-transport-http")
+        node(receive, &format!("{far}/orders")).replace("address = \"tcp://", "address = \"http://")
     }
 
     /// A far end over HTTP, listening before anything is sent to it, and
@@ -638,7 +635,7 @@ address = "{far}"
         );
         assert_eq!(OPENED.with(Cell::get), 2, "one transport per Location");
         assert!(
-            crate::catalogue::declarations().contains_key("xmip-core-transport-tcp"),
+            crate::catalogue::declarations().contains_key("tcp"),
             "loading carries the declaration"
         );
 
@@ -952,13 +949,8 @@ address = "{far}"
         let base = node(&unheld().to_string(), &unheld().to_string());
         let cases = [
             (
-                base.replacen(
-                    "transport = \"xmip-core-transport-tcp\"",
-                    "transport = \"xmip-core-transport-sftp\"",
-                    1,
-                ),
-                "names the transport 'xmip-core-transport-sftp', which this node was not \
-                 built with",
+                base.replacen("address = \"tcp://", "address = \"sftp://", 1),
+                "and this node carries no transport for sftp://; it carries tcp, http, https",
             ),
             (
                 base.replace("[\"circumstance\"]", "[\"mutual-tls\"]"),
@@ -966,8 +958,8 @@ address = "{far}"
             ),
             (
                 base.replace(
-                    "address = \"127",
-                    "contract = \"xmip-core-contract-json\"\naddress = \"127",
+                    "address = \"tcp://127",
+                    "contract = \"xmip-core-contract-json\"\naddress = \"tcp://127",
                 ),
                 "holds no Stream to a contract at arrival yet",
             ),

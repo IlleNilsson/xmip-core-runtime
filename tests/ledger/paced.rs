@@ -114,7 +114,6 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
             configured: configure::ConfiguredLocation {
                 name: "In".to_string(),
                 start: true,
-                transport: "idle".to_string(),
                 address: "idle://in".to_string(),
                 credentials: None,
                 contract: None,

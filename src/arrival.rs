@@ -483,7 +483,6 @@ mod tests {
         let configured = configure::ConfiguredLocation {
             name: "Billing".to_string(),
             start: true,
-            transport: "recording".to_string(),
             address: "sftp://billing.example/in".to_string(),
             credentials: None,
             contract: None,
@@ -499,6 +498,7 @@ mod tests {
         };
         Sends {
             locations: vec![Sending {
+                target: configured.address.clone(),
                 configured,
                 chain: SendChain {
                     port: Some(PartyId::new(8)),

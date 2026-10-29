@@ -122,7 +122,6 @@ fn location(name: &str, backlog: Backlog, gate: &ReceiveGate, most: usize) -> Re
         configured: configure::ConfiguredLocation {
             name: name.to_string(),
             start: true,
-            transport: "backlog".to_string(),
             address: format!("backlog://{name}"),
             credentials: None,
             contract: None,

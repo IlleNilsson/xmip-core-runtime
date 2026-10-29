@@ -339,7 +339,7 @@ fn depart_one(
     .kept_by(&durable)
     .carrying(work.message.context())
     .of_message(&message);
-    let sent = sending.transport.send_from(&location.address, outgoing);
+    let sent = sending.transport.send_from(&sending.target, outgoing);
     drop(held);
     // The claim lost while the Message was read, before its first byte
     // went: nothing was sent, and nothing more is tried from here.
