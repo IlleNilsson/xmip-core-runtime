@@ -92,8 +92,7 @@ identities = [{{ mechanism = "mutual-tls", purpose = "receive", value = "CN=seco
 [[receive_locations]]
 name = "In"
 start = true
-transport = "xmip-core-transport-tcp"
-address = "{receive}"
+address = "tcp://{receive}"
 [receive_locations.settings]
 timeout = "100ms"
 tls = true

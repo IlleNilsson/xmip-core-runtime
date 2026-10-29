@@ -87,7 +87,6 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
             configured: configure::ConfiguredLocation {
                 name: "In".to_string(),
                 start: true,
-                transport: "untold".to_string(),
                 address: "untold://in".to_string(),
                 credentials: None,
                 contract: None,

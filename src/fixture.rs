@@ -121,8 +121,7 @@ impl FarEnd {
             configured: configure::ConfiguredLocation {
                 name: name.to_string(),
                 start: true,
-                transport: "far-end".to_string(),
-                address: "far-end".to_string(),
+                address: "far-end://".to_string(),
                 credentials: None,
                 contract: None,
                 settings: configure::LocationSettings::default(),
@@ -135,6 +134,7 @@ impl FarEnd {
                 debatch: None,
                 correlation: None,
             },
+            target: "far-end://".to_string(),
             chain: send::SendChain::default(),
             transport: Box::new(self),
         }

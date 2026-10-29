@@ -116,7 +116,6 @@ fn location(
         configured: configure::ConfiguredLocation {
             name: "In".to_string(),
             start: true,
-            transport: transport.name().to_string(),
             address: "tcp://in".to_string(),
             credentials: None,
             contract: None,

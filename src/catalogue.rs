@@ -19,13 +19,14 @@ use configure::Declarations;
 use serde::Serialize;
 use xcore::settings::Settings;
 
-/// Which capability a technology carried belongs to: what a Location names it
-/// by, `transport` or `contract`. Said by whoever carries it, never read from
+/// Which capability a technology carried belongs to: a transport, which a
+/// Location's address chooses by its scheme, or a contract, which its
+/// `contract` names. Said by whoever carries it, never read from
 /// its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
-    /// A transport technology: a Location's `transport`.
+    /// A transport technology: chosen by a Location's address.
     Transport,
     /// A contract technology: a Location's `contract`.
     Contract,
@@ -36,6 +37,10 @@ pub enum Capability {
 pub struct Carried {
     /// Its capability.
     pub capability: Capability,
+    /// The schemes a Location's address is entered with to choose it, a
+    /// transport's; none for a contract, which a Location names.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub schemes: &'static [&'static str],
     /// Its declaration, `technology` and `settings` side by side with the
     /// capability in the answer.
     #[serde(flatten)]
@@ -44,10 +49,15 @@ pub struct Carried {
 
 static CARRIED: RwLock<Vec<Carried>> = RwLock::new(Vec::new());
 
-/// Carry the technology `settings` declares, of `capability`: from now on
-/// its Locations are held to its declaration and the catalogue answers it.
-/// Carrying one again changes nothing.
-pub fn carry(capability: Capability, settings: &'static Settings) {
+/// Carry the technology `settings` declares, of `capability`, chosen by
+/// `schemes` where it is a transport: from now on its Locations are held
+/// to its declaration and the catalogue answers it. Carrying one again
+/// changes nothing.
+pub fn carry(
+    capability: Capability,
+    settings: &'static Settings,
+    schemes: &'static [&'static str],
+) {
     let mut carried = CARRIED.write().unwrap_or_else(PoisonError::into_inner);
     if carried
         .iter()
@@ -55,6 +65,7 @@ pub fn carry(capability: Capability, settings: &'static Settings) {
     {
         carried.push(Carried {
             capability,
+            schemes,
             settings,
         });
         carried.sort_by_key(|held| held.settings.technology);
@@ -70,12 +81,20 @@ pub fn carried() -> Vec<Carried> {
         .clone()
 }
 
-/// The declarations carried, as `configure` holds a Location to them.
+/// The declarations carried, as `configure` holds a Location to them: a
+/// transport by each of its schemes, a contract by its module name.
 #[must_use]
 pub fn declarations() -> Declarations {
     carried()
         .into_iter()
-        .map(|held| (held.settings.technology, held.settings))
+        .flat_map(|held| match held.capability {
+            Capability::Transport => held
+                .schemes
+                .iter()
+                .map(|scheme| (*scheme, held.settings))
+                .collect::<Vec<_>>(),
+            Capability::Contract => vec![(held.settings.technology, held.settings)],
+        })
         .collect()
 }
 
@@ -120,8 +139,8 @@ mod tests {
 
     #[test]
     fn a_carried_technology_is_answered_whole_and_by_name() {
-        carry(Capability::Transport, EXAMPLE);
-        carry(Capability::Transport, EXAMPLE);
+        carry(Capability::Transport, EXAMPLE, &["catalogued"]);
+        carry(Capability::Transport, EXAMPLE, &["catalogued"]);
         assert_eq!(
             carried()
                 .iter()
@@ -138,7 +157,8 @@ mod tests {
         );
         assert!(one.contains("\"presence\":\"required\""), "{one}");
         assert!(catalogue("").expect("all").contains(EXAMPLE.technology));
-        assert!(declarations().contains_key(EXAMPLE.technology));
+        assert!(declarations().contains_key("catalogued"), "by its scheme");
+        assert!(one.contains("\"schemes\":[\"catalogued\"]"), "{one}");
 
         let refused = catalogue("xmip-core-transport-nowhere").expect_err("not carried");
         assert!(refused.contains("xmip-core-transport-nowhere"));

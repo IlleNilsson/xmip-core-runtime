@@ -23,7 +23,7 @@ use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, Guard, NodeLocation, Transport};
+use transport::{Configured, Guard, NodeLocation, Pinned, Transport};
 
 use crate::receiving::ReceiveGate;
 use xaudit::program_audit::ProgramAudit;
@@ -33,19 +33,27 @@ use xcore::settings::{Applies, Given, Settings};
 /// sends go through.
 pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 
-/// The node a Location's transport is built on: its location, and the
-/// guard its receives terminate TLS with, where its configuration gives
-/// one (`crate::receive_certificate`).
-pub type OnNode<'a> = (&'a NodeLocation, Option<&'a Guard>);
+/// The node a Location's transport is built on: its location, the guard
+/// its receives terminate TLS with, where its configuration gives one
+/// (`crate::receive_certificate`), and the keys its far ends are held to,
+/// pinned on first contact under its data directory (`PINNED`).
+pub type OnNode<'a> = (&'a NodeLocation, Option<&'a Guard>, &'a Arc<Pinned>);
+
+/// The file under a node's data directory its far ends' pinned keys are
+/// kept in (`transport::pinned`; ADR-0019, amendment 2026-10-28).
+pub const PINNED: &str = "pinned-keys";
 
 /// How a Location's transport is built: its address, the side it serves,
 /// what its settings table gave, and the node it is built on.
 pub type Open = fn(&str, Applies, &[(String, Given)], OnNode<'_>) -> Opened;
 
-/// A transport technology linked into the program: its declaration, and the
-/// one way a Location builds it (`transport::Configured::open`).
+/// A transport technology linked into the program: its declaration, the
+/// schemes a Location is entered with to choose it, and the one way a
+/// Location builds it (`transport::Configured::open`).
 pub struct LinkedTransport {
     settings: &'static Settings,
+    schemes: &'static [&'static str],
+    own_terms: fn(&str) -> &str,
     open: Open,
     waits: Waits,
 }
@@ -59,24 +67,46 @@ impl LinkedTransport {
     #[must_use]
     pub fn of<T: Configured + Send + Sync + 'static>() -> Self {
         Self {
-            settings: T::SETTINGS,
-            open: open::<T>,
             waits: waits::<T>,
+            ..Self::opened_by::<T>(open::<T>)
         }
     }
 
-    /// A technology declared by `settings` and built by `open`, said to
-    /// wait for what is sent to it.
+    /// The technology `T`, as its own declaration says, built by `open`
+    /// and said to wait for what is sent to it.
     #[must_use]
-    pub const fn new(settings: &'static Settings, open: Open) -> Self {
+    pub fn opened_by<T: Configured>(open: Open) -> Self {
         Self {
-            settings,
+            settings: T::SETTINGS,
+            schemes: T::SCHEMES,
+            own_terms: T::own_terms,
             open,
             waits: always,
         }
     }
 
-    /// Its module name, what a Location's `transport` names it by.
+    /// `location`'s address in this technology's own terms
+    /// (`transport::Configured::own_terms`): what a send names as its
+    /// target.
+    #[must_use]
+    pub fn target<'a>(&self, location: &'a ConfiguredLocation) -> &'a str {
+        (self.own_terms)(&location.address)
+    }
+
+    /// The schemes a Location's address is entered with to choose it.
+    #[must_use]
+    pub const fn schemes(&self) -> &'static [&'static str] {
+        self.schemes
+    }
+
+    /// Whether `location`'s address chooses this technology: the scheme it
+    /// is entered with ([`ConfiguredLocation::scheme`]) is one it declares.
+    #[must_use]
+    pub fn chosen_by(&self, location: &ConfiguredLocation) -> bool {
+        self.schemes.contains(&location.scheme().as_str())
+    }
+
+    /// Its module name.
     #[must_use]
     pub const fn technology(&self) -> &'static str {
         self.settings.technology
@@ -123,17 +153,19 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
 }
 
 /// `T` built from a Location and given its node, once, as it is built (the
-/// owner, 2026-10-03; `transport::Configured::on_node`), and the guard its
+/// owner, 2026-10-03; `transport::Configured::on_node`), the keys its far
+/// ends are held to (`transport::Configured::pinned_by`), and the guard its
 /// receives terminate TLS with (`transport::Configured::guarded_by`).
 pub(crate) fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
-    (node, guard): OnNode<'_>,
+    (node, guard, pins): OnNode<'_>,
 ) -> Opened {
     Ok(Box::new(
         T::open(address, side, given)?
             .on_node(node)?
+            .pinned_by(pins)
             .guarded_by(guard)?,
     ))
 }
@@ -266,12 +298,47 @@ pub struct Linked {
 }
 
 impl Linked {
-    /// The linked transport a Location names, by module name.
+    /// The linked transport `location`'s address chooses, by the scheme it
+    /// is entered with ([`ConfiguredLocation::scheme`]).
     #[must_use]
-    pub fn transport(&self, technology: &str) -> Option<&LinkedTransport> {
+    pub fn transport(&self, location: &ConfiguredLocation) -> Option<&LinkedTransport> {
         self.transports
             .iter()
-            .find(|linked| linked.technology() == technology)
+            .find(|linked| linked.chosen_by(location))
+    }
+
+    /// Every linked transport's declaration, by each scheme it is chosen
+    /// with: what `configure` holds a Location's settings to.
+    #[must_use]
+    pub fn declarations(&self) -> configure::Declarations {
+        self.transports
+            .iter()
+            .flat_map(|linked| {
+                linked
+                    .schemes
+                    .iter()
+                    .map(|scheme| (*scheme, linked.settings))
+            })
+            .collect()
+    }
+
+    /// One sentence for each scheme two linked transports both declare:
+    /// an address entered with it could choose either.
+    #[must_use]
+    pub fn scheme_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (at, first) in self.transports.iter().enumerate() {
+            for second in &self.transports[at + 1..] {
+                for scheme in first.schemes.iter().filter(|s| second.schemes.contains(s)) {
+                    problems.push(format!(
+                        "the scheme '{scheme}' is declared by both {} and {}",
+                        first.technology(),
+                        second.technology()
+                    ));
+                }
+            }
+        }
+        problems
     }
 
     /// The linked key store a `[store]` names.

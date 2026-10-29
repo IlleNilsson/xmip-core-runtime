@@ -280,11 +280,7 @@ fn stage_records(
             let scope = format!("{node}/{stage}/{}", location.name);
             match failures.iter().find(|(name, _)| name == &location.name) {
                 Some((_, why)) => (scope, (Health::Done, severity(Health::Done)), why.clone()),
-                None => (
-                    scope,
-                    fine,
-                    format!("started; {} at {}", location.transport, location.address),
-                ),
+                None => (scope, fine, format!("started at {}", location.address)),
             }
         })
         .collect();
@@ -444,7 +440,6 @@ mod tests {
         configure::ConfiguredLocation {
             name: name.to_string(),
             start: true,
-            transport: "file".to_string(),
             address: "out".to_string(),
             credentials: None,
             contract: None,

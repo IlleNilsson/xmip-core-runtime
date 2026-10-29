@@ -4,18 +4,19 @@
 //! each Location's transport built once. `running.rs` runs them in order.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use authenticate::Authenticator;
 use configure::ConfiguredLocation;
 use route::{CONTEXT, Gathering, Source, split};
-use transport::{Guard, NodeLocation};
+use transport::{Guard, NodeLocation, Pinned};
 use xcore::settings::Applies;
 
 use crate::capability_registry::{CapabilityRegistry, Load};
 use crate::catalogue::{self, Capability};
 use crate::execution_tree::ExecutionTree;
 use crate::host::HostService;
-use crate::linked::Linked;
+use crate::linked::{Linked, LinkedTransport};
 use crate::receiving::{ReceiveGate, Receiving};
 use crate::running::publication::location;
 use crate::sending::{Sending, Sends};
@@ -31,13 +32,22 @@ pub(crate) struct Checked {
 /// filter uses is one this node was built with, and every accepted Party
 /// one the configuration declares.
 pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Vec<String>> {
-    let mut problems = Vec::new();
+    let mut problems = linked.scheme_problems();
 
     for (stage, location) in started(tree) {
-        if linked.transport(&location.transport).is_none() {
+        if linked.transport(location).is_none() {
+            let carried: Vec<&str> = linked
+                .transports
+                .iter()
+                .flat_map(|linked| linked.schemes().iter().copied())
+                .collect();
             problems.push(format!(
-                "the {stage} '{}' names the transport '{}', which this node was not built with",
-                location.name, location.transport
+                "the {stage} '{}' is entered as {}, and this node carries no transport for \
+                 {}://; it carries {}",
+                location.name,
+                location.address,
+                location.scheme(),
+                carried.join(", ")
             ));
         }
         if let Some(contract) = &location.contract {
@@ -138,14 +148,15 @@ pub(crate) fn load(
     };
 
     let used: BTreeSet<&str> = started(tree)
-        .map(|(_, location)| location.transport.as_str())
+        .filter_map(|(_, location)| linked.transport(location))
+        .map(LinkedTransport::technology)
         .collect();
     for linked in linked
         .transports
         .iter()
         .filter(|t| used.contains(t.technology()))
     {
-        catalogue::carry(Capability::Transport, linked.settings());
+        catalogue::carry(Capability::Transport, linked.settings(), linked.schemes());
         let technology = linked.technology();
         register(format!("transport:{technology}"), technology, Load::Linked);
     }
@@ -218,7 +229,7 @@ pub(crate) fn load(
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
-    (gates, guard): (Vec<ReceiveGate>, Option<&Guard>),
+    (gates, guard, pins): (Vec<ReceiveGate>, Option<&Guard>, &Arc<Pinned>),
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
     let node = NodeLocation::new(location(
         &tree.service.cluster_name,
@@ -226,20 +237,20 @@ pub(crate) fn open(
     ));
     let mut problems = Vec::new();
     let mut built = |location: &ConfiguredLocation, side: Applies| {
-        let technology = linked.transport(&location.transport)?;
-        match technology.open(location, side, (&node, guard)) {
+        let technology = linked.transport(location)?;
+        match technology.open(location, side, (&node, guard, pins)) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),
                     _ => transport.directions().sends(),
                 };
                 if serves {
-                    Some(transport)
+                    Some((transport, technology.target(location).to_string()))
                 } else {
                     problems.push(format!(
                         "the Location '{}': {} does not {} (ADR-0010)",
                         location.name,
-                        location.transport,
+                        technology.technology(),
                         if side == Applies::Receive {
                             "receive"
                         } else {
@@ -264,7 +275,7 @@ pub(crate) fn open(
         .iter()
         .zip(gates)
         .filter_map(|(configured, gate)| {
-            built(configured, Applies::Receive).map(|transport| Receiving {
+            built(configured, Applies::Receive).map(|(transport, _)| Receiving {
                 configured: configured.clone(),
                 gate,
                 transport,
@@ -278,8 +289,9 @@ pub(crate) fn open(
         .send_locations_to_start
         .iter()
         .filter_map(|configured| {
-            built(configured, Applies::Send).map(|transport| Sending {
+            built(configured, Applies::Send).map(|(transport, target)| Sending {
                 configured: configured.clone(),
+                target,
                 chain: send::SendChain::default(),
                 transport,
             })

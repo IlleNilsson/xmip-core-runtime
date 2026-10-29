@@ -334,15 +334,15 @@ pub fn validate_startup_configuration(
 }
 
 /// A location the document names but leaves empty. The document already
-/// refuses one without a `transport` key; this refuses one whose value says
-/// nothing, which is what an editor writes when nobody chose.
+/// refuses one without an `address` key; this refuses one whose value says
+/// nothing, which is what an editor writes when nobody entered one.
 fn validate_location(stage: &str, location: &ConfiguredLocation, errors: &mut Vec<String>) {
     if location.name.trim().is_empty() {
         errors.push(format!("configured {stage} requires a name"));
     }
 
-    if location.transport.trim().is_empty() {
-        errors.push(format!("{stage} '{}' requires a transport", location.name));
+    if location.address.trim().is_empty() {
+        errors.push(format!("{stage} '{}' requires an address", location.name));
     }
 }
 
@@ -443,13 +443,11 @@ symbol_or_command = "run"
 [[receive_locations]]
 name = "orders-in"
 start = true
-transport = "file"
 address = "C:/in"
 
 [[send_locations]]
 name = "billing-out"
 start = false
-transport = "file"
 address = "C:/out"
 "#;
 
@@ -471,12 +469,22 @@ address = "C:/out"
         assert!(!tree.verified_extensions[0].loaded_during_startup);
     }
 
-    /// Only `true` starts a Location; nothing is not started, and known.
+    /// A Location entered by its address starts; `false` is known and not
+    /// started.
     #[test]
-    fn a_location_that_does_not_say_start_true_is_known_and_not_started() {
-        let source = node().replace(
+    fn a_location_that_says_start_false_is_known_and_not_started() {
+        let started = node().replace(
             "name = \"orders-in\"\nstart = true\n",
             "name = \"orders-in\"\n",
+        );
+        let document = configure::parse_toml(&started).expect("parses");
+        let (tree, _) =
+            build_execution_tree(document, &[], &Declarations::new()).expect("valid tree");
+        assert_eq!(tree.receive_locations_to_start.len(), 1, "nothing: started");
+
+        let source = node().replace(
+            "name = \"orders-in\"\nstart = true\n",
+            "name = \"orders-in\"\nstart = false\n",
         );
         let document = configure::parse_toml(&source).expect("parses");
         let (tree, _) =
@@ -490,18 +498,15 @@ address = "C:/out"
     }
 
     #[test]
-    fn a_location_with_an_empty_transport_is_refused() {
-        let source = node().replace(
-            "transport = \"file\"\naddress = \"C:/in\"",
-            "transport = \"\"\naddress = \"C:/in\"",
-        );
+    fn a_location_with_an_empty_address_is_refused() {
+        let source = node().replace("address = \"C:/in\"", "address = \"\"");
         let document = configure::parse_toml(&source).expect("parses");
         let report =
             build_execution_tree(document, &[], &Declarations::new()).expect_err("refused");
 
         assert_eq!(
             report.errors,
-            ["Receive Location 'orders-in' requires a transport"]
+            ["Receive Location 'orders-in' requires an address"]
         );
     }
 
@@ -518,12 +523,11 @@ address = "C:/out"
                 applies: Applies::Receive,
             }],
         };
-        let declared = Declarations::from([(DROP.technology, DROP)]);
+        let declared = Declarations::from([("drop", DROP)]);
 
         let source = node().replace(
-            "transport = \"file\"\naddress = \"C:/in\"",
-            "transport = \"xmip-core-transport-drop\"\naddress = \"C:/in\"\n\
-             [receive_locations.settings]\ncolor = \"lime\"",
+            "address = \"C:/in\"",
+            "address = \"drop://C:/in\"\n[receive_locations.settings]\ncolor = \"lime\"",
         );
         let document = configure::parse_toml(&source).expect("parses");
         let report = build_execution_tree(document, &[], &declared).expect_err("refused");
@@ -567,14 +571,12 @@ name = "Orders"
 name = "OrdersIn"
 node = "{first}"
 start = true
-transport = "xmip-core-transport-file"
 address = "/var/xmip/in/orders"
 
 [[applications.send_ports]]
 name = "Billing"
 node = "{second}"
 start = true
-transport = "xmip-core-transport-http"
 address = "https://billing.example/orders"
 
 [[xmip_applications]]
