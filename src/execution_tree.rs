@@ -34,8 +34,8 @@ pub struct ExecutionTree {
     pub work_processes_to_start: Vec<WorkProcessConfiguration>,
     pub receive_locations_to_start: Vec<ConfiguredLocation>,
     /// The Receive Ports of the Applications the node binds that its bound
-    /// Receive Locations are at, each Location with the interaction and
-    /// depth it states (ADR-0031, amendment 2026-10-01).
+    /// Receive Locations are at, each Location with the depth it states
+    /// (ADR-0031, amendment 2026-10-01).
     pub receive_ports: Vec<BoundReceivePort>,
     pub send_locations_to_start: Vec<ConfiguredLocation>,
     /// The Send Ports the node takes of the Applications it binds, with
@@ -588,7 +588,6 @@ name = "Orders"
 [[xmip_applications.receive_locations]]
 name = "OrdersIn"
 receive_port = "Orders"
-interaction = "data-transfer"
 depth = "light"
 
 [[xmip_applications.send_ports]]
@@ -627,10 +626,6 @@ keys = ["context:Party"]
         assert_eq!(tree.receive_locations_to_start[0].name, "OrdersIn");
         assert_eq!(tree.receive_ports[0].name, "Orders");
         let location = &tree.receive_ports[0].receive_locations[0];
-        assert_eq!(
-            location.interaction,
-            Some(configure::Interaction::DataTransfer)
-        );
         assert_eq!(location.depth, Some(configure::Depth::Light));
         assert!(
             tree.send_locations_to_start.is_empty(),

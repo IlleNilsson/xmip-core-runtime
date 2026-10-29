@@ -475,7 +475,6 @@ name = "Loopback"
 [[xmip_applications.receive_locations]]
 name = "In"
 receive_port = "Loopback"
-interaction = "data-transfer"
 depth = "light"
 
 [[xmip_applications.send_ports]]
