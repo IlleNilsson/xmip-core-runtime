@@ -10,6 +10,14 @@
 //! host's to say: `RoleAssignment` in `Xmip.Surface` for a web host or the
 //! desktop, `[operate] role` for a node's operate listener, where every
 //! caller is proven by its certificate and no directory is asked yet.
+//!
+//! **Every call is decided before it is read**: by its method, the identity
+//! the connection proved and the role it holds ([`RULES`], [`admitted`]),
+//! never by what the call says.
+
+use authorize::plane::{self, Rule};
+
+use crate::plane::call;
 
 /// A security role, least first: each includes what the one before it can
 /// do. The numbers are what crosses the C boundary.
@@ -76,23 +84,53 @@ impl Role {
     }
 }
 
+/// Who may call each method of a node's operate listener, by the role the
+/// caller holds (`authorize::plane`, the one admission every plane Xmip
+/// serves its own parts asks): the publication and its wait to anyone
+/// proven, an act and a secret set, and the secrets' listing, to an
+/// Operator and up.
+pub const RULES: &[Rule] = &[
+    Rule::new("read", call::PUBLICATION, Role::Observer as u8),
+    Rule::new("read", call::WAIT, Role::Observer as u8),
+    Rule::new("read", call::SECRETS, Role::Operator as u8),
+    Rule::new("act", call::ACT, Role::Operator as u8),
+    Rule::new("act", call::SECRET, Role::Operator as u8),
+];
+
+/// What a method of the listener does, as [`RULES`] names it.
+fn action(method: &str) -> &'static str {
+    match method {
+        call::PUBLICATION | call::WAIT | call::SECRETS => "read",
+        _ => "act",
+    }
+}
+
 /// Whether `who` — the identity the connection proved, `None` where nothing
-/// did — holding `role` may `act` on `target`: `Ok` where it may, the
-/// refusal in words where it may not.
+/// did — holding `role` may call `method` of the operate listener
+/// ([`RULES`]), to `act` on `target` as its refusal says: the one check
+/// the listener asks before it reads a call, and every surface asks for an
+/// act a screen takes (`call::ACT`). `Ok` where it may, the refusal in
+/// words where it may not.
 ///
 /// # Errors
 ///
-/// The refusal: nothing proved who asks, or the role may not act.
-pub fn admitted(who: Option<&str>, role: Role, act: &str, target: &str) -> Result<(), String> {
-    match who {
-        None => Err(format!(
+/// The refusal: nothing proved who asks, or the role may not call it.
+pub fn admitted(
+    who: Option<&str>,
+    role: Role,
+    method: &str,
+    (act, target): (&str, &str),
+) -> Result<(), String> {
+    let admitted = plane::admit(who, role as u8, (action(method), method), RULES);
+    match (who, admitted) {
+        (_, Ok(())) => Ok(()),
+        (None, Err(_)) => Err(format!(
             "REFUSED. Nothing proved who asks to {act} {target}; an act is taken from the \
              identity the connection proved — a client certificate, or on the node's local \
              endpoint the account the operating system names — never from what the caller \
              says, nor from where it connects (ADR-0009)"
         )),
-        Some(_) if role.may_operate() => Ok(()),
-        Some(who) => Err(format!(
+        (Some(who), Err(_)) => Err(format!(
             "REFUSED. {who} may not {act} {target}: {who} is {}, which {} (ADR-0009)",
             role.word(),
             role.describe()
@@ -112,10 +150,18 @@ mod tests {
 
     #[test]
     fn only_an_operator_and_up_proven_is_admitted() {
-        assert!(admitted(Some("CN=a"), Role::Operator, "pause", "x").is_ok());
-        let observer = admitted(Some("CN=a"), Role::Observer, "pause", "x").unwrap_err();
+        assert!(admitted(Some("CN=a"), Role::Operator, call::ACT, ("pause", "x")).is_ok());
+        let observer =
+            admitted(Some("CN=a"), Role::Observer, call::ACT, ("pause", "x")).unwrap_err();
         assert!(observer.starts_with("REFUSED. CN=a may not pause x: CN=a is Observer"));
-        let nobody = admitted(None, Role::Developer, "pause", "x").unwrap_err();
+        let nobody = admitted(None, Role::Developer, call::ACT, ("pause", "x")).unwrap_err();
         assert!(nobody.starts_with("REFUSED. Nothing proved who asks to pause x"));
+        // The publication to anyone proven; the secrets' names to an Operator.
+        let read = ("read", "the publication");
+        assert!(admitted(Some("CN=a"), Role::Observer, call::PUBLICATION, read).is_ok());
+        let names = ("list", "the secrets");
+        assert!(admitted(Some("CN=a"), Role::Observer, call::SECRETS, names).is_err());
+        assert!(admitted(Some("CN=a"), Role::Operator, call::SECRETS, names).is_ok());
+        assert!(admitted(Some("CN=a"), Role::Developer, "Nothing", names).is_err());
     }
 }

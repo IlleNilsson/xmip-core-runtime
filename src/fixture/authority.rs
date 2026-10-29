@@ -64,6 +64,12 @@ impl Authority {
         let mut params =
             rcgen::CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
                 .expect("params");
+        // Server and client authentication, as a node's certificate is
+        // (ADR-0034): what the Storage plane admits.
+        params.extended_key_usages = vec![
+            rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+            rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        ];
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, name);

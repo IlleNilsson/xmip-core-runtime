@@ -77,7 +77,7 @@ pub unsafe extern "C" fn xmip_act_admitted_v1(
         return status::INVALID;
     };
     let caller = (proven != 0).then_some(who);
-    let (code, sentence) = match admitted(caller, role, act, target) {
+    let (code, sentence) = match admitted(caller, role, crate::plane::call::ACT, (act, target)) {
         Ok(()) => (status::OK, String::new()),
         Err(refused) => (status::AUTH, refused),
     };

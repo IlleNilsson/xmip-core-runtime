@@ -122,18 +122,35 @@ fn proven(guarded: &tls::GuardedServer) -> Result<String, String> {
         .map_err(|failed| failed.to_string())
 }
 
-/// The answer to one call.
+/// The answer to one call: decided from its method, the identity the
+/// connection proved and the role it holds before a byte of it is read
+/// (`role::admitted`), and only then read and answered.
 fn called(serve: &Serve, who: &str, request: &Request) -> Response {
+    let Some(method) = call::method(&request.path).filter(|method| METHODS.contains(method)) else {
+        return call::refusal(
+            "UNIMPLEMENTED",
+            &format!("{} is no method of {}", request.path, call::SERVICE),
+        );
+    };
+    let role = serve.stated.unwrap_or_default();
+    if let Err(refused) = admitted(Some(who), role, method, (asked(method), "on this node")) {
+        record(serve, who, role, method, "", Some(&refused));
+        return match method {
+            ACT | SECRET => outcome("denied", &refused),
+            SECRETS => call::answer(&json!({ "refused": refused })),
+            _ => call::refusal("PERMISSION_DENIED", &refused),
+        };
+    }
     let message = match call::message(request) {
         Ok(message) => message,
         Err(why) => return call::refusal("INVALID_ARGUMENT", &why),
     };
-    match call::method(&request.path) {
-        Some(PUBLICATION) => {
+    match method {
+        PUBLICATION => {
             let (revision, text) = serve.published.read();
             call::answer(&json!({ "revision": revision, "publication": text }))
         }
-        Some(WAIT) => {
+        WAIT => {
             let after = message["after"].as_u64().unwrap_or(0);
             let within = message["within_ms"]
                 .as_u64()
@@ -143,23 +160,31 @@ fn called(serve: &Serve, who: &str, request: &Request) -> Response {
             let revision = serve.published.wait(after, within, &stopped);
             call::answer(&json!({ "revision": revision }))
         }
-        Some(ACT) => acted(serve, who, &message),
-        Some(SECRET) => secret_set(serve, who, &message),
-        Some(SECRETS) => {
-            match crate::secret::listed(message["node"].as_str().unwrap_or_default()) {
-                Ok(listed) => call::answer(&listed),
-                Err(refused) => call::answer(&json!({ "refused": refused })),
-            }
-        }
-        _ => call::refusal(
-            "UNIMPLEMENTED",
-            &format!("{} is no method of {}", request.path, call::SERVICE),
-        ),
+        ACT => acted(serve, who, &message),
+        SECRET => secret_set(serve, who, &message),
+        _ => match crate::secret::listed(message["node"].as_str().unwrap_or_default()) {
+            Ok(listed) => call::answer(&listed),
+            Err(refused) => call::answer(&json!({ "refused": refused })),
+        },
     }
 }
 
-/// An act: read, admitted by the caller's role, applied, and what came of
-/// it — `taken`, `denied` by role, `refused` by the node, `invalid` for no
+/// What a call of `method` asks, in the words its refusal says.
+fn asked(method: &str) -> &'static str {
+    match method {
+        PUBLICATION => "read the publication",
+        WAIT => "follow the publication",
+        SECRET => "set a secret",
+        SECRETS => "list the secrets",
+        _ => "act",
+    }
+}
+
+/// Every method the listener answers.
+const METHODS: [&str; 5] = [PUBLICATION, WAIT, ACT, SECRET, SECRETS];
+
+/// An act, its caller admitted by role already: read, recorded, applied,
+/// and what came of it — `taken`, `refused` by the node, `invalid` for no
 /// act the noun takes, or `failed`.
 fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
     let text = |key: &str| message[key].as_str().unwrap_or_default().to_string();
@@ -174,16 +199,9 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
         Ok(act) => act,
         Err(refused) => return outcome("invalid", &refused),
     };
-    // Every caller here is proven, by its certificate or by the operating
-    // system; the role is the one the node's configuration states,
-    // Observer where it states none.
     let role = serve.stated.unwrap_or_default();
     let thing = format!("{} '{target}' at {node}", noun.called());
-    let gate = admitted(Some(who), role, act.word(), &thing);
-    record(serve, who, role, act.word(), &thing, gate.as_ref().err());
-    if let Err(refused) = gate {
-        return outcome("denied", &refused);
-    }
+    record(serve, who, role, act.word(), &thing, None);
     let order = Order {
         node,
         noun,
@@ -201,18 +219,15 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
     }
 }
 
-/// A secret set: admitted by the caller's role as any act is, audited
-/// with its name and never its value, and written through the node.
+/// A secret set, its caller admitted by role already as for any act:
+/// audited with its name and never its value, and written through the
+/// node.
 fn secret_set(serve: &Serve, who: &str, message: &Value) -> Response {
     let text = |key: &str| message[key].as_str().unwrap_or_default();
     let (node, name) = (text("node"), text("name"));
     let role = serve.stated.unwrap_or_default();
     let thing = format!("the secret '{name}' at {node}");
-    let gate = admitted(Some(who), role, "set", &thing);
-    record(serve, who, role, "set", &thing, gate.as_ref().err());
-    if let Err(refused) = gate {
-        return outcome("denied", &refused);
-    }
+    record(serve, who, role, "set", &thing, None);
     match crate::secret::set(node, (name, text("kind"), text("value")), who) {
         Applied::Taken(said) => outcome("taken", &said),
         Applied::Refused(said) => outcome("refused", &said),
