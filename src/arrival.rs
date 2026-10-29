@@ -346,7 +346,7 @@ mod tests {
     use send::{SendChain, SendLevel};
     use std::sync::atomic::{AtomicU64, Ordering};
     use transport::{Arrived as Delivered, Directions, Transport, TransportError};
-    use xcore::{Clock, CredentialRef, Established, IdGenerator, Mechanism, PartyId};
+    use xcore::{Clock, Established, IdGenerator, Mechanism, PartyId};
 
     fn filter(text: &str) -> Expression {
         Expression::parse(text).expect("compiles")
@@ -484,7 +484,7 @@ mod tests {
             name: "Billing".to_string(),
             start: true,
             address: "sftp://billing.example/in".to_string(),
-            credentials: None,
+            secret: None,
             contract: None,
             settings: configure::LocationSettings::default(),
             contract_settings: configure::LocationSettings::default(),
@@ -514,7 +514,7 @@ mod tests {
         Party::new(PartyId::new(8), PartyKind::Service, "xmip").with(Identity::sending(
             mechanism::ssh_key(),
             "SHA256:xmip-outbound",
-            CredentialRef::new("ssh-agent", "xmip"),
+            xcore::SecretName::new("xmip").expect("a name"),
         ))
     }
 
@@ -909,7 +909,7 @@ filter = "xmip.party = '{party}'"
 
     #[test]
     fn a_drop_folder_authenticates_on_its_circumstance() {
-        // ADR-0019 clause 7. No transport credential is presented, and the
+        // ADR-0019 clause 7. No transport secret is presented, and the
         // circumstance is the identity rather than the absence of one.
         let ids = Counter::default();
         let circumstance = Always(mechanism::circumstance(), Verified::Proven);

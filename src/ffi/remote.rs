@@ -252,20 +252,99 @@ pub unsafe extern "C" fn xmip_remote_act_v1(
         return status::MALFORMED;
     };
     let (code, sentence) = match held.remote.act(node, noun, target, act) {
-        Ok((outcome, sentence)) => (
-            match outcome {
-                Outcome::Taken => status::OK,
-                Outcome::Denied => status::AUTH,
-                Outcome::Refused => status::NOT_FOUND,
-                Outcome::Invalid => status::INVALID,
-                Outcome::Failed => status::IO,
-            },
-            sentence,
-        ),
+        Ok((outcome, sentence)) => (status_of(outcome), sentence),
         Err(why) => (status::UNAVAILABLE, why),
     };
     // SAFETY: per the contract above.
     unsafe { refuse(&sentence, said, cap, said_len) };
+    code
+}
+
+/// The status an outcome of the node's crosses as.
+const fn status_of(outcome: Outcome) -> i32 {
+    match outcome {
+        Outcome::Taken => status::OK,
+        Outcome::Denied => status::AUTH,
+        Outcome::Refused => status::NOT_FOUND,
+        Outcome::Invalid => status::INVALID,
+        Outcome::Failed => status::IO,
+    }
+}
+
+/// Set the secret `name` of `kind` to `value` through the node at `node`
+/// (section 24; ADR-0019, amendment 2026-10-29), as the identity the
+/// handle's connection proves; the node admits it by role and audits it
+/// with the name, never the value. The sentence in `said`.
+///
+/// # Safety
+/// `remote` is a live handle; the strings point at their stated lengths;
+/// `said` has room for `cap` bytes and `said_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_secret_v1(
+    remote: *const RemoteHandle,
+    node: Str,
+    name: Str,
+    kind: Str,
+    value: Str,
+    said: *mut u8,
+    cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: per the contract above.
+    let Some(held) = (unsafe { held(remote) }) else {
+        return status::INVALID;
+    };
+    // SAFETY: per the contract above.
+    let Some([node, name, kind, value]) = (unsafe { texts([node, name, kind, value]) }) else {
+        return status::MALFORMED;
+    };
+    let (code, sentence) = match held.remote.set_secret(node, (name, kind, value)) {
+        Ok((outcome, sentence)) => (status_of(outcome), sentence),
+        Err(why) => (status::UNAVAILABLE, why),
+    };
+    // SAFETY: per the contract above.
+    unsafe { refuse(&sentence, said, cap, said_len) };
+    code
+}
+
+/// The secrets the node at `node` keeps, JSON, never a value (section 24):
+/// written into `out`, its true length in `out_len` whether or not it fit.
+///
+/// # Safety
+/// `remote` is a live handle; `node` points at its stated length; `out`
+/// has room for `cap` bytes and `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_secrets_v1(
+    remote: *const RemoteHandle,
+    node: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: per the contract above.
+    let Some(held) = (unsafe { held(remote) }) else {
+        return status::INVALID;
+    };
+    // SAFETY: per the contract above.
+    let Some(node) = (unsafe { scope_text(node) }) else {
+        return status::MALFORMED;
+    };
+    let (code, text) = match held.remote.secrets(node) {
+        Ok(listed) => {
+            let text = listed.to_string();
+            let code = if text.len() > cap {
+                status::TRUNCATED
+            } else {
+                status::OK
+            };
+            (code, text)
+        }
+        Err(why) if why.starts_with("REFUSED") => (status::NOT_FOUND, why),
+        Err(why) if why.starts_with("FAILED") => (status::IO, why),
+        Err(why) => (status::UNAVAILABLE, why),
+    };
+    // SAFETY: per the contract above.
+    unsafe { refuse(&text, out, cap, out_len) };
     code
 }
 

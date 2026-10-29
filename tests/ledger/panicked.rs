@@ -91,7 +91,7 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
                     name: "In".to_string(),
                     start: true,
                     address: "once://in".to_string(),
-                    credentials: None,
+                    secret: None,
                     contract: None,
                     settings: configure::LocationSettings::default(),
                     contract_settings: configure::LocationSettings::default(),

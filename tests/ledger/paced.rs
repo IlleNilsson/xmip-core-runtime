@@ -115,7 +115,7 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
                 name: "In".to_string(),
                 start: true,
                 address: "idle://in".to_string(),
-                credentials: None,
+                secret: None,
                 contract: None,
                 settings: configure::LocationSettings::default(),
                 contract_settings: configure::LocationSettings::default(),
