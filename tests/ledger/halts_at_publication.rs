@@ -192,6 +192,21 @@ impl XmipStorage for HaltsAtPublication {
         self.0.remove_administration(kind, id)
     }
 
+    fn write_secret(&self, secret: &persist::storage::SecretRecord) -> Result<(), PersistError> {
+        self.0.write_secret(secret)
+    }
+
+    fn read_secret(
+        &self,
+        name: &xcore::SecretName,
+    ) -> Result<Option<persist::storage::SecretRecord>, PersistError> {
+        self.0.read_secret(name)
+    }
+
+    fn list_secrets(&self) -> Result<Vec<persist::storage::SecretEntry>, PersistError> {
+        self.0.list_secrets()
+    }
+
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {
         self.0.query(query)
     }

@@ -80,6 +80,8 @@ pub mod registration;
 #[cfg(feature = "node")]
 pub mod running;
 #[cfg(feature = "node")]
+pub mod secret;
+#[cfg(feature = "node")]
 pub mod secure_listener;
 #[cfg(feature = "node")]
 pub mod send_step;

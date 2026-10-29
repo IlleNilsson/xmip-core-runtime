@@ -160,6 +160,13 @@ impl Pickup {
         &self.node
     }
 
+    /// The Xmip Storage its node keeps its standing in: the node's own,
+    /// which a secret set through the node is written to (`crate::secret`).
+    #[must_use]
+    pub fn storage(&self) -> &Arc<dyn XmipStorage> {
+        &self.storage
+    }
+
     /// Pause or resume the Subscription called `name`, by `who`, and say
     /// what came of it once its standing is written. Audited.
     ///

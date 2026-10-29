@@ -123,7 +123,7 @@ fn location(name: &str, backlog: Backlog, gate: &ReceiveGate, most: usize) -> Re
             name: name.to_string(),
             start: true,
             address: format!("backlog://{name}"),
-            credentials: None,
+            secret: None,
             contract: None,
             settings: configure::LocationSettings::default(),
             contract_settings: configure::LocationSettings::default(),

@@ -185,11 +185,17 @@ impl Running {
         // (ADR-0019, amendment 2026-10-28).
         let pins =
             std::sync::Arc::new(transport::Pinned::kept_at(data.join(crate::linked::PINNED)));
-        let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref(), &pins))
+        // Xmip Storage before the Locations: a Location's secret is read
+        // from its Administration Database as it connects (ADR-0019,
+        // amendment 2026-10-29).
+        let storage = reaching.open(&linked, &tree.tuning)?;
+        let secrets: Arc<dyn xcore::Secrets> = Arc::new(persist::storage::StoredSecrets(
+            Arc::clone(storage.storage()),
+        ));
+        let (receiving, sends) = open(&tree, &linked, (gates, guard.as_ref(), &pins, &secrets))
             .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let configured = ConfiguredSubscription::of(&applications, &files);
-        let storage = reaching.open(&linked, &tree.tuning)?;
         let pickup = Pickup::open(
             &scope,
             configured,

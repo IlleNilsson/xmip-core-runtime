@@ -30,6 +30,12 @@ pub const WAIT: &str = "Wait";
 /// An operator's act on what the node publishes.
 pub const ACT: &str = "Act";
 
+/// A secret set through the node (`crate::secret`): an Operator's act.
+pub const SECRET: &str = "SetSecret";
+
+/// The secrets the node keeps, by name, never a value.
+pub const SECRETS: &str = "Secrets";
+
 /// What every refusal of a call by the node opens with.
 pub const REFUSED_CALL: &str = "the node refused the call";
 

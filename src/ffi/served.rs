@@ -238,6 +238,8 @@ mod tests {
         let _: header::ServeFn = xmip_operate_serve_v1;
         let _: header::ServeLocalFn = xmip_operate_serve_local_v1;
         let _: header::OpenLocalFn = crate::ffi::remote::xmip_remote_open_local_v1;
+        let _: abi::operate::secret::SecretFn = crate::ffi::remote::xmip_secret_v1;
+        let _: abi::operate::secret::SecretsFn = crate::ffi::remote::xmip_secrets_v1;
         let _: header::ServedAddressFn = xmip_operate_served_address_v1;
         let _: header::PostFn = xmip_operate_post_v1;
         let _: header::ServeStopFn = xmip_operate_serve_stop_v1;
@@ -394,6 +396,35 @@ mod tests {
         };
         assert_eq!(code, status::AUTH);
         assert!(String::from_utf8_lossy(&report[..length]).starts_with("REFUSED. CN=surface"));
+
+        // A secret is an act as any is: refused by role, and never said back.
+        // SAFETY: as above.
+        let code = unsafe {
+            crate::ffi::remote::xmip_secret_v1(
+                remote,
+                text(&crate::fixture::absent_node()),
+                text("partner-x"),
+                text("password"),
+                text("not-a-real-value"),
+                report.as_mut_ptr(),
+                report.len(),
+                &raw mut length,
+            )
+        };
+        assert_eq!(code, status::AUTH);
+        let said = String::from_utf8_lossy(&report[..length]).to_string();
+        assert!(said.contains("the secret 'partner-x'") && !said.contains("not-a-real-value"));
+        // SAFETY: as above.
+        let code = unsafe {
+            crate::ffi::remote::xmip_secrets_v1(
+                remote,
+                text(&crate::fixture::absent_node()),
+                report.as_mut_ptr(),
+                report.len(),
+                &raw mut length,
+            )
+        };
+        assert_eq!(code, status::NOT_FOUND);
 
         let ended = Instant::now();
         // SAFETY: `remote` and `served` are live, and freed once each.

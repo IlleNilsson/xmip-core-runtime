@@ -441,7 +441,7 @@ mod tests {
             name: name.to_string(),
             start: true,
             address: "out".to_string(),
-            credentials: None,
+            secret: None,
             contract: None,
             settings: configure::LocationSettings::default(),
             contract_settings: configure::LocationSettings::default(),

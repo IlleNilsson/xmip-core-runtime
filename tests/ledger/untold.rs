@@ -88,7 +88,7 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
                 name: "In".to_string(),
                 start: true,
                 address: "untold://in".to_string(),
-                credentials: None,
+                secret: None,
                 contract: None,
                 settings: configure::LocationSettings::default(),
                 contract_settings: configure::LocationSettings::default(),

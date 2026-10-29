@@ -23,7 +23,7 @@ use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, Guard, NodeLocation, Pinned, Transport};
+use transport::{Configured, Guard, NodeLocation, Pinned, Secured, Transport};
 
 use crate::receiving::ReceiveGate;
 use xaudit::program_audit::ProgramAudit;
@@ -35,9 +35,16 @@ pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 
 /// The node a Location's transport is built on: its location, the guard
 /// its receives terminate TLS with, where its configuration gives one
-/// (`crate::receive_certificate`), and the keys its far ends are held to,
-/// pinned on first contact under its data directory (`PINNED`).
-pub type OnNode<'a> = (&'a NodeLocation, Option<&'a Guard>, &'a Arc<Pinned>);
+/// (`crate::receive_certificate`), the keys its far ends are held to,
+/// pinned on first contact under its data directory (`PINNED`), and the
+/// secret the Location names, read from the node's Xmip Storage as it
+/// connects (ADR-0019, amendment 2026-10-29).
+pub type OnNode<'a> = (
+    &'a NodeLocation,
+    Option<&'a Guard>,
+    &'a Arc<Pinned>,
+    Option<Secured>,
+);
 
 /// The file under a node's data directory its far ends' pinned keys are
 /// kept in (`transport::pinned`; ADR-0019, amendment 2026-10-28).
@@ -154,20 +161,23 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
 
 /// `T` built from a Location and given its node, once, as it is built (the
 /// owner, 2026-10-03; `transport::Configured::on_node`), the keys its far
-/// ends are held to (`transport::Configured::pinned_by`), and the guard its
-/// receives terminate TLS with (`transport::Configured::guarded_by`).
+/// ends are held to (`transport::Configured::pinned_by`), the guard its
+/// receives terminate TLS with (`transport::Configured::guarded_by`), and
+/// the secret its Location names (`transport::Configured::secured_by`).
 pub(crate) fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
-    (node, guard, pins): OnNode<'_>,
+    (node, guard, pins, secured): OnNode<'_>,
 ) -> Opened {
-    Ok(Box::new(
-        T::open(address, side, given)?
-            .on_node(node)?
-            .pinned_by(pins)
-            .guarded_by(guard)?,
-    ))
+    let built = T::open(address, side, given)?
+        .on_node(node)?
+        .pinned_by(pins)
+        .guarded_by(guard)?;
+    Ok(Box::new(match secured {
+        Some(secured) => built.secured_by(secured)?,
+        None => built,
+    }))
 }
 
 /// How an engine opens its store at a place: a directory for `RocksDB`, a

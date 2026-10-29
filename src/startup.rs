@@ -9,7 +9,8 @@ use std::sync::Arc;
 use authenticate::Authenticator;
 use configure::ConfiguredLocation;
 use route::{CONTEXT, Gathering, Source, split};
-use transport::{Guard, NodeLocation, Pinned};
+use transport::{Guard, NodeLocation, Pinned, Secured};
+use xcore::Secrets;
 use xcore::settings::Applies;
 
 use crate::capability_registry::{CapabilityRegistry, Load};
@@ -224,12 +225,18 @@ pub(crate) fn load(
 /// once, from its address and settings, given the node's location (the
 /// owner's *Option A*, 2026-10-03: the runtime gives every transport its
 /// node's identity once, as it builds it) and the guard its receives
-/// terminate TLS with where the node has one, and held to the direction it
-/// serves.
+/// terminate TLS with where the node has one, and the secret it names,
+/// read from `secrets` as it connects (ADR-0019, amendment 2026-10-29), and
+/// held to the direction it serves.
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
-    (gates, guard, pins): (Vec<ReceiveGate>, Option<&Guard>, &Arc<Pinned>),
+    (gates, guard, pins, secrets): (
+        Vec<ReceiveGate>,
+        Option<&Guard>,
+        &Arc<Pinned>,
+        &Arc<dyn Secrets>,
+    ),
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
     let node = NodeLocation::new(location(
         &tree.service.cluster_name,
@@ -238,7 +245,15 @@ pub(crate) fn open(
     let mut problems = Vec::new();
     let mut built = |location: &ConfiguredLocation, side: Applies| {
         let technology = linked.transport(location)?;
-        match technology.open(location, side, (&node, guard, pins)) {
+        let secured = match location.secret_name() {
+            Some(Ok(name)) => Some(Secured::new(name, Arc::clone(secrets))),
+            Some(Err(refused)) => {
+                problems.push(refused);
+                return None;
+            }
+            None => None,
+        };
+        match technology.open(location, side, (&node, guard, pins, secured)) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),

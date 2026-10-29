@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use xcore::{ExecutionPhase, Severity};
 
 use crate::applied::{Applied, apply};
-use crate::plane::call::{self, ACT, PUBLICATION, WAIT};
+use crate::plane::call::{self, ACT, PUBLICATION, SECRET, SECRETS, WAIT};
 use crate::plane::call::{LONGEST_WAIT, WATCH};
 use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
@@ -144,6 +144,13 @@ fn called(serve: &Serve, who: &str, request: &Request) -> Response {
             call::answer(&json!({ "revision": revision }))
         }
         Some(ACT) => acted(serve, who, &message),
+        Some(SECRET) => secret_set(serve, who, &message),
+        Some(SECRETS) => {
+            match crate::secret::listed(message["node"].as_str().unwrap_or_default()) {
+                Ok(listed) => call::answer(&listed),
+                Err(refused) => call::answer(&json!({ "refused": refused })),
+            }
+        }
         _ => call::refusal(
             "UNIMPLEMENTED",
             &format!("{} is no method of {}", request.path, call::SERVICE),
@@ -189,6 +196,25 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
             serve.published.acted();
             outcome("taken", &said)
         }
+        Applied::Refused(said) => outcome("refused", &said),
+        Applied::Failed(said) => outcome("failed", &said),
+    }
+}
+
+/// A secret set: admitted by the caller's role as any act is, audited
+/// with its name and never its value, and written through the node.
+fn secret_set(serve: &Serve, who: &str, message: &Value) -> Response {
+    let text = |key: &str| message[key].as_str().unwrap_or_default();
+    let (node, name) = (text("node"), text("name"));
+    let role = serve.stated.unwrap_or_default();
+    let thing = format!("the secret '{name}' at {node}");
+    let gate = admitted(Some(who), role, "set", &thing);
+    record(serve, who, role, "set", &thing, gate.as_ref().err());
+    if let Err(refused) = gate {
+        return outcome("denied", &refused);
+    }
+    match crate::secret::set(node, (name, text("kind"), text("value")), who) {
+        Applied::Taken(said) => outcome("taken", &said),
         Applied::Refused(said) => outcome("refused", &said),
         Applied::Failed(said) => outcome("failed", &said),
     }

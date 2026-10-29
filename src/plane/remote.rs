@@ -35,6 +35,7 @@ use crate::plane::local;
 use crate::plane::shared::Shared;
 
 mod asking;
+mod secret;
 
 /// How long a drop waits for the follow to end once its read is
 /// cancelled.
@@ -81,6 +82,21 @@ pub enum Outcome {
     Invalid,
     /// Xmip Storage did not answer the node; nothing changed.
     Failed,
+}
+
+impl Outcome {
+    /// The outcome the node's word names: `taken`, `denied`, `invalid`,
+    /// `failed`, and refused for any other.
+    #[must_use]
+    pub fn of(word: &str) -> Self {
+        match word {
+            "taken" => Self::Taken,
+            "denied" => Self::Denied,
+            "invalid" => Self::Invalid,
+            "failed" => Self::Failed,
+            _ => Self::Refused,
+        }
+    }
 }
 
 /// A node reached at its operate listener.
@@ -227,14 +243,10 @@ impl Remote {
         let message = json!({ "node": node, "noun": noun, "target": target, "act": act });
         let answer = self.asked(ACT, &message)?;
         let said = answer["said"].as_str().unwrap_or_default().to_string();
-        let outcome = match answer["outcome"].as_str().unwrap_or_default() {
-            "taken" => Outcome::Taken,
-            "denied" => Outcome::Denied,
-            "invalid" => Outcome::Invalid,
-            "failed" => Outcome::Failed,
-            _ => Outcome::Refused,
-        };
-        Ok((outcome, said))
+        Ok((
+            Outcome::of(answer["outcome"].as_str().unwrap_or_default()),
+            said,
+        ))
     }
 
     /// The state once a follower has been told more than `seen` times, or
