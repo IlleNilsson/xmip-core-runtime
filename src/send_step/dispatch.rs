@@ -60,7 +60,7 @@ pub fn dispatch<'scope, 'env>(
             if !all && !asked.contains(queue) {
                 continue;
             }
-            // Its failed Journeys as Xmip Storage counts them, room or none.
+            // Its failed Messages as Xmip Storage counts them, room or none.
             step.read_failed((to.name(), *queue), false);
             // No room: read again the moment a place frees, not at the
             // next scan.

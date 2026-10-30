@@ -28,7 +28,7 @@ use super::sending::{
 };
 
 #[test]
-fn a_retry_of_a_journey_another_writer_moved_after_it_was_read_is_refused_and_writes_nothing() {
+fn a_retry_of_a_message_another_writer_moved_after_it_was_read_is_refused_and_writes_nothing() {
     let (interleaved, storage) = interleaving();
     let (far, taken) = FarEnd::answering(refusing("the far end refused it", false));
     on_node(

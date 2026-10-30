@@ -66,12 +66,12 @@
 //! is set aside, as its set's `on_failure` says (`crate::sequence`;
 //! `runtime-model.md` section 3, *A claim is not ordering*).
 //!
-//! **A Journey that failed waits for an operator** in its queue: Retry
+//! **A Message that failed waits for an operator** in its queue: Retry
 //! sends it again, Dismiss ends it Dismissed, each an act through the
 //! node's orders, audited ([`SendStep::act`], `runtime-model.md` section
 //! 13). A retry's count is the Journey's `attempts`, kept with its every
 //! hand-on, so it survives a restart and another node taking it up. The
-//! hand-on that fails it enters it in its queue's index of failed Journeys
+//! hand-on that fails it enters it in its queue's index of failed Messages
 //! in the Ledger and the act takes it out, so how many wait is Xmip
 //! Storage's count, and the node keeps a bounded window of the oldest
 //! ([`figures`]).
@@ -102,7 +102,7 @@ mod failed;
 mod figures;
 #[cfg(test)]
 mod fixture;
-mod journey_act;
+mod message_act;
 mod pass;
 mod reading;
 mod registered;
@@ -113,7 +113,7 @@ mod under_claim;
 use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
-pub use figures::{FAILED_WINDOW, FailedJourney, PortFigures};
+pub use figures::{FAILED_WINDOW, FailedMessage, PortFigures};
 pub use pass::{Ended, Found, read, send};
 
 /// The Send pool's threads for each of the machine's hardware threads,
@@ -183,7 +183,7 @@ pub struct SendStep {
     storage: Arc<dyn XmipStorage>,
     lease: Duration,
     scan: Duration,
-    /// The oldest failed Journeys of each Send Port it keeps and publishes:
+    /// The oldest failed Messages of each Send Port it keeps and publishes:
     /// `[tuning] failed_window`.
     window: usize,
     limits: Limits,
@@ -226,7 +226,7 @@ struct State {
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
     figures: BTreeMap<String, PortFigures>,
-    /// By Send Port, how many failed Journeys wait in its queue and the
+    /// By Send Port, how many failed Messages wait in its queue and the
     /// oldest of them, at most its `window`: read from the queue's
     /// index of them in the Ledger, so the evidence outlives a restart,
     /// covers what another node failed, and is bounded however many fail.
@@ -242,7 +242,7 @@ struct State {
 impl SendStep {
     /// The send step of the node at `node` (`xmip:///<cluster>/node/<name>`)
     /// in the cluster at `cluster` (`xmip:///<cluster>`), over `storage`,
-    /// run as `tuning` says. `audit` records every Journey that failed.
+    /// run as `tuning` says. `audit` records every Message that failed.
     #[must_use]
     pub fn new(
         (cluster, node): (&str, &str),

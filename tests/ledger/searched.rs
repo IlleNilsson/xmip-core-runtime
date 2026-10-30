@@ -41,12 +41,12 @@ fn a_published_journey_is_found_by_its_send_port_and_its_message_by_when() {
     let message = work.message.message_id().value();
     let journey = carried.journeys[0].journey_id().value();
 
-    let bound = Ask::JourneysAtSendPort {
+    let bound = Ask::MessagesAtSendPort {
         send_port: "Out".to_string(),
         state: JourneyState::Active.word().to_string(),
     };
     assert_eq!(storage.query(&query(bound)).expect("asked"), [journey]);
-    let holding = Ask::JourneysHolding { message };
+    let holding = Ask::MessagesHolding { message };
     assert_eq!(storage.query(&query(holding)).expect("asked"), [journey]);
     let created = Ask::MessagesCreated { created: Span::ALL };
     assert_eq!(storage.query(&query(created)).expect("asked"), [message]);

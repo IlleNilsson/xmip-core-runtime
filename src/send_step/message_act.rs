@@ -1,4 +1,4 @@
-//! An operator's acts on a Journey that failed: Retry and Dismiss
+//! An operator's acts on a Message that failed: Retry and Dismiss
 //! (`runtime-model.md` section 13: *Retry resumes from the failed audited
 //! stage of the same Journey … an authorized operator may retry after
 //! automatic retries are exhausted and the underlying fault is fixed*;
@@ -11,14 +11,14 @@
 //!
 //! - **Retry** writes the Journey Active again, its tries begun anew, and
 //!   moves it to the end of its Send Port's queue, from where the Send pool
-//!   takes it up as it takes up every Journey; where it blocks a Sequential
+//!   takes it up as it takes up every Message; where it blocks a Sequential
 //!   Send Port (`on_failure = "block"`) it keeps its place, so its sequence
 //!   goes on in order from it.
 //! - **Dismiss** writes it Dismissed — terminal, its history, its Message
 //!   and its Stream kept — and lets go of its place, so on a Sequential
 //!   Send Port the next of its order key goes.
 //!
-//! Either takes it out of its queue's index of failed Journeys in the same
+//! Either takes it out of its queue's index of failed Messages in the same
 //! write (`HandOn::cleared`).
 //!
 //! An act is taken by a node that sends the Journey's Send Port, the one
@@ -42,21 +42,23 @@ use super::SendStep;
 use crate::ledger::journey_record;
 
 impl SendStep {
-    /// Retry or dismiss the Journey `journey` (its identifier), by `who`,
+    /// Retry or dismiss the Message whose Journey is `journey`, by `who`,
     /// and say what came of it once it is written. Audited.
     ///
     /// # Errors
-    /// REFUSED, in words, for an act a Journey does not take, what names no
-    /// Journey, one that has not failed, and one this node does not send;
+    /// REFUSED, in words, for an act a failed Message does not take, what
+    /// names no Journey, one whose Message has not failed, and one this node does not send;
     /// FAILED where Xmip Storage did not answer or take it, and nothing
     /// changed.
     pub fn act(&self, journey: &str, act: Act, who: &str) -> Result<String, String> {
-        let act = Noun::Journey.act(act.word())?;
+        let act = Noun::Message.act(act.word())?;
         let id = JourneyId::from_str(journey)
             .map_err(|_| format!("REFUSED: '{journey}' names no Journey"))?;
         let (seen, kept) = self.kept(act, id)?;
         if act == Act::Dismiss && kept.state == JourneyState::Dismissed {
-            return Ok(format!("Journey {id} was dismissed already"));
+            return Ok(format!(
+                "The Message of the Journey {id} was dismissed already"
+            ));
         }
         let (port, blocks) = self.taken_by(id, &kept)?;
         let token = UuidV7Generator.next_u128();
@@ -77,8 +79,10 @@ impl SendStep {
         }
         let queue = self.queue(&Subscriber::SendPort(port.clone()));
         let said = match act {
-            Act::Retry => format!("Journey {id} retried by {who}; sent again from {port}'s queue"),
-            _ => format!("Journey {id} dismissed by {who}; its history is kept"),
+            Act::Retry => format!(
+                "The Message of the Journey {id} retried by {who}; sent again from {port}'s queue"
+            ),
+            _ => format!("The Message of the Journey {id} dismissed by {who}; its history is kept"),
         };
         let retry = act == Act::Retry;
         let sequenced: Vec<u128> = kept.sequences.iter().map(|s| s.queue).collect();
@@ -141,7 +145,7 @@ impl SendStep {
     fn taken_by(&self, id: JourneyId, kept: &Journey) -> Result<(String, bool), String> {
         if kept.state != JourneyState::Failed {
             return Err(format!(
-                "REFUSED: the Journey {id} is {:?}, not Failed; only a Journey that failed \
+                "REFUSED: the Journey {id} is {:?}, not Failed; only a Message that failed \
                  is retried or dismissed",
                 kept.state
             ));
@@ -175,7 +179,7 @@ impl SendStep {
     }
 
     /// An operator's act on `journey`, of `port`, written: it is read again
-    /// at its place, and the Port's window on its failed Journeys read
+    /// at its place, and the Port's window on its failed Messages read
     /// again, without it.
     fn acted_on(&self, journey: JourneyId, port: &str) {
         let queue = self.queue(&Subscriber::SendPort(port.to_string()));
@@ -195,7 +199,7 @@ impl SendStep {
             ("send_port".to_string(), port.to_string()),
             ("by".to_string(), who.to_string()),
         ]);
-        let action = Noun::Journey.action(act);
+        let action = Noun::Message.action(act);
         let phase = ExecutionPhase::Execute;
         let _ = audit.record(
             &action,
@@ -218,7 +222,7 @@ impl SendStep {
         );
         if let Some(audit) = &self.audit {
             let _ = audit.failed(
-                &Noun::Journey.action(act),
+                &Noun::Message.action(act),
                 &format!("{}: {said}", self.node),
             );
         }

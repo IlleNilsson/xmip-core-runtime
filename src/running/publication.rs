@@ -27,21 +27,21 @@
 //! <node>/process/<name>      each Subscription: Fine, or Paused by whom
 //! ```
 //!
-//! **The Journeys that failed** at every Send Port the node sends are
-//! published beside the records (`observe::FailedJourneys`): how many wait
+//! **The Messages that failed** at every Send Port the node sends are
+//! published beside the records (`observe::FailedMessages`): how many wait
 //! in its queue now — zero where none — whether they block its sequence,
 //! and the oldest with why — `[tuning] failed_window` of them, a hundred
 //! by default — so a surface offers Retry and Dismiss
 //! on each at the Port's scope; apart from them, the last that failed there
 //! since the node started, as history. The rest are read from Xmip Storage
-//! a page at a time (`xmip_failed_journeys_v1`).
+//! a page at a time (`xmip_failed_messages_v1`).
 //!
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
 //! that counts each kind (`observe::Counted::at`): Streams received at
 //! `receive`, Journeys opened at `process`, Messages sent at `send`, and at
 //! the node what failed — refused at a gate, or a Journey written Failed.
 //! At each Send Port, `send/<Port>`, what the send step counted there
-//! (`crate::send_step::PortFigures`): Messages sent, Journeys failed, and
+//! (`crate::send_step::PortFigures`): Messages sent, Messages failed, and
 //! those retrying; the stage and the node keep only what no Port counted.
 //!
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
@@ -57,7 +57,7 @@
 use node::{Capability, Stage};
 use observe::topology::{draw, party};
 use observe::{
-    Count, Counted, FailedJourneys, Health, HealthRecord, PauseState, Publication, Snapshot,
+    Count, Counted, FailedMessages, Health, HealthRecord, PauseState, Publication, Snapshot,
     Topology, now_unix_nanos,
 };
 
@@ -186,8 +186,8 @@ impl Running {
                 snapshot.record_dead_message(entry);
             }
         }
-        for failed in failed_journeys(&node, &figures) {
-            snapshot.record_failed_journeys(failed);
+        for failed in failed_messages(&node, &figures) {
+            snapshot.record_failed_messages(failed);
         }
         self.count(&mut snapshot, &node, now);
         snapshot
@@ -251,7 +251,7 @@ impl Running {
 /// figures were looked up by each Send Location's name, so a Port of
 /// several Locations had none published.
 ///
-/// **A Port with failed Journeys waiting in its queue now is Done** —
+/// **A Port with failed Messages waiting in its queue now is Done** —
 /// blocked or failed, the pain an operator's Retry or Dismiss solves — and
 /// one whose sequence is blocked behind them the most severe; what failed
 /// before and was acted on since is history in its figures and leaves it
@@ -337,9 +337,9 @@ const BLOCKED_SEVERITY: u8 = 95;
 /// One stage record: its scope, its mood with its severity, its evidence.
 type StageRecord = (String, (Health, u8), String);
 
-/// The Journeys that failed at every Send Port of `figures`, each as
+/// The Messages that failed at every Send Port of `figures`, each as
 /// [`PortFigures::published`] says it — a Port with none now among them.
-fn failed_journeys(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<FailedJourneys> {
+fn failed_messages(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<FailedMessages> {
     let published = figures
         .iter()
         .map(|(port, figures)| figures.published(node, port));
@@ -397,7 +397,7 @@ fn counts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observe::FailedJourney;
+    use observe::FailedMessage;
 
     #[test]
     fn one_message_sent_through_a_send_port_measures_one_at_the_node() {
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn a_send_port_with_failed_journeys_waiting_now_is_done_and_blocked_the_worst() {
+    fn a_send_port_with_failed_messages_waiting_now_is_done_and_blocked_the_worst() {
         let history = PortFigures {
             failed: 3,
             last_failure: Some(("j-1".to_string(), "refused".to_string())),
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn every_send_port_publishes_its_failed_journeys_now_apart_from_its_last() {
+    fn every_send_port_publishes_its_failed_messages_now_apart_from_its_last() {
         let node = configure::fixture::test_cluster().node_scope(0);
         let figures = BTreeMap::from([(
             "Out".to_string(),
@@ -567,12 +567,12 @@ mod tests {
             },
         )]);
 
-        let published = failed_journeys(&node, &figures);
+        let published = failed_messages(&node, &figures);
 
         assert_eq!(published.len(), 1, "none now is published too");
         let out = &published[0];
         assert_eq!((out.count, out.blocked), (0, false), "none now");
-        assert_eq!(out.journeys, [] as [FailedJourney; 0]);
+        assert_eq!(out.messages, [] as [FailedMessage; 0]);
         let last = out.last_failure.as_ref().expect("history kept apart");
         assert_eq!(
             (last.journey.as_str(), last.reason.as_str()),
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(standing.0, Health::Done, "two wait for an operator");
         assert!(evidence.contains("failed in its queue 2"), "{evidence}");
         assert!(
-            evidence.contains("the Journey j-2 failed: refused"),
+            evidence.contains("the Message of the Journey j-2 failed: refused"),
             "{evidence}"
         );
         assert_eq!(records.len(), 3, "each Location, and the Port");
