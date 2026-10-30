@@ -1,21 +1,21 @@
-//! A Journey a paused Subscription held, picked up once it is resumed
+//! A Message a paused Subscription held, picked up once it is resumed
 //! (ADR-0013, amendment 2026-09-30; `runtime-model.md` section 9).
 //!
-//! **Picked up is moved on.** A held Journey goes where every Journey that
+//! **Picked up is moved on.** A held Message goes where every Message that
 //! is not held goes at its Publication: to the queue of the Send Port it
 //! leads to, from which the send step sends it (`crate::send_step`). The
 //! move is one hand-on under a claim — its place in the Subscription's
 //! queue let go of, its place at the end of the Send Port's taken — so a
-//! held Journey is in one queue or the other, never both and never
+//! held Message is in one queue or the other, never both and never
 //! neither. Where this node sends that Port and its Send pool admits it,
-//! the claim is kept and the Journey handed to the pool at once; otherwise
+//! the claim is kept and the Message handed to the pool at once; otherwise
 //! it waits in the Port's queue, unclaimed, for a node that sends it or for
 //! room — a resume of a long hold never fills memory with it.
 //!
 //! **Everything is read back from the Ledger.** The Journey, its Message
 //! and the Message's Stream were written by the receive; what the hold kept
-//! beside the Journey is the identity arrival concluded, in its one binary
-//! form (`context::facts_record`), and it moves with it. So a Journey held
+//! beside the Message is the identity arrival concluded, in its one binary
+//! form (`context::facts_record`), and it moves with it. So a Message held
 //! before a restart, or on another node, departs as it would have then.
 //! Departure authorizes again, now, as it always does. A read or a write
 //! Xmip Storage did not answer leaves it, and everything after it in its
@@ -36,11 +36,11 @@ use crate::stopping::Stopping;
 /// whether it is stopping: a resume or a hold wakes it at once.
 const WAIT: Duration = Duration::from_millis(50);
 
-/// The most held Journeys taken at once.
+/// The most held Messages taken at once.
 const MOST: usize = 64;
 
 /// What the node picks up, as it is let go of, until it stops. A
-/// Subscription whose held Journey is to be read again has the rest of
+/// Subscription whose held Message is to be read again has the rest of
 /// what it let go of this time read again too, so its order holds.
 pub(crate) fn pick_up_released(runtime: &Runtime<'_>, pickup: &Pickup, stopping: &Stopping) {
     while !stopping.raised() {
@@ -58,15 +58,15 @@ pub(crate) fn pick_up_released(runtime: &Runtime<'_>, pickup: &Pickup, stopping:
     }
 }
 
-/// Pick up `released`: its Journey moved from its Subscription's queue to
+/// Pick up `released`: its Message moved from its Subscription's queue to
 /// the queue of where it leads, in one hand-on, and handed to the send step
-/// where this node sends it. One the Ledger holds no Journey to send for is
+/// where this node sends it. One the Ledger holds no Message to send for is
 /// audited and passed over, still held, for an operator.
 ///
 /// # Errors
 ///
 /// In words, where Xmip Storage did not answer a read or take the move, or
-/// the Journey's claim is another's: the node reads it again
+/// the Message's claim is another's: the node reads it again
 /// ([`Pickup::again`]).
 pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> Result<(), String> {
     let (step, storage) = (runtime.send, runtime.storage);
@@ -75,7 +75,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
     let claim = storage
         .claim(id, pickup.node(), token, step.lease())
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("the Journey {id} is claimed by another"))?;
+        .ok_or_else(|| format!("the Message of the Journey {id} is claimed by another"))?;
     let body = &released.held.hold.body;
     let (work, facts) = match read(runtime, id, body) {
         Ok(send_step::Found::Waiting(found)) => *found,
@@ -94,7 +94,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             return Err(why);
         }
     };
-    // Its Send Port, where it leads to one — a Send Port Group's Journey
+    // Its Send Port, where it leads to one — a Send Port Group's Message
     // to its own Port — or where its Subscription leads.
     let to = work
         .journey
@@ -132,7 +132,11 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
     let asked = Instant::now();
     match storage.hand_on(&moved) {
         Ok(true) => {}
-        Ok(false) => return not_moved(format!("the claim on the Journey {id} lapsed")),
+        Ok(false) => {
+            return not_moved(format!(
+                "the claim on the Message of the Journey {id} lapsed"
+            ));
+        }
         Err(error) => {
             // Given back, so reading it again claims it again at once.
             let _ = storage.release(&claim);

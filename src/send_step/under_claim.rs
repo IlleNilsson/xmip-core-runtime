@@ -1,4 +1,4 @@
-//! A Journey a scan claimed, read again under its claim with its place in
+//! A Message a scan claimed, read again under its claim with its place in
 //! its queue (`runtime-model.md` section 10, *A read is acted on only under
 //! its claim*, corrected 2026-10-17): the page the scan read may be older
 //! than the claim, read before another pass's hand-on landed.
@@ -12,7 +12,7 @@ use super::pass::{Found, read};
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 
-/// What a Journey a scan claimed is, read again under its claim.
+/// What a Message a scan claimed is, read again under its claim.
 pub(super) enum Under {
     /// At its place, due, and still to be sent.
     Waiting(Box<(ReceivedWork, IdentityFacts)>),
@@ -23,15 +23,15 @@ pub(super) enum Under {
     /// No longer at its place: sent, dismissed or moved since.
     Moved,
     /// At its place and due, and not to be sent: failed, finished or not
-    /// readable as a Journey to send.
+    /// readable as a Message to send.
     Not(Found),
     /// Xmip Storage did not answer.
     Unanswered,
 }
 
-/// The Journey at `place` in `queue`, read under this node's claim: its
-/// place first — still there, still this Journey's, and due — then the
-/// Journey, with `body`, what its queue keeps beside it.
+/// The Message at `place` in `queue`, read under this node's claim: its
+/// place first — still there, still this Message's, and due — then its
+/// Journey and the Message, with `body`, what its queue keeps beside it.
 pub(super) fn under_claim(
     runtime: &Runtime<'_>,
     queue: u128,

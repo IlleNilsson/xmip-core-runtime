@@ -107,7 +107,7 @@ fn delivered(on_failure: OnFailure, late: bool) -> (Vec<String>, Vec<String>) {
     };
     if late {
         // The Location keeps its own sequence: each Stream heads it in
-        // turn, and its Journeys take their places once it does.
+        // turn, and its Messages take their places once it does.
         on_working_node(&storage, (CHUNK, &to_both()), (sending, Vec::new()), run);
     } else {
         on_node(&storage, (CHUNK, &to_both()), sending, run);

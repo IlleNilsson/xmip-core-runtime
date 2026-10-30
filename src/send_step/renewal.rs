@@ -3,7 +3,7 @@
 //! 2026-10-06*; ADR-0018, amendment 2026-10-06).
 //!
 //! **Lost is lost.** A renewal Xmip Storage answers with no claim — the
-//! claim lapsed and another node took it, or it ended — means the Journey
+//! claim lapsed and another node took it, or it ended — means the Message
 //! is another holder's: no Location is tried for it again from here, no
 //! hand-on is written for it, its loss is counted at its Send Port and
 //! audited once. A send already under way cannot be called back; it carries
@@ -73,7 +73,8 @@ enum Renewed {
 }
 
 impl SendStep {
-    /// Whether the Journey `id` is surely this node's to send now: owned,
+    /// Whether the Message of the Journey `id` is surely this node's to send
+    /// now: owned,
     /// its claim not found another's, and confirmed within a lease.
     #[must_use]
     pub fn holds(&self, id: JourneyId) -> bool {
@@ -84,7 +85,8 @@ impl SendStep {
             .is_some_and(|owned| owned.standing.holds(now))
     }
 
-    /// Whether a renewal found the claim on the Journey `id` another's.
+    /// Whether a renewal found the claim on the Message of the Journey `id`
+    /// another's.
     #[must_use]
     pub fn is_lost(&self, id: JourneyId) -> bool {
         self.lock()
@@ -93,7 +95,7 @@ impl SendStep {
             .is_some_and(|owned| owned.standing.lost)
     }
 
-    /// Renew the claim of every Journey in flight every third of a lease,
+    /// Renew the claim of every Message in flight every third of a lease,
     /// counted from when the last round began, until the step is closed and
     /// nothing is in flight: its own thread, so a send that takes longer
     /// than a lease, or one queued behind a long scan, is not taken up by
@@ -119,7 +121,7 @@ impl SendStep {
         }
     }
 
-    /// Renew the claim of every Journey in flight that is not found lost,
+    /// Renew the claim of every Message in flight that is not found lost,
     /// in one request, and keep where each stands.
     fn renew(&self) {
         let state = self.lock();
@@ -149,7 +151,7 @@ impl SendStep {
 
     /// Where `claim`, renewed as asked at `asked`, stands now; a loss and a
     /// prolonged uncertainty each audited once. An answer for a claim this
-    /// node no longer holds the Journey by — the send ended and an operator's
+    /// node no longer holds the Message by — the send ended and an operator's
     /// Retry claimed it again under a new token — says nothing of the new
     /// claim, and is dropped.
     fn renewed(&self, claim: &persist::storage::Claim, asked: Instant, renewed: Renewed) {
@@ -173,9 +175,9 @@ impl SendStep {
             Renewed::Lost => {
                 standing.lost = true;
                 Some(format!(
-                    "the claim on the Journey {id} is another's now: no Location is tried \
-                     for it again from here, and a send already under way carries its \
-                     Journey's identifier for the far end to deduplicate"
+                    "the claim on the Message of the Journey {id} is another's now: no \
+                     Location is tried for it again from here, and a send already under way \
+                     carries its Journey's identifier for the far end to deduplicate"
                 ))
             }
             Renewed::Unanswered(why) => {
@@ -185,9 +187,9 @@ impl SendStep {
                 } else {
                     standing.said = true;
                     Some(format!(
-                        "Xmip Storage has not confirmed the claim on the Journey {id} for \
-                         longer than its lease, so it is presumed lost: no Location is tried \
-                         for it from here until a renewal is answered ({why})"
+                        "Xmip Storage has not confirmed the claim on the Message of the \
+                         Journey {id} for longer than its lease, so it is presumed lost: no \
+                         Location is tried for it from here until a renewal is answered ({why})"
                     ))
                 }
             }
@@ -198,7 +200,7 @@ impl SendStep {
         }
     }
 
-    /// The Journey of `departure` no longer this node's — found another's,
+    /// The Message of `departure` no longer this node's — found another's,
     /// or its claim presumed lapsed — let go of, counted at its Send Port,
     /// and, where it was not said before, audited with `why`.
     pub(super) fn lost(&self, departure: &Departure, why: &str) {
@@ -215,7 +217,10 @@ impl SendStep {
         drop(state);
         self.wake.notify_all();
         if !said {
-            self.failed(&format!("the Journey {id} to {}: {why}", departure.to));
+            self.failed(&format!(
+                "the Message of the Journey {id} to {}: {why}",
+                departure.to
+            ));
         }
     }
 }
@@ -238,7 +243,7 @@ mod tests {
         }
     }
 
-    /// The Journey owned under `claim`, confirmed a lease from now.
+    /// The Message owned under `claim`, confirmed a lease from now.
     fn owning(step: &SendStep, claim: Claim) {
         let owned = Owned {
             claim,
@@ -253,7 +258,7 @@ mod tests {
         let step = step();
         let (old, new) = (claim(1), claim(2));
         // The renewal of `old` asked, then the send ended and an operator's
-        // Retry claimed the Journey again under `new`, before it answered.
+        // Retry claimed the Message again under `new`, before it answered.
         owning(&step, new.clone());
         let asked = Instant::now() - step.lease * 2;
 

@@ -1,5 +1,5 @@
 //! Every node's send step this process holds, registered, so the runtime's
-//! library finds one by its node and acts on its Journeys (`xmip_operate.h`
+//! library finds one by its node and acts on its Messages (`xmip_operate.h`
 //! section 16).
 
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -11,7 +11,7 @@ static REGISTERED: Mutex<Vec<Weak<SendStep>>> = Mutex::new(Vec::new());
 
 impl SendStep {
     /// `step` registered, so the runtime's library finds it by its node
-    /// and acts on its Journeys (`xmip_operate.h` section 16).
+    /// and acts on its Messages (`xmip_operate.h` section 16).
     pub fn register(step: &Arc<Self>) {
         let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
         registered.retain(|held| held.strong_count() > 0);

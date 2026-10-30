@@ -1,5 +1,5 @@
 //! What exclusiveness costs a hop (the owner, 2026-10-27: *Measure a turn
-//! check per hop against the millisecond rule*): before a Journey moves on
+//! check per hop against the millisecond rule*): before a Message moves on
 //! at a point, it asks whether its Stream heads its end-to-end sequences
 //! and whether it heads each sequence of the point. A place seen at the
 //! head is remembered, so the check that lets work go costs no Ledger read;

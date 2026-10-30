@@ -7,7 +7,7 @@
 //!   waits unclaimed in its queue rather than behind the pool;
 //! - so does a Publication: what the pool has no place for stays durable
 //!   and unclaimed, never in memory, and is sent once a place frees;
-//! - Journeys another node holds keep no place from those behind them;
+//! - Messages another node holds keep no place from those behind them;
 //! - claims in flight are renewed while a scan is held up, however long;
 //! - a Message that failed before a restart is the Port's evidence again,
 //!   as Xmip Storage keeps it, and is let go of when an operator acts on it;
@@ -156,7 +156,7 @@ fn a_publication_claims_no_more_than_the_send_pool_can_take() {
 }
 
 #[test]
-fn journeys_another_node_holds_keep_no_place_from_those_behind_them() {
+fn messages_another_node_holds_keep_no_place_from_those_behind_them() {
     let storage = memory();
     let most = hardware_threads();
     let count = u32::try_from(most + 8).expect("a count");

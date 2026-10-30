@@ -5,9 +5,9 @@
 //! for an operator, in a part of the queue's index of its own, never read,
 //! and counted in the queue's index of failed Messages; a Retry moves it to
 //! a new place. What goes one at a time per key is the sequence's: a
-//! Journey that does not head its sequence is passed by its send and taken
+//! Message that does not head its sequence is passed by its send and taken
 //! up again once it does (`crate::sequence`). Every claim a scan takes
-//! reads the Journey's place again under it, its due time with it, and
+//! reads the Message's place again under it, its due time with it, and
 //! sends only what is still there, due and to be sent.
 
 use std::collections::HashSet;
@@ -114,7 +114,7 @@ fn scanning(
             body: held.hold.body.clone(),
         };
         if sequenced {
-            // Claimed here, in the queue's order, so the places a Journey
+            // Claimed here, in the queue's order, so the places a Message
             // takes once its Stream heads follow the Ledger's order: no
             // two send threads race for them (`crate::sequence::heading`).
             match placed(runtime, &unclaimed) {
@@ -158,7 +158,7 @@ pub(super) enum Ready {
     Claimed(Box<Departure>),
 }
 
-/// A Journey a scan found that no live claim holds: where it leads, its
+/// A Message a scan found that no live claim holds: where it leads, its
 /// queue, its place and what is kept beside it.
 pub(super) struct Unclaimed {
     to: Subscriber,
@@ -168,7 +168,7 @@ pub(super) struct Unclaimed {
 }
 
 impl Unclaimed {
-    /// The Journey.
+    /// Its Journey's identifier.
     pub(super) const fn journey(&self) -> JourneyId {
         self.place.0
     }
@@ -215,7 +215,7 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
 type Took = (ReceivedWork, IdentityFacts, Claim, Instant);
 
 impl super::SendStep {
-    /// The Journey at `place` in `queue` passed over by every scan after.
+    /// The Message at `place` in `queue` passed over by every scan after.
     fn passed(&self, queue: u128, place: (JourneyId, u64)) {
         self.lock().passed.entry(queue).or_default().insert(place);
     }
@@ -261,7 +261,9 @@ fn claimed_first(
         }
         Under::Not(Found::Unreadable(why)) => {
             step.passed(queue, place);
-            step.failed(&format!("the Journey {id} is not sent: {why}"));
+            step.failed(&format!(
+                "the Message of the Journey {id} is not sent: {why}"
+            ));
             Taken::Passed
         }
         Under::Not(_) => {

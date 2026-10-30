@@ -26,10 +26,10 @@
 //!   the place is the Stream's, held by its origin — the Message it was
 //!   received as — until the last Journey born from it ends, which Xmip
 //!   Storage counts (`persist::storage`'s origin). A Work Process's and a
-//!   Send Port's is the Journey's, held while it is at that point.
+//!   Send Port's is the Message's, held while it is at that point.
 //! - **A Send Port Group's is its delivery's** (`group`): held for the
-//!   member Journeys one Publication opens through the Group until every
-//!   member has succeeded or failed, which Xmip Storage counts too.
+//!   Messages of the member Journeys one Publication opens through the
+//!   Group until every member has succeeded or failed, which Xmip Storage counts too.
 //! - **A Receive Location heads its own by default**: one Stream at a time,
 //!   keyed by its own name, until it names a set that spreads the work.
 
@@ -126,8 +126,8 @@ impl Point {
         (named(&text), text)
     }
 
-    /// The place `member` — an origin, or a Journey — takes in its key's
-    /// sequence, `journey` and `promoted` read for the key.
+    /// The place `member` — an origin, or a Message by its Journey — takes
+    /// in its key's sequence, `journey` and `promoted` read for the key.
     ///
     /// # Errors
     /// A key part it lacks, in words.
@@ -188,12 +188,12 @@ pub fn received(
     Ok((received, places))
 }
 
-/// The places the Journeys `opened` take in the sequences of the points
-/// they are bound for — a Send Port Group's for their delivery, a Send
-/// Port, the Send Locations it may leave by, or a Work Process, each naming
-/// a Correlation — their keys read from
-/// `promoted`, each Journey told its places: taken in the write that opens
-/// them, so the order is the Ledger's.
+/// The places the Messages of the Journeys `opened` take in the sequences
+/// of the points they are bound for — a Send Port Group's for their
+/// delivery, a Send Port, the Send Locations it may leave by, or a Work
+/// Process, each naming a Correlation — their keys read from `promoted`,
+/// each Journey told its places: taken in the write that opens them, so the
+/// order is the Ledger's.
 ///
 /// # Errors
 /// A key part a Message lacks, in words.
@@ -216,8 +216,8 @@ pub fn places(
     Ok(places)
 }
 
-/// The places `journey` takes in the sequences of `points`, its key read
-/// from `promoted`, the Journey told each.
+/// The places the Message of `journey` takes in the sequences of `points`,
+/// its key read from `promoted`, the Journey told each.
 ///
 /// # Errors
 /// A key part its Message lacks, in words.
@@ -271,7 +271,7 @@ pub fn heads(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<boo
         .map_err(|why| why.to_string())?;
     // A page that reads nothing while the queue still holds places is no
     // head: only an empty queue is (corrected 2026-10-27; an empty page
-    // read mid-write let a Journey overtake under load).
+    // read mid-write let a Message overtake under load).
     // Only a place seen at the head is remembered: an empty queue says
     // nothing of a place taken later.
     match page.held.first() {
@@ -321,8 +321,8 @@ fn headed() -> &'static Headed {
     HEADED.get_or_init(|| Headed(std::sync::Mutex::new(std::collections::HashSet::new())))
 }
 
-/// Whether the Stream `journey` was born from heads every sequence it
-/// holds a place in end to end: work on it may go on.
+/// Whether the Stream the Message of `journey` was born from heads every
+/// sequence it holds a place in end to end: work on it may go on.
 ///
 /// # Errors
 /// Xmip Storage did not answer.

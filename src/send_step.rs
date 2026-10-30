@@ -1,9 +1,9 @@
-//! The send step: every Journey bound for a Send Port read from the Ledger
+//! The send step: every Message bound for a Send Port read from the Ledger
 //! and sent on the node's Send pool (`runtime-model.md` section 10, *How a
 //! send runs*; ADR-0018, amendments 2026-10-01 and 2026-10-03).
 //!
 //! ```text
-//! Publication     each Journey waits in its Send Port's queue in the
+//! Publication     each Message waits in its Send Port's queue in the
 //!                 Ledger; one this node sends is claimed in the same write
 //! -> claim        through Xmip Storage: the Publication's, or a scan's
 //! -> send         the Port's Send Locations in order, retry and failover
@@ -15,18 +15,18 @@
 //! ```
 //!
 //! **One Journey per Send Port.** A Send Port Group's Journeys are opened
-//! one per Port at the Publication, each in its own Port's queue
+//! one per Port at the Publication, the Message in each Port's own queue
 //! (`runtime-model.md` section 10), so each Port of a Group is sent, retried,
 //! failed and acted on alone.
 //!
 //! **The receive cycle sends nothing.** It ends at the Publication's durable
-//! write and the acknowledgement; departure is this step's. A Journey whose
+//! write and the acknowledgement; departure is this step's. A Message whose
 //! Send Port this node sends is claimed in the Publication's own write and
 //! handed to the Send pool in memory, so the send starts without a sync of
 //! its own, where the pool has room for it; any other waits in its queue
 //! for a node that sends it, or for room.
 //!
-//! **The pool's threads bound what the node holds.** Every Journey it
+//! **The pool's threads bound what the node holds.** Every Message it
 //! claims — at a Publication, a resumed Subscription's move, a scan — is
 //! admitted to a place in the Send pool first ([`admission`]); what has
 //! none stays durable and unclaimed in its queue, read again the moment a
@@ -43,10 +43,10 @@
 //!
 //! **Recovery is a scan.** As the node starts, and every `[tuning]
 //! send_scan` after, each queue this node sends is read oldest first, and
-//! every Journey in it no live claim holds, and due, is claimed and sent:
+//! every Message in it no live claim holds, and due, is claimed and sent:
 //! one a node left when it died, one whose send was cut short, one whose
 //! retry is due, one no node sending its Port held. What a scan read may be
-//! older than its claim, so every claim it takes reads the Journey's place
+//! older than its claim, so every claim it takes reads the Message's place
 //! again, its due time with it, and sends only what is still there, due
 //! and to be sent (2026-10-17). Claims of work in flight are renewed while
 //! it runs.
@@ -60,8 +60,8 @@
 //! Journey's identifier as its deduplication key.
 //!
 //! **A Send Port naming a Correlation keeps its order** per key, and a
-//! Journey of a Stream that holds its Receive Location's sequence waits for
-//! it: a Journey that does not head its sequences is passed, its claim given
+//! Message of a Stream that holds its Receive Location's sequence waits for
+//! it: a Message that does not head its sequences is passed, its claim given
 //! back, and taken up once it does; one that failed blocks its sequence, or
 //! is set aside, as its set's `on_failure` says (`crate::sequence`;
 //! `runtime-model.md` section 3, *A claim is not ordering*).
@@ -125,7 +125,7 @@ pub const SEND_THREADS_PER_HARDWARE_THREAD: usize = 2;
 /// `[tuning] send_idle` does not say: a minute, as a receive thread's.
 pub const SEND_IDLE: Duration = Duration::from_secs(60);
 
-/// How long a claim on a Journey holds before it lapses, unless renewed,
+/// How long a claim on a Message holds before it lapses, unless renewed,
 /// where `[tuning] send_lease` does not say: thirty seconds — how long a
 /// node's death leaves its sends before another node takes them up.
 pub const SEND_LEASE: Duration = Duration::from_secs(30);
@@ -138,7 +138,7 @@ pub const SEND_SCAN: Duration = Duration::from_secs(1);
 /// the node's count of what it sent and what failed.
 pub type Settled<'a> = &'a (dyn Fn(&Departure, &Ended) + Sync);
 
-/// One Journey being sent: its Journey and Message, the identity it arrived
+/// One Message being sent: its Journey and Message, the identity it arrived
 /// with, where it leads, the queue it waits in, the claim it is sent under,
 /// and where its send stands.
 #[derive(Clone, Debug)]
@@ -159,7 +159,7 @@ pub struct Departure {
     pub durable: Option<Durable>,
 }
 
-/// What a Publication writes for the Journeys that go on to be sent: each
+/// What a Publication writes for the Messages that go on to be sent: each
 /// in its destination's queue, and the claims this node takes on those it
 /// sends itself.
 #[derive(Debug, Default)]
@@ -204,24 +204,24 @@ struct State {
     /// many wait ([`due::Due`]).
     due: HashMap<u128, due::Due>,
     owned: HashMap<JourneyId, Owned>,
-    /// Places in the Send pool admitted for Journeys not yet owned.
+    /// Places in the Send pool admitted for Messages not yet owned.
     admitted: usize,
     /// Found unclaimed by a scan, each under a place admitted, being
     /// claimed on a send thread.
     taking: HashSet<JourneyId>,
-    /// Queues holding Journeys the pool had no room for, read again once a
+    /// Queues holding Messages the pool had no room for, read again once a
     /// place frees.
     starved: Vec<u128>,
     /// Read at their place in a queue and found not to be sent —
     /// unreadable, or finished though still in a queue — passed over by
     /// every scan after; one that failed is passed over by its place's mark
     /// in the Ledger instead (`persist::storage::Held::failed`). A Retry
-    /// moves a Journey to a new place, where it is read again. By queue, so
+    /// moves a Message to a new place, where it is read again. By queue, so
     /// a whole read of one forgets what has left it.
     passed: HashMap<u128, HashSet<(JourneyId, u64)>>,
-    /// The Send Ports this node sends, each with whether a Journey of it
+    /// The Send Ports this node sends, each with whether a Message of it
     /// that failed blocks its sequence: what an operator's act on one of
-    /// its Journeys is decided by.
+    /// its Messages is decided by.
     ports: BTreeMap<String, bool>,
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
@@ -265,7 +265,7 @@ impl SendStep {
         }
     }
 
-    /// The queue in the Ledger the Journeys bound for `to` wait in.
+    /// The queue in the Ledger the Messages bound for `to` wait in.
     #[must_use]
     pub fn queue(&self, to: &Subscriber) -> u128 {
         queue(&self.cluster, to)
@@ -277,7 +277,8 @@ impl SendStep {
         self.lease
     }
 
-    /// The Journeys a Publication opens that go on to be sent — each with
+    /// The Messages of the Journeys a Publication opens that go on to be
+    /// sent — each with
     /// where it leads — lined up: each kept at the end of its destination's
     /// queue, beside it `body`, the identity it arrived with in its one
     /// form; and those this node sends, on a Send Port that is not
@@ -327,7 +328,7 @@ impl SendStep {
     /// each of `journeys` it claimed, with `work`'s Message and the
     /// identity it arrived with, `facts`, each in the place admitted for
     /// it, and let out to its far end once `durable` says the Publication
-    /// is. A queue holding a Journey this node sends and did not claim is
+    /// is. A queue holding a Message this node sends and did not claim is
     /// read at once, or once a place frees.
     pub fn handed(
         &self,

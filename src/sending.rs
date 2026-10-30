@@ -1,5 +1,5 @@
 //! A Send Location as a node runs it, the node's Send Ports with their
-//! policy, and where a Journey bound for one waits in the Ledger.
+//! policy, and where a Message bound for one waits in the Ledger.
 //!
 //! Routing decides *that* a Message goes to `SendPort.Billing`. Which
 //! Location that is, and whose identity it presents, is configuration — and
@@ -10,7 +10,7 @@
 //! that order; a Send Port Group reaches each of its Ports by a Journey of
 //! its own, opened at its Publication. Each Port's
 //! policy — `retry` and `failover` (ADR-0031, amendment 2026-10-01) — is
-//! its design's; the Correlation it names is the sequence its Journeys
+//! its design's; the Correlation it names is the sequence its Messages
 //! pass it in, one at a time per key (`crate::sequence`).
 
 use std::time::Duration;
@@ -43,7 +43,7 @@ pub struct Port<'a> {
     pub name: &'a str,
     pub locations: Vec<&'a Sending>,
     pub policy: Option<&'a DesignedSendPort>,
-    /// The sequences its Journeys pass it in: its own, where it names a
+    /// The sequences its Messages pass it in: its own, where it names a
     /// set, and those of the Send Locations it may leave by that name one.
     pub points: Vec<&'a Point>,
 }
@@ -133,7 +133,7 @@ impl Sends {
 
     /// Every Send Port this node sends, by the Ports its Applications
     /// declare and its Locations serve. A Send Port Group is not among
-    /// them: its Journeys are one per Port, each in its Port's queue.
+    /// them: its Journeys are one per Port, each Message in its Port's queue.
     #[must_use]
     pub fn served(&self) -> Vec<Subscriber> {
         // A Send Port by its design, or a bound one by the Location named as
@@ -194,7 +194,7 @@ impl Sends {
     }
 }
 
-/// The queue in the Ledger where the Journeys bound for `to` in the cluster
+/// The queue in the Ledger where the Messages bound for `to` in the cluster
 /// at `cluster` (`xmip:///<cluster>`) wait until they are sent: found by
 /// the name-based identifier of `<cluster>/<kind>/<name>`, the same on
 /// every node, so any node that sends it takes up what another left

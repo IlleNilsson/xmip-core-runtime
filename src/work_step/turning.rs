@@ -1,4 +1,4 @@
-//! One turn of one Instance: the Journey claimed, its Instance read from
+//! One turn of one Instance: the Message claimed, its Instance read from
 //! the Ledger, the unit advanced and its acts carried out until it waits
 //! or ends, and all of it handed on in one write (`XmipStorage::turn`).
 
@@ -37,7 +37,8 @@ pub enum Turned {
     Unwritten(String),
 }
 
-/// The Journey `held` names, of `running`'s queue, taken a turn of.
+/// The Message `held` names by its Journey, of `running`'s queue, taken a
+/// turn of.
 pub(super) fn turn(
     runtime: &Runtime<'_>,
     pickup: &Pickup,
@@ -71,7 +72,7 @@ pub(super) fn turn(
         Ok(Placing::Lost) => return Turned::Waits("its claim was another's".to_string()),
         Err(why) => return release(why),
     }
-    // A Journey bound for a Work Process holds one place at it: the Work
+    // A Message bound for a Work Process holds one place at it: the Work
     // Process's own sequence, where it names a set.
     let point = work
         .journey
@@ -279,7 +280,7 @@ impl Taking<'_> {
     }
 
     /// The turn as one write: the Journey, what was made, the Instance and
-    /// its correlations, and the Journey kept with a due time where a timer
+    /// its correlations, and the Message kept with a due time where a timer
     /// waits.
     fn written(
         &mut self,

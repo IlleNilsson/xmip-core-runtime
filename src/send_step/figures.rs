@@ -57,13 +57,13 @@ pub struct PortFigures {
     pub blocked: bool,
     /// The oldest of them, at most `[tuning] failed_window`.
     pub oldest_failing: Vec<FailedMessage>,
-    /// Claims of its Journeys this node holds whose renewal Xmip Storage
+    /// Claims of its Messages this node holds whose renewal Xmip Storage
     /// has not answered, now: the Port is Done while any is.
     pub unconfirmed: u64,
     /// When the oldest of those renewals was asked, in nanoseconds since
     /// the Unix epoch: since when Xmip Storage has not answered.
     pub unanswered_since: Option<i128>,
-    /// Journeys whose claim this node found another's, or presumed lapsed,
+    /// Messages whose claim this node found another's, or presumed lapsed,
     /// since it started, and let go of without sending them further.
     pub lost: u64,
     /// Since when, in nanoseconds since the Unix epoch, Xmip Storage has
@@ -273,7 +273,7 @@ impl SendStep {
     }
 }
 
-/// Journeys by their place in a queue.
+/// Messages by their Journey and their place in a queue.
 pub(super) type Present = HashSet<(JourneyId, u64)>;
 
 /// What the node keeps of one Send Port's queue's index of failed Messages:

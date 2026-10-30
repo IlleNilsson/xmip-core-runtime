@@ -6,7 +6,7 @@
 //! **A pool bounds threads; a budget bounds what they hold.** Each Receive
 //! Location keeps a pool of its own, its isolation, so a node of many
 //! Locations had no ceiling of its own; the Send pool admitted a count of
-//! Journeys, whatever their size. A [`Budget`] is that ceiling: a carry or a
+//! Messages, whatever their size. A [`Budget`] is that ceiling: a carry or a
 //! send holds its charge from it while it runs, and one with no room waits
 //! for a holder to let go — nothing is dropped, refused or taken from a far
 //! end that has no room. A charge above the whole budget waits until it is
@@ -173,7 +173,7 @@ impl Drop for Held<'_> {
 
 /// What a node holds at once, beside each pool's own bound: the arrivals
 /// its Receive Locations carry and the bytes those carries hold, and the
-/// bytes its sends hold beside the Send pool's count of Journeys.
+/// bytes its sends hold beside the Send pool's count of Messages.
 #[derive(Debug)]
 pub struct NodeBudget {
     /// Arrivals carried at once across every Receive Location.

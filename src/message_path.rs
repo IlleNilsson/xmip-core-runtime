@@ -95,11 +95,11 @@ pub struct Runtime<'a> {
     pub sends: &'a Sends,
 
     /// The node's send step: what a Publication claims it hands to it, and
-    /// it sends every Journey this node sends from the Ledger
+    /// it sends every Message this node sends from the Ledger
     /// ([`crate::send_step`]).
     pub send: &'a SendStep,
 
-    /// The node's Work Process step: what it runs of the Journeys bound for
+    /// The node's Work Process step: what it runs of the Messages bound for
     /// a Work Process, a turn of its Instance at a time
     /// ([`crate::work_step`]).
     pub work: &'a WorkStep,
@@ -120,7 +120,7 @@ pub struct Runtime<'a> {
     /// The policies consulted before any work is done, at every point.
     pub policies: &'a [&'a dyn Authorizer],
 
-    /// Read at each gate rather than once. A Journey may wait days between
+    /// Read at each gate rather than once. A Message may wait days between
     /// arriving and sending, and both gates need to know when they are.
     pub clock: &'a dyn Clock,
 
@@ -160,7 +160,7 @@ pub enum ReceiveCycle {
 #[derive(Debug)]
 pub struct Carried {
     pub arrived: Arrived,
-    /// Paused Subscriptions that matched it and hold its Journey in the
+    /// Paused Subscriptions that matched it and hold its Message in the
     /// Ledger (ADR-0013, amendment 2026-09-30).
     pub held: usize,
     /// The Journeys its Publication wrote to the Ledger, one per matched
@@ -183,9 +183,9 @@ impl Carried {
 /// One Stream through the receive cycle: arrival at `gate` — the Stream
 /// into the Ledger once its transport gates pass — routing, and the
 /// Publication into the Ledger, with what a paused Subscription of
-/// `pickup`'s holds and every other Journey in the queue of where it
+/// `pickup`'s holds and every other Message in the queue of where it
 /// leads. **The cycle sends nothing** (`runtime-model.md` section 5): it
-/// ends at the Publication's durable write, and the Journeys this node
+/// ends at the Publication's durable write, and the Messages this node
 /// claimed in it are handed to its send step, which sends them from there.
 pub fn carry(
     runtime: &Runtime<'_>,
@@ -218,7 +218,7 @@ pub fn carry(
     // back is written while the Ledger syncs (ADR-0018, amendment
     // 2026-10-20); the cycle itself ends once the Publication is durable.
     if let Arrived::Routed { work, facts, .. } = &arrived {
-        // A Journey bound for a Work Process this node runs is read now.
+        // A Message bound for a Work Process this node runs is read now.
         for hold in &lined.holds {
             runtime.work.ask(hold.queue);
         }

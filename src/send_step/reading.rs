@@ -1,11 +1,11 @@
 //! What a scan reads of a queue: only what is due (the owner, 2026-10-19:
 //! *a send scan reads only what is due*), through Xmip Storage's index of
-//! when each Journey is due (`persist::storage::DueQueue`), so its cost
+//! when each Message is due (`persist::storage::DueQueue`), so its cost
 //! follows what is due, not what is held.
 //!
 //! A queue is read a page at a time, what is due in the order it fell due,
 //! and the reading stops where the Send pool is full. What goes one at a
-//! time per key is not this reading's: a Journey that does not head its
+//! time per key is not this reading's: a Message that does not head its
 //! sequence is passed by its send (`crate::sequence`).
 
 use std::collections::VecDeque;

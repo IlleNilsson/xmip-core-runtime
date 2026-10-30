@@ -4,7 +4,7 @@
 //! - it holds no claim and no place in the Send pool: its due time is kept
 //!   at its place in its queue, so a far end that fails every send cannot
 //!   fill the places every Port shares, and a healthy Port sends all it has
-//!   while the failing one's Journeys wait;
+//!   while the failing one's Messages wait;
 //! - a restart keeps every due time, and no node takes one up before it;
 //! - a pass that tried nothing, because its claim was not surely this
 //!   node's, writes nothing: no entry, no try counted, no backoff.
@@ -65,7 +65,7 @@ fn free(storage: &dyn XmipStorage, id: JourneyId) -> bool {
 #[test]
 fn a_far_end_that_always_fails_holds_no_place_a_healthy_port_needs() {
     let storage = memory();
-    // Three times as many as the pool has places, so waiting Journeys that
+    // Three times as many as the pool has places, so waiting Messages that
     // kept their places would leave `Out` none.
     let count = u32::try_from(hardware_threads() * 3).expect("a count");
     let (bad, _) = FarEnd::answering(refusing("the far end is down", true));
@@ -144,7 +144,7 @@ fn a_far_end_that_always_fails_holds_no_place_a_healthy_port_needs() {
 
 #[test]
 fn a_scan_that_read_its_queue_before_a_retry_was_handed_on_never_sends_it_again() {
-    // A scan reads `Out`'s queue while the Journey's first pass is under
+    // A scan reads `Out`'s queue while the Message's first pass is under
     // way, so the read shows no due time at its place; the pass's hand-on
     // lands — Recovering, its due time an hour off, its claim released — and
     // only then does the scan go on with what it read. Its claim is granted,
@@ -211,7 +211,7 @@ fn a_pass_whose_claim_is_not_surely_held_writes_nothing_and_is_taken_up_again() 
         (CHUNK, &onward()),
         sender(node(), far, out(|_| {})),
         |runtime, _, _| {
-            // The Journey claimed here, its last confirmation now: by the
+            // The Message claimed here, its last confirmation now: by the
             // time its pass begins it is older than nothing, so the claim is
             // not surely this node's, and no renewal confirms it again.
             interleaved.fail(Operation::Renew, u32::MAX);

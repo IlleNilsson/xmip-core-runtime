@@ -1,10 +1,10 @@
-//! The Work Process step: every Journey bound for a Work Process this node
+//! The Work Process step: every Message bound for a Work Process this node
 //! runs, read from the Ledger and taken a turn of its Instance on the
 //! node's Work pool (`runtime-model.md` section 22; ADR-0066, amendment
 //! 2026-10-22).
 //!
 //! ```text
-//! Publication   the Journey waits in its Work Process's queue in the Ledger
+//! Publication   the Message waits in its Work Process's queue in the Ledger
 //! -> scan       oldest first; one whose key is behind an earlier one of the
 //!               same key waits, so a key's Messages never overtake
 //! -> claim      through Xmip Storage
@@ -14,14 +14,14 @@
 //!               back through routing — until it waits or ends
 //! -> hand on    one write (`XmipStorage::turn`): the Journey, the
 //!               Instance, its correlation keys, what it published, and the
-//!               Journey kept at its place with a due time where a timer
+//!               Message kept at its place with a due time where a timer
 //!               waits; written only over the turn it read
 //! ```
 //!
 //! **Nothing waits on a thread.** An Instance waiting for a Message or a
-//! time is a record in the Ledger. A Message of its key is a Journey in the
+//! time is a record in the Ledger. A Message of its key waits in the
 //! queue, taken up by whichever node scans first; a timer is the due time
-//! of the Journey whose turn started it, taken up when due.
+//! of the Message whose turn started it, taken up when due.
 //!
 //! **The engine never knows the design.** A unit is opened as
 //! `process::Flow`, linked or loaded through the C ABI
@@ -53,7 +53,7 @@ pub use opened::opened;
 pub use running::{NO_UNIT, NoUnits, Running, Thrown, WorkUnits};
 pub use turning::Turned;
 
-/// How long a claim on a Journey bound for a Work Process holds before it
+/// How long a claim on a Message bound for a Work Process holds before it
 /// lapses: a turn is short, and one longer than this is still never
 /// written twice, its Instance written only over the turn it read.
 pub const WORK_LEASE: Duration = Duration::from_secs(30);
@@ -78,7 +78,7 @@ pub struct WorkStep {
 
 #[derive(Default)]
 struct State {
-    /// The Journeys claimed and in a turn on this node.
+    /// The Messages, by Journey, claimed and in a turn on this node.
     owned: HashSet<JourneyId>,
     /// Queues to read now.
     asked: Vec<u128>,

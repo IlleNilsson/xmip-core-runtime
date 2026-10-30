@@ -6,7 +6,7 @@
 //! The node is found by its scope among the nodes this process runs —
 //! their pickups and send steps as registered — and the act is that
 //! node's: a pause or resume of a Subscription and a Replay from its Dead
-//! Message Queue are its pickup's, a Retry or Dismiss of a Journey its
+//! Message Queue are its pickup's, a Retry or Dismiss of a Message its
 //! send step's; each records itself in the node's audit with who acted.
 //! A node of this process keeps no Event subscription hub, so an act on
 //! an Event subscription is refused in words.

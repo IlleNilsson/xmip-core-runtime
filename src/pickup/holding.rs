@@ -1,4 +1,4 @@
-//! Which of a Publication's Journeys a Subscription holds, decided before
+//! Which Messages of a Publication's Journeys a Subscription holds, decided before
 //! the Publication is written and counted once it is durable: what the
 //! Publication's one write keeps at the end of each queue
 //! (`persist::storage::Hold`), so a refused write holds nothing anywhere.
@@ -10,7 +10,7 @@ use route::Subscriber;
 use super::Pickup;
 use crate::ledger::Opened;
 
-/// Which of a Publication's Journeys a Subscription holds: what the
+/// Which Messages of a Publication's Journeys a Subscription holds: what the
 /// Publication's write keeps, and what the node counts once it is durable.
 #[derive(Debug, Default)]
 pub struct Holding {
@@ -20,14 +20,14 @@ pub struct Holding {
 }
 
 impl Holding {
-    /// What the Publication keeps, one per Journey held.
+    /// What the Publication keeps, one per Message held.
     #[must_use]
     pub fn holds(&self) -> &[Hold] {
         &self.holds
     }
 
-    /// Of the Journeys a Publication `opened`, the ones no Subscription
-    /// holds, each with where it leads: what goes on to be sent now.
+    /// Of the Journeys a Publication `opened`, those whose Message no
+    /// Subscription holds, each with where it leads: what goes on to be sent now.
     #[must_use]
     pub fn departing<'a>(&self, opened: &'a [Opened]) -> Vec<(&'a Journey, &'a Subscriber)> {
         let held = |name: &str| self.held.iter().any(|(_, held)| held == name);
@@ -40,7 +40,7 @@ impl Holding {
 }
 
 impl Pickup {
-    /// Which of the Journeys a Publication `opened` — one for each
+    /// Which Messages of the Journeys a Publication `opened` — one for each
     /// Subscription routing matched and each Send Port it reaches, in
     /// routing's order — a Subscription holds: one that is paused, or whose
     /// queue holds anything still. What the holder keeps beside each is
@@ -49,7 +49,7 @@ impl Pickup {
         self.held(opened, body, false)
     }
 
-    /// Which of the Journeys `opened` its Subscription holds — as [`Pickup::holding`]
+    /// Which Messages of the Journeys `opened` its Subscription holds — as [`Pickup::holding`]
     /// decides, or, where `every` says, all of them: what a Replay from the
     /// Dead Message Queue opens has no receive cycle to depart from, so each
     /// is held and picked up from its queue as a resume picks up.

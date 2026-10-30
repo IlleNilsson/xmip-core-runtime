@@ -7,7 +7,7 @@
 //! operator watching an estate is reading one board.
 //!
 //! ```text
-//! a Journey's destination   its Send Port: a Group's Journeys one per Port
+//! a Message's destination   its Send Port: a Group's Journeys one per Port
 //!   -> resolve   its Send Locations on this node, in configured order
 //!   -> authorize may this identity still send, now
 //!   -> identity  whose identity Xmip presents, per ADR-0006
@@ -28,7 +28,7 @@
 //! endpoint that deduplicates delivers it once by (section 15).
 //!
 //! **No attempt without the claim.** Before each Location is tried, the
-//! send step is asked whether the Journey's claim is still surely this
+//! send step is asked whether the Message's claim is still surely this
 //! node's; where it is not — found another's, or unconfirmed for longer
 //! than its lease — the pass stops, and no Location is tried again from
 //! here (section 10, *Corrected 2026-10-06*). It is asked again once the
@@ -46,7 +46,7 @@
 //! transport that streams writes it on as it reads, one whose protocol
 //! needs the whole body gathers it and says so (`transport::Sending`). What
 //! the send holds, by that, is held within the node's byte budget for sends
-//! (`crate::budget`), beside the Send pool's count of Journeys: a send with
+//! (`crate::budget`), beside the Send pool's count of Messages: a send with
 //! no room waits for one, its claim renewed. Until 2026-10-19 each
 //! departure read its Message whole before its transport sent it.
 
@@ -115,7 +115,7 @@ impl Departed {
     }
 }
 
-/// Where a Journey's send stands at its Send Port, across passes: what
+/// Where a Message's send stands at its Send Port, across passes: what
 /// the send step keeps between them, so a retry tries again where the last
 /// pass left off. Its active Location and tries are the Journey's
 /// `attempts`, written with every hand-on.
@@ -171,7 +171,7 @@ impl Progress {
 /// Journey per Port, opened at its Publication, so one that reaches here is
 /// declared by no Application of this node. `owned` says, before each
 /// Location is tried and again just before its transport sends, whether the
-/// Journey is still this node's to send; the pass stops where it is not,
+/// Message is still this node's to send; the pass stops where it is not,
 /// nothing more tried. `kept` waits until the Message is durable in the
 /// Ledger: a far end sees nothing before (ADR-0018, amendment 2026-10-20).
 pub fn depart_to(
@@ -201,7 +201,7 @@ pub fn depart_to(
 }
 
 /// One Port's part of a pass: its active Location tried, and the next
-/// after it where it fails over — each only while `owned` says the Journey
+/// after it where it fails over — each only while `owned` says the Message
 /// is still this node's.
 fn depart_port(
     runtime: &Runtime<'_>,

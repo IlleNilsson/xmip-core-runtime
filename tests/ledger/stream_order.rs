@@ -4,10 +4,10 @@
 //! stream, message, journey at a time. Put it in the ledger if it is not
 //! processed now*).
 //!
-//! Stream S1 goes through a Work Process, which publishes its Journey to
+//! Stream S1 goes through a Work Process, which publishes its Message to
 //! `Out` later; S2, received behind S1, goes to `Out` directly. S2 is not
-//! being processed while S1 heads the Location's sequence, so its Journey
-//! takes no place at `Out` until S1 has ended: S1's Journey goes first, and
+//! being processed while S1 heads the Location's sequence, so its Message
+//! takes no place at `Out` until S1 has ended: S1's Message goes first, and
 //! S2's follows (`xmip_core_runtime::sequence::take_late`).
 
 use std::io::Cursor;

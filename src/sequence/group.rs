@@ -105,7 +105,7 @@ pub fn group_heads(storage: &dyn XmipStorage, journey: &Journey) -> Result<bool,
     }
 }
 
-/// Whether a Journey bound for `to` may be a member of a delivery by a
+/// Whether a Message bound for `to` may be a member of a delivery by a
 /// Send Port Group naming a Correlation: a Send Port of such a Group.
 #[must_use]
 pub fn grouped(sends: &Sends, to: &Subscriber) -> bool {

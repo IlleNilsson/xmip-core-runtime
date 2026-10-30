@@ -4,10 +4,10 @@
 //!
 //! - a hold Xmip Storage does not take fails the receive cycle — not
 //!   acknowledged — and nothing is held anywhere, in memory least of all;
-//! - a held Journey picked up once its Subscription is resumed moves, in
+//! - a held Message picked up once its Subscription is resumed moves, in
 //!   one write, to the queue of the Send Port it leads to, its Message and
 //!   its Stream with it, there for a node that sends that Port;
-//! - a queue or a Journey that cannot be read, or a move not taken, is read
+//! - a queue or a Message that cannot be read, or a move not taken, is read
 //!   again from its place: nothing after it is taken first and nothing is
 //!   passed over.
 
@@ -67,7 +67,7 @@ fn queue(storage: &dyn XmipStorage) -> (u64, Vec<u64>) {
     (read.count, places)
 }
 
-/// The Journeys waiting in the queue of the Send Port `onward` leads to,
+/// The Messages waiting in the queue of the Send Port `onward` leads to,
 /// oldest first.
 fn waiting_to_send(runtime: &Runtime<'_>) -> Vec<JourneyId> {
     let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
@@ -115,7 +115,7 @@ fn a_hold_xmip_storage_does_not_take_fails_the_receive_cycle_and_holds_nothing()
 }
 
 #[test]
-fn a_held_journey_picked_up_moves_to_its_send_ports_queue_in_one_write() {
+fn a_held_message_picked_up_moves_to_its_send_ports_queue_in_one_write() {
     let (_, storage) = failing();
     on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         paused(pickup);
@@ -172,7 +172,7 @@ fn what_cannot_be_read_or_moved_is_read_again_from_its_place_and_nothing_is_pass
         let released = pickup.released(AGAIN, 8);
         assert_eq!(places(&released), [0, 1], "read again from the first");
 
-        // The first Journey cannot be read: it and what follows it are
+        // The first Message cannot be read: it and what follows it are
         // read again, in their order, and neither is passed over.
         failing.fail(Operation::ReadJourney, 1);
         assert!(pick_up(runtime, pickup, &released[0]).is_err());

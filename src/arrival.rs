@@ -583,7 +583,7 @@ mod tests {
     }
 
     /// One pass of `work` to every destination `routing` matched: what the
-    /// send step's first pass does for each Journey.
+    /// send step's first pass does for each Message.
     fn depart(
         runtime: &Runtime<'_>,
         work: &ReceivedWork,

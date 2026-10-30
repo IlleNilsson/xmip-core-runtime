@@ -1097,7 +1097,7 @@ address = "tcp://{far}"
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = unheld().to_string();
         // In order: a Send Port naming a set keyed by itself keeps it, one
-        // Journey at a time (`crate::sequence`).
+        // Message at a time (`crate::sequence`).
         let sequential = "correlation = \"InOrder\"";
         let configured = format!(
             "{}\n[[correlations]]\nname = \"InOrder\"\nkeys = [\"send-port\"]\n",
