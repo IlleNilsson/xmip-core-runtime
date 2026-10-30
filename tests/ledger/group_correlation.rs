@@ -25,7 +25,7 @@ use xmip_core_runtime::receiving::ReceiveGate;
 use xmip_core_runtime::sequence::{Point, PointKind};
 use xmip_core_runtime::work_step::{KeyWord, ResolvedSet};
 
-use super::journey_act::broken_for;
+use super::message_act::broken_for;
 use super::receive_cycle::{node, on_node, on_working_node};
 use super::send_group::to_both;
 use super::sending::{

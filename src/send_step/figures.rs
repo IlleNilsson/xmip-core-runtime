@@ -1,11 +1,11 @@
-//! What a node's send step counts per Send Port, the last Journey that
-//! failed there with its reason, and the Journeys that failed waiting in
+//! What a node's send step counts per Send Port, the last Message that
+//! failed there with its reason, and the Messages that failed waiting in
 //! its queue for an operator: what its snapshot publishes at the Port's
 //! scope (`crate::running::publication`), so every surface shows it.
 //!
 //! **Now, and what was.** `failing`, `oldest_failing` and `blocked` are the
 //! queue as it stands, as Xmip Storage keeps it: the count and the oldest
-//! of the queue's index of failed Journeys in the Ledger, written with each
+//! of the queue's index of failed Messages in the Ledger, written with each
 //! failure and each act on one, whichever node failed it
 //! (`persist::storage::FailedQueue`); `sent`, `failed` and `last_failure`
 //! are history since the node started. Until 2026-10-06 `last_failure` was
@@ -15,40 +15,40 @@
 //! **The node keeps a window, not the backlog.** Of each Port's index it
 //! keeps how many wait and the oldest `[tuning] failed_window` of them, read
 //! again only where the index's places moved since the last read; the rest
-//! are read from Xmip Storage a page at a time ([`SendStep::failed_journeys`]).
+//! are read from Xmip Storage a page at a time ([`SendStep::failed_messages`]).
 //! Until 2026-10-16 the node kept every one a scan had read Failed, so its
 //! memory grew with the failures (open problem 34).
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
-use observe::{FailedJourneys, LastFailure};
+use observe::{FailedMessages, LastFailure};
 use persist::storage::Failed;
 use xcore::{Clock, JourneyId, SystemClock};
 
 use super::SendStep;
 
-/// The oldest failed Journeys of one Send Port the node keeps and its
+/// The oldest failed Messages of one Send Port the node keeps and its
 /// publication carries, where `[tuning] failed_window` does not say: a
 /// hundred; the rest are read from Xmip Storage a page at a time
-/// ([`super::SendStep::failed_journeys`]).
+/// ([`super::SendStep::failed_messages`]).
 pub const FAILED_WINDOW: usize = 100;
 
 /// One Send Port's figures.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PortFigures {
-    /// Journeys sent since the node started: written Completed.
+    /// Messages sent since the node started: written Completed.
     pub sent: u64,
-    /// Journeys whose every Send Location failed its tries since the node
+    /// Messages whose every Send Location failed its tries since the node
     /// started: written Failed.
     pub failed: u64,
-    /// Journeys waiting now for a retry's due time, as the last read of its
+    /// Messages waiting now for a retry's due time, as the last read of its
     /// queue found them in the Ledger, whichever node they wait for.
     pub waiting: u64,
     /// The last that failed here since the node started: its Journey and
     /// why, in words. History: it may since have been retried or dismissed.
     pub last_failure: Option<(String, String)>,
-    /// How many Journeys that failed wait in its queue for an operator now,
+    /// How many Messages that failed wait in its queue for an operator now,
     /// as Xmip Storage counts them — those that failed before a restart, or
     /// on another node, among them.
     pub failing: u64,
@@ -56,7 +56,7 @@ pub struct PortFigures {
     /// whose `on_failure` is `block`.
     pub blocked: bool,
     /// The oldest of them, at most `[tuning] failed_window`.
-    pub oldest_failing: Vec<FailedJourney>,
+    pub oldest_failing: Vec<FailedMessage>,
     /// Claims of its Journeys this node holds whose renewal Xmip Storage
     /// has not answered, now: the Port is Done while any is.
     pub unconfirmed: u64,
@@ -73,10 +73,10 @@ pub struct PortFigures {
     pub unread: Option<(i128, String)>,
 }
 
-/// A Journey that failed, waiting in its Send Port's queue for an
+/// A Message that failed, waiting in its Send Port's queue for an
 /// operator's Retry or Dismiss.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FailedJourney {
+pub struct FailedMessage {
     pub journey: JourneyId,
     /// Its place in its Send Port's queue: oldest lowest.
     pub place: u64,
@@ -114,12 +114,14 @@ impl PortFigures {
             said.push_str(&format!(", claims lost to another holder {}", self.lost));
         }
         if let Some((journey, why)) = &self.last_failure {
-            said.push_str(&format!("; the Journey {journey} failed: {why}"));
+            said.push_str(&format!(
+                "; the Message of the Journey {journey} failed: {why}"
+            ));
         }
         said
     }
 
-    /// The last Journey that failed here since the node started, as every
+    /// The last Message that failed here since the node started, as every
     /// publication of it says it: history, apart from what fails now.
     #[must_use]
     pub fn last(&self) -> Option<LastFailure> {
@@ -131,7 +133,7 @@ impl PortFigures {
             })
     }
 
-    /// The Journeys that failed at the Send Port `port` of the node at
+    /// The Messages that failed at the Send Port `port` of the node at
     /// `node`, as its snapshot publishes them: how many wait in its queue
     /// now — zero where none, so a surface says *none now* from the record
     /// rather than from its absence — whether they block its sequence, the
@@ -139,24 +141,24 @@ impl PortFigures {
     /// the node started, as history. Until 2026-10-06 only a Port with some
     /// waiting was published.
     #[must_use]
-    pub fn published(&self, node: &str, port: &str) -> FailedJourneys {
-        FailedJourneys {
+    pub fn published(&self, node: &str, port: &str) -> FailedMessages {
+        FailedMessages {
             node: node.to_string(),
             send_port: port.to_string(),
             count: self.failing,
             blocked: self.blocked,
-            journeys: self
+            messages: self
                 .oldest_failing
                 .iter()
-                .map(FailedJourney::published)
+                .map(FailedMessage::published)
                 .collect(),
             last_failure: self.last(),
         }
     }
 }
 
-impl FailedJourney {
-    /// The Journey as its queue's index of failed Journeys keeps it.
+impl FailedMessage {
+    /// The Message as its queue's index of failed Messages keeps it.
     #[must_use]
     pub fn of(failed: &Failed) -> Self {
         Self {
@@ -166,11 +168,11 @@ impl FailedJourney {
         }
     }
 
-    /// The Journey as a publication, and every list of failed Journeys,
+    /// The Message as a publication, and every list of failed Messages,
     /// says it.
     #[must_use]
-    pub fn published(&self) -> observe::FailedJourney {
-        observe::FailedJourney {
+    pub fn published(&self) -> observe::FailedMessage {
+        observe::FailedMessage {
             journey: self.journey.to_string(),
             sequence: self.place,
             reason: self.reason.clone(),
@@ -210,7 +212,7 @@ impl SendStep {
         figures
     }
 
-    /// `port`'s window on its queue's index of failed Journeys, `queue`,
+    /// `port`'s window on its queue's index of failed Messages, `queue`,
     /// read again from Xmip Storage where the index moved since the last
     /// read — one read of its places where it did not — or, with `afresh`,
     /// whatever it last read. Where Xmip Storage does not answer, the last
@@ -236,7 +238,7 @@ impl SendStep {
         let window = Window {
             count: read.count,
             read_at: Some((read.next, read.count)),
-            oldest: read.failed.iter().map(FailedJourney::of).collect(),
+            oldest: read.failed.iter().map(FailedMessage::of).collect(),
         };
         self.lock().failing.insert(port.to_string(), window);
     }
@@ -274,7 +276,7 @@ impl SendStep {
 /// Journeys by their place in a queue.
 pub(super) type Present = HashSet<(JourneyId, u64)>;
 
-/// What the node keeps of one Send Port's queue's index of failed Journeys:
+/// What the node keeps of one Send Port's queue's index of failed Messages:
 /// how many wait and the oldest, at most its window, as Xmip Storage last
 /// answered — however many failed, never more.
 #[derive(Debug, Default)]
@@ -283,5 +285,5 @@ pub(super) struct Window {
     /// The index's next place and count as that answer had them: while they
     /// stand, nothing failed there or left it since.
     read_at: Option<(u64, u64)>,
-    oldest: Vec<FailedJourney>,
+    oldest: Vec<FailedMessage>,
 }

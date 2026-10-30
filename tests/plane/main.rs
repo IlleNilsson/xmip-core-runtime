@@ -196,7 +196,7 @@ fn an_operator_acts_as_the_certificate_and_the_node_answers() {
     let surface = remote(&authority, &listener);
 
     let (outcome, said) = surface
-        .act(&absent_node(), "journey", "j1", "retry")
+        .act(&absent_node(), "message", "j1", "retry")
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
     assert_eq!(

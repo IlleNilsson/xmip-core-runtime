@@ -80,7 +80,7 @@ pub fn apply(order: &Order) -> Applied {
                 pickup.act(&order.target, order.act, &order.who)
             })
         }
-        Noun::Journey => SendStep::registered()
+        Noun::Message => SendStep::registered()
             .into_iter()
             .find(|step| step.node() == node)
             .map_or_else(absent, |step| {
@@ -113,7 +113,7 @@ mod tests {
         for (noun, act) in [
             (Noun::Subscription, Act::Pause),
             (Noun::DeadMessage, Act::Replay),
-            (Noun::Journey, Act::Retry),
+            (Noun::Message, Act::Retry),
         ] {
             let applied = apply(&order(noun, act));
             let node = crate::fixture::absent_node();

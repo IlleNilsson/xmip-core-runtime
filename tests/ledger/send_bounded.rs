@@ -9,7 +9,7 @@
 //!   and unclaimed, never in memory, and is sent once a place frees;
 //! - Journeys another node holds keep no place from those behind them;
 //! - claims in flight are renewed while a scan is held up, however long;
-//! - a Journey that failed before a restart is the Port's evidence again,
+//! - a Message that failed before a restart is the Port's evidence again,
 //!   as Xmip Storage keeps it, and is let go of when an operator acts on it;
 //! - however many fail, the node keeps its window of the oldest and Xmip
 //!   Storage's count, the same after a restart, and every one is paged.
@@ -225,7 +225,7 @@ fn a_claim_in_flight_is_renewed_while_a_scan_is_held_up() {
 }
 
 #[test]
-fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on() {
+fn a_message_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on() {
     let storage = memory();
     let (far, _) = FarEnd::answering(refusing("the far end refused it", false));
     let id = on_node(
@@ -263,9 +263,9 @@ fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on()
                     "what failed now is not history: none failed since the restart"
                 );
                 assert!(!figures.blocked, "not a Sequential Port");
-                let page = runtime.send.failed_journeys("Out", 0, 10).expect("read");
-                assert_eq!(page.journeys.len(), 1, "read from Xmip Storage too");
-                assert_eq!(page.journeys[0].journey, id);
+                let page = runtime.send.failed_messages("Out", 0, 10).expect("read");
+                assert_eq!(page.messages.len(), 1, "read from Xmip Storage too");
+                assert_eq!(page.messages[0].journey, id);
                 runtime
                     .send
                     .act(&id.to_string(), Act::Dismiss, "ilian")
@@ -276,13 +276,13 @@ fn a_journey_that_failed_before_a_restart_is_its_ports_evidence_until_acted_on()
     );
 }
 
-/// Every failed Journey of `Out`, a page of `most` at a time from the start.
+/// Every failed Message of `Out`, a page of `most` at a time from the start.
 fn paged(runtime: &xmip_core_runtime::message_path::Runtime<'_>, most: u32) -> Vec<JourneyId> {
     let (mut all, mut from) = (Vec::new(), Some(0));
     while let Some(at) = from {
-        let page = runtime.send.failed_journeys("Out", at, most).expect("read");
-        assert!(page.journeys.len() <= most as usize, "a page at most");
-        all.extend(page.journeys.iter().map(|failed| failed.journey));
+        let page = runtime.send.failed_messages("Out", at, most).expect("read");
+        assert!(page.messages.len() <= most as usize, "a page at most");
+        all.extend(page.messages.iter().map(|failed| failed.journey));
         from = page.next;
     }
     all
@@ -311,8 +311,8 @@ fn a_backlog_of_failures_keeps_the_node_to_its_window_and_counts_across_a_restar
                 let figures = runtime.send.figures()["Out"].clone();
                 assert_eq!(figures.failing, u64::from(FAILING), "Xmip Storage's count");
                 assert_eq!(figures.oldest_failing.len(), WINDOW, "the window, no more");
-                let oldest = runtime.send.failed_journeys("Out", 0, 5).expect("read");
-                let first: Vec<JourneyId> = oldest.journeys.iter().map(|f| f.journey).collect();
+                let oldest = runtime.send.failed_messages("Out", 0, 5).expect("read");
+                let first: Vec<JourneyId> = oldest.messages.iter().map(|f| f.journey).collect();
                 let kept: Vec<JourneyId> =
                     figures.oldest_failing.iter().map(|f| f.journey).collect();
                 assert_eq!(kept, first, "the oldest that failed");

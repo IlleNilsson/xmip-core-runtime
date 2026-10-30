@@ -163,7 +163,7 @@ pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &
 
 /// `departure`'s hand-on, one write: its Journey in `state` with what was
 /// tried, `outcome`, and its tries; its place let go of where it completed,
-/// or, Failed, entered in its queue's index of failed Journeys with
+/// or, Failed, entered in its queue's index of failed Messages with
 /// `outcome` as why, or, waiting, its due time `kept` from now kept at its
 /// place; its claim ended. `true` where it was written, and the Journey
 /// kept on `departure`; `false` where the claim was no longer this node's;
@@ -176,7 +176,7 @@ fn written(
     kept: Option<Duration>,
 ) -> Result<bool, String> {
     // Failed, it waits in its queue for an operator, entered in the queue's
-    // index of failed Journeys in this same write, with why.
+    // index of failed Messages in this same write, with why.
     let failed = (state == JourneyState::Failed).then(|| Failure {
         queue: departure.queue,
         reason: outcome.clone(),

@@ -1,4 +1,4 @@
-//! An operator's acts on a Journey that failed (`runtime-model.md` section
+//! An operator's acts on a Message that failed (`runtime-model.md` section
 //! 13: Retry and Dismiss):
 //!
 //! - Retry sends it again from its Send Port's queue, once its fault is
@@ -8,7 +8,7 @@
 //!   Dismissed and lets the next of its sequence go;
 //! - an act on a Journey that has not failed, or on none, is refused in
 //!   words, and so is a word that is no act on a Journey;
-//! - the Port's figures say it is blocked while the failed Journey waits,
+//! - the Port's figures say it is blocked while the failed Message waits,
 //!   and neither failing nor blocked once it is acted on, its last failure
 //!   kept apart as history.
 
@@ -46,7 +46,7 @@ pub(super) fn broken_for(refused: u32, fixed: &Arc<AtomicBool>) -> Answer {
 }
 
 #[test]
-fn a_retry_sends_a_failed_journey_again_once_its_fault_is_fixed_and_is_audited() {
+fn a_retry_sends_a_failed_message_again_once_its_fault_is_fixed_and_is_audited() {
     let at = std::env::temp_dir().join(format!("xmip-journey-act-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&at);
     let storage = memory();
@@ -95,7 +95,7 @@ fn a_retry_sends_a_failed_journey_again_once_its_fault_is_fixed_and_is_audited()
     );
     xaudit::keeper::settle();
     let text = std::fs::read_to_string(at.join(xaudit::file_sink::FILE_NAME)).expect("kept");
-    assert!(text.contains("action = \"journey.retry\""), "{text}");
+    assert!(text.contains("action = \"message.retry\""), "{text}");
     assert!(text.contains("\"by\" = \"ilian\""), "{text}");
     let _ = std::fs::remove_dir_all(&at);
 }
@@ -154,7 +154,7 @@ fn blocked_then(act: Act) -> (Vec<String>, JourneyState, Vec<JourneyId>) {
 }
 
 #[test]
-fn a_retry_of_a_journey_a_sequential_port_blocks_behind_keeps_its_order() {
+fn a_retry_of_a_message_a_sequential_port_blocks_behind_keeps_its_order() {
     let (took, state, left) = blocked_then(Act::Retry);
     let all: Vec<String> = (1..=6).map(|n| format!("order {n}")).collect();
     assert_eq!(took, all, "in order, from it");
@@ -163,7 +163,7 @@ fn a_retry_of_a_journey_a_sequential_port_blocks_behind_keeps_its_order() {
 }
 
 #[test]
-fn a_dismiss_ends_a_failed_journey_dismissed_and_lets_its_sequence_go() {
+fn a_dismiss_ends_a_failed_message_dismissed_and_lets_its_sequence_go() {
     let (took, state, left) = blocked_then(Act::Dismiss);
     assert_eq!(
         took,

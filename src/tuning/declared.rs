@@ -161,7 +161,7 @@ pub const TUNING: &Settings = &Settings {
                 maximum: 10_000,
             },
             presence: Presence::Default(Fixed::Integer(as_integer(FAILED_WINDOW))),
-            meaning: "The oldest failed Journeys of each Send Port the node keeps and publishes.",
+            meaning: "The oldest failed Messages of each Send Port the node keeps and publishes.",
             applies: Applies::Both,
         },
         Setting {

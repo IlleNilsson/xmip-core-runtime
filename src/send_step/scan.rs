@@ -1,9 +1,9 @@
 //! A scan of a queue the node sends: what is due in it that no live claim
 //! holds, claimed in the order it fell due, each under a place the Send
 //! pool admits, and none past the last place it has. Only what is due is
-//! read (the owner, 2026-10-19). A Journey that failed stays in its queue
+//! read (the owner, 2026-10-19). A Message that failed stays in its queue
 //! for an operator, in a part of the queue's index of its own, never read,
-//! and counted in the queue's index of failed Journeys; a Retry moves it to
+//! and counted in the queue's index of failed Messages; a Retry moves it to
 //! a new place. What goes one at a time per key is the sequence's: a
 //! Journey that does not head its sequence is passed by its send and taken
 //! up again once it does (`crate::sequence`). Every claim a scan takes

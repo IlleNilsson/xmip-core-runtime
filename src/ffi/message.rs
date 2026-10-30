@@ -1,4 +1,4 @@
-//! `xmip_operate.h` section 16, the Journeys that failed: listed from Xmip
+//! `xmip_operate.h` section 16, the Messages that failed: listed from Xmip
 //! Storage a page at a time or as a read publication carries them, and an
 //! operator's act on one, Retry or Dismiss, on the send step of a node in
 //! this process, forwarded.
@@ -12,7 +12,7 @@
 use abi::ffi::Str;
 use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::FailedJourneys;
+use observe::FailedMessages;
 #[cfg(feature = "node")]
 use observe::{Act, Scope};
 use serde_json::{Value, json};
@@ -24,16 +24,16 @@ use crate::ffi::text::scope_text;
 #[cfg(feature = "node")]
 use crate::send_step::{FAILED_WINDOW, PortFigures, SendStep};
 
-/// A list of failed Journeys as the header writes it: each Port's, with the
+/// A list of failed Messages as the header writes it: each Port's, with the
 /// place its next page reads from, where there is one.
 fn listed<'a>(
     orders: &str,
-    failed: impl Iterator<Item = (&'a FailedJourneys, Option<u64>)>,
+    failed: impl Iterator<Item = (&'a FailedMessages, Option<u64>)>,
 ) -> String {
     let failed: Vec<Value> = failed
         .map(|(port, next)| {
-            let journeys: Vec<Value> = port
-                .journeys
+            let messages: Vec<Value> = port
+                .messages
                 .iter()
                 .map(|failed| {
                     json!({
@@ -53,26 +53,26 @@ fn listed<'a>(
                 "count": port.count,
                 "blocked": port.blocked,
                 "next": next,
-                "journeys": journeys,
+                "messages": messages,
                 "last_failure": last,
             })
         })
         .collect();
-    json!({ "orders": orders, "failed_journeys": failed }).to_string()
+    json!({ "orders": orders, "failed_messages": failed }).to_string()
 }
 
-/// The Journeys that failed at `port` (empty: every Port) of every node in
+/// The Messages that failed at `port` (empty: every Port) of every node in
 /// this process at or beneath `node` (empty: all), read from Xmip Storage
-/// from the place `from` on in each Port's index of failed Journeys, at
+/// from the place `from` on in each Port's index of failed Messages, at
 /// most `most` (0: `send_step::FAILED_WINDOW`, a hundred) of each Port, as
-/// `crate::send_step::SendStep::failed_journeys` reads them.
+/// `crate::send_step::SendStep::failed_messages` reads them.
 ///
 /// # Safety
 /// `node` and `port` point at their stated length of readable bytes; `out`
 /// has room for `cap` bytes; `out_len` is writable.
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
-pub unsafe extern "C" fn xmip_failed_journeys_v1(
+pub unsafe extern "C" fn xmip_failed_messages_v1(
     node: Str,
     port: Str,
     from: u64,
@@ -104,7 +104,7 @@ pub unsafe extern "C" fn xmip_failed_journeys_v1(
     code
 }
 
-/// Each Port's page of failed Journeys, as [`xmip_failed_journeys_v1`]
+/// Each Port's page of failed Messages, as [`xmip_failed_messages_v1`]
 /// lists them.
 #[cfg(feature = "node")]
 fn failed(
@@ -112,7 +112,7 @@ fn failed(
     port: &str,
     from: u64,
     most: u32,
-) -> Result<Vec<(FailedJourneys, Option<u64>)>, String> {
+) -> Result<Vec<(FailedMessages, Option<u64>)>, String> {
     let within = Scope::new(node);
     let mut failed = Vec::new();
     for step in SendStep::registered() {
@@ -125,14 +125,14 @@ fn failed(
             .into_iter()
             .filter(|name| port.is_empty() || name == port)
         {
-            let page = step.failed_journeys(&name, from, most)?;
-            let journeys = page.journeys.iter().map(|one| one.published()).collect();
+            let page = step.failed_messages(&name, from, most)?;
+            let messages = page.messages.iter().map(|one| one.published()).collect();
             let figures = figures.get(&name);
-            let listed = FailedJourneys {
+            let listed = FailedMessages {
                 node: step.node().to_string(),
                 count: page.count,
                 blocked: figures.is_some_and(|figures| figures.blocked),
-                journeys,
+                messages,
                 last_failure: figures.and_then(PortFigures::last),
                 send_port: name,
             };
@@ -142,14 +142,14 @@ fn failed(
     Ok(failed)
 }
 
-/// What a read publication carries of failed Journeys, and where its
+/// What a read publication carries of failed Messages, and where its
 /// publisher takes orders.
 ///
 /// # Safety
 /// `publication` is a live handle; `out` has room for `cap` bytes;
 /// `out_len` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_publication_failed_journeys_v1(
+pub unsafe extern "C" fn xmip_publication_failed_messages_v1(
     publication: *const Handle,
     out: *mut u8,
     cap: usize,
@@ -162,7 +162,7 @@ pub unsafe extern "C" fn xmip_publication_failed_journeys_v1(
     let publication = &read.publication;
     let text = listed(
         &publication.orders,
-        publication.failed_journeys.iter().map(|port| (port, None)),
+        publication.failed_messages.iter().map(|port| (port, None)),
     );
 
     // SAFETY: `out` and `out_len` per the contract.
@@ -171,14 +171,14 @@ pub unsafe extern "C" fn xmip_publication_failed_journeys_v1(
 }
 
 /// `crate::send_step::SendStep::act` on the node at `node` in this process,
-/// forwarded: `act` on the Journey `journey`, by `who`.
+/// forwarded: `act` on the Message whose Journey is `journey`, by `who`.
 ///
 /// # Safety
 /// Every `Str` points at its stated length of readable bytes; `said` has room
 /// for `said_cap` bytes; `said_len` is writable.
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
-pub unsafe extern "C" fn xmip_journey_act_v1(
+pub unsafe extern "C" fn xmip_message_act_v1(
     node: Str,
     journey: Str,
     act: Str,
@@ -210,7 +210,7 @@ pub unsafe extern "C" fn xmip_journey_act_v1(
 #[cfg(feature = "node")]
 fn acted(node: &str, journey: &str, act: &str, who: &str) -> (i32, String) {
     let Some(act) = Act::named(act).filter(|act| matches!(act, Act::Retry | Act::Dismiss)) else {
-        let refused = observe::Noun::Journey.act(act).err().unwrap_or_default();
+        let refused = observe::Noun::Message.act(act).err().unwrap_or_default();
         return (status::INVALID, refused);
     };
     let step = SendStep::registered()
@@ -236,23 +236,23 @@ mod tests {
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {
-        let _: abi::operate::journey::JourneyActFn = xmip_journey_act_v1;
-        let _: abi::operate::journey::FailedJourneysFn = xmip_failed_journeys_v1;
-        let _: abi::operate::journey::PublicationFailedJourneysFn =
-            xmip_publication_failed_journeys_v1;
+        let _: abi::operate::message::MessageActFn = xmip_message_act_v1;
+        let _: abi::operate::message::FailedMessagesFn = xmip_failed_messages_v1;
+        let _: abi::operate::message::PublicationFailedMessagesFn =
+            xmip_publication_failed_messages_v1;
     }
 
     #[test]
-    fn no_node_here_lists_no_failed_journeys_and_a_list_has_the_headers_shape() {
+    fn no_node_here_lists_no_failed_messages_and_a_list_has_the_headers_shape() {
         let node = format!(
-            "{}-ffi-failed-journeys",
+            "{}-ffi-failed-messages",
             configure::fixture::test_cluster().node_scope(0)
         );
         let mut buffer = vec![0u8; 1024];
         let mut length = 0usize;
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let code = unsafe {
-            xmip_failed_journeys_v1(
+            xmip_failed_messages_v1(
                 borrow(&node),
                 borrow(""),
                 0,
@@ -264,15 +264,15 @@ mod tests {
         };
         assert_eq!(code, status::OK);
         let said: Value = serde_json::from_slice(&buffer[..length]).expect("JSON");
-        assert_eq!(said["failed_journeys"], json!([]));
+        assert_eq!(said["failed_messages"], json!([]));
         assert_eq!(said["orders"], "");
 
-        let port = FailedJourneys {
+        let port = FailedMessages {
             node,
             send_port: "Out".to_string(),
             count: 3,
             blocked: true,
-            journeys: vec![observe::FailedJourney {
+            messages: vec![observe::FailedMessage {
                 journey: "j".to_string(),
                 sequence: 2,
                 reason: "refused".to_string(),
@@ -282,23 +282,23 @@ mod tests {
                 reason: "refused since".to_string(),
             }),
         };
-        let none_now = FailedJourneys {
+        let none_now = FailedMessages {
             send_port: "Quiet".to_string(),
-            ..FailedJourneys::default()
+            ..FailedMessages::default()
         };
         let read: Value = serde_json::from_str(&listed(
             "orders",
             [(&port, Some(3)), (&none_now, None)].into_iter(),
         ))
         .expect("JSON");
-        let first = &read["failed_journeys"][0];
+        let first = &read["failed_messages"][0];
         assert_eq!(first["send_port"], "Out");
         assert_eq!(first["count"], 3);
         assert_eq!(first["blocked"], true);
         assert_eq!(first["next"], 3);
-        assert_eq!(first["journeys"][0]["reason"], "refused");
+        assert_eq!(first["messages"][0]["reason"], "refused");
         assert_eq!(first["last_failure"]["journey"], "k", "history, apart");
-        let quiet = &read["failed_journeys"][1];
+        let quiet = &read["failed_messages"][1];
         assert_eq!(
             (&quiet["count"], &quiet["blocked"]),
             (&json!(0), &json!(false))
@@ -312,7 +312,7 @@ mod tests {
         let mut length = 0usize;
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         let code = unsafe {
-            xmip_journey_act_v1(
+            xmip_message_act_v1(
                 borrow(node),
                 borrow("0199a000-0000-7000-8000-000000000001"),
                 borrow(word),
@@ -329,9 +329,9 @@ mod tests {
     }
 
     #[test]
-    fn an_act_on_a_node_not_here_or_no_act_on_a_journey_is_refused_in_words() {
+    fn an_act_on_a_node_not_here_or_no_act_on_a_message_is_refused_in_words() {
         let node = format!(
-            "{}-ffi-journey",
+            "{}-ffi-message",
             configure::fixture::test_cluster().node_scope(0)
         );
         let (code, said) = act(&node, "retry");
