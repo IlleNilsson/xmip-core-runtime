@@ -8,12 +8,12 @@
 //!   the claim is asked again at the edge, after the read, before the
 //!   transport;
 //! - a renewal that finds the claim another's — it lapsed on the Storage
-//!   node's clock and another node took the Journey up — stops the pass: the
+//!   node's clock and another node took the Message up — stops the pass: the
 //!   second Location is never tried, nothing is written, the loss is
 //!   counted at the Port;
 //! - a renewal Xmip Storage does not answer leaves the claim unconfirmed,
 //!   shown at the Port, and attempts stop once a lease has passed since it
-//!   was last confirmed; answered again, the Journey goes on, sent once.
+//!   was last confirmed; answered again, the Message goes on, sent once.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,7 +67,7 @@ fn failing_over(first: FarEnd, second: FarEnd) -> Sender {
     }
 }
 
-/// The Journey `id` taken up by another node once its claim lapsed on
+/// The Message of the Journey `id` taken up by another node once its claim lapsed on
 /// `clock`: moved on past every renewal that lands meanwhile.
 fn taken_over(clock: &Pinned, storage: &dyn XmipStorage, id: JourneyId) {
     let other = configure::fixture::test_cluster().node_scope(1);
@@ -181,7 +181,7 @@ fn a_renewal_storage_does_not_answer_is_shown_and_stops_attempts_after_a_lease()
                 );
                 interleaved.fail(Operation::Renew, u32::MAX);
                 // Nor is a claim taken while Xmip Storage does not answer,
-                // so no scan takes the Journey up again before it heals.
+                // so no scan takes the Message up again before it heals.
                 interleaved.fail(Operation::Claim, u32::MAX);
                 let unconfirmed = || {
                     let out = &runtime.send.figures()["Out"];

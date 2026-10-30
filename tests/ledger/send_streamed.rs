@@ -47,7 +47,7 @@ fn to_all() -> [Subscription; 1] {
     )]
 }
 
-/// Waits until every Journey of `carried` completed.
+/// Waits until every Message of `carried` completed.
 fn every_sent(told: &Told, carried: &Carried) {
     for journey in &carried.journeys {
         told.wait_for(journey.journey_id(), "completed");
@@ -55,7 +55,7 @@ fn every_sent(told: &Told, carried: &Carried) {
 }
 
 /// What a fan-out of a Message of `length` bytes to [`PORTS`], each to its
-/// far end in `drains`, came to once `sent` saw its Journeys completed: the
+/// far end in `drains`, came to once `sent` saw its Messages completed: the
 /// most this process held at once while they were sent, and the chunks read
 /// from Xmip Storage for them. What `sent` holds is let go as it returns or
 /// fails, before the node stops.

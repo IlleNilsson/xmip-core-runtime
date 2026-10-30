@@ -27,7 +27,7 @@
 //! Subscription holds, over Xmip Storage that fails on demand;
 //! `dead_message_queue.rs` a Message nothing matched, kept with why and
 //! replayed; `panicked.rs` a carrying thread that panics, settled as failed;
-//! `send.rs` the send step reading its Journeys from the Ledger — Failed
+//! `send.rs` the send step reading its Messages from the Ledger — Failed
 //! and Completed written, a retry's backoff holding no thread and its count
 //! surviving a restart, a Sequential Send Port's order; `send_group.rs` a
 //! Send Port Group's one Journey per Port, and the deduplication key every
@@ -39,7 +39,7 @@
 //! `searched.rs` a Publication found by its searchable columns;
 //! `send_raced.rs` another writer landing between a read and a claim;
 //! `send_bounded.rs` a panicking send, a scan and a Publication bounded by
-//! the pool, Journeys another node holds keeping no place, renewal while a
+//! the pool, Messages another node holds keeping no place, renewal while a
 //! scan is held up, and failure evidence after a restart;
 //! `send_claim.rs` a claim found another's, or unconfirmed past its lease,
 //! stopping a send's further attempts; `send_waiting.rs` retries that wait

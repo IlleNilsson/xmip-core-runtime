@@ -1,5 +1,5 @@
 //! The Work Process step's dispatching: each queue of a Work Process this
-//! node runs read, oldest first, what is due — a Journey bound for it, or
+//! node runs read, oldest first, what is due — a Message bound for it, or
 //! one whose timer has come — and each that may go on now taken a turn of
 //! on the Work pool.
 
@@ -93,7 +93,7 @@ impl WorkStep {
 }
 
 /// `running`'s queue read, what is due taken a turn of on `pool`, each
-/// Journey claimed first; one this node holds in a turn already passed
+/// Message claimed first; one this node holds in a turn already passed
 /// over.
 fn scan<'env>(
     pool: &Pool<'_, 'env>,
@@ -130,7 +130,7 @@ fn scan<'env>(
     }
 }
 
-/// Every Journey due in each queue of `runtime`'s work step taken a turn
+/// Every Message due in each queue of `runtime`'s work step taken a turn
 /// of, oldest first, on this thread: one scan, as the dispatching does it,
 /// with no pool; how each turn ended.
 pub fn turn_due(runtime: &Runtime<'_>, pickup: &Pickup) -> Vec<Turned> {
@@ -160,7 +160,7 @@ fn take<'env>(
     pool.run(Box::new(move || settled(runtime, pickup, running, &held)));
 }
 
-/// A turn of the Journey `held` names taken, and what it ended as told.
+/// A turn of the Message `held` names taken, and what it ended as told.
 fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, held: &Held) {
     let step = runtime.work;
     let journey: JourneyId = held.hold.journey;

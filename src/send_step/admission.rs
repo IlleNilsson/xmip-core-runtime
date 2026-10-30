@@ -1,25 +1,25 @@
-//! Admission to the Send pool: the one door every Journey this node sends
+//! Admission to the Send pool: the one door every Message this node sends
 //! goes through, whether a Publication claims it in its own write, a
 //! resumed Subscription moves it, or a scan finds it in its queue.
 //!
-//! **What the node holds is bounded by the pool's threads.** A Journey is
+//! **What the node holds is bounded by the pool's threads.** A Message is
 //! claimed and taken into memory only under a place the pool has room for:
-//! its most threads, less every Journey this node owns — handed, queued or
+//! its most threads, less every Message this node owns — handed, queued or
 //! sending — and every place admitted and not yet owned. What has no place
 //! stays durable and unclaimed in its queue, and its queue is read again
 //! the moment a place frees, so a slow far end leaves its backlog in the
 //! Ledger, never in memory. Until 2026-10-06 only a scan asked for room: a
-//! Publication claimed every Journey it opened for a Port this node sends
+//! Publication claimed every Message it queued for a Port this node sends
 //! and handed it on, and the pool queued whatever came, however much.
 //!
-//! **A Journey waiting for a retry holds no place** (the owner,
+//! **A Message waiting for a retry holds no place** (the owner,
 //! 2026-10-16; open problem 43). Its hand-on releases its claim and keeps
 //! its due time at its place in its queue, and its place in the pool frees
 //! with it, so one far end that fails cannot fill the places every Port
 //! shares: a scan takes it up again once it is due. Until 2026-10-16 it
 //! stayed owned, its claim kept to its due time, and counted here.
 //!
-//! **What it owns, it owns under a claim** ([`Owned`]): each Journey's
+//! **What it owns, it owns under a claim** ([`Owned`]): each Message's
 //! claim, its Send Port, and where the claim stands
 //! ([`super::renewal`]). A Publication's claims are owned only where Xmip
 //! Storage's answer says this node holds them ([`SendStep::confirmed`]).
@@ -29,7 +29,7 @@ use xcore::JourneyId;
 
 use super::{Departure, LinedUp, SendStep, State, renewal};
 
-/// A Journey this node holds claimed, in flight on the Send pool: its Send
+/// A Message this node holds claimed, in flight on the Send pool: its Send
 /// Port, and where its claim stands.
 #[derive(Clone, Debug)]
 pub(super) struct Owned {
@@ -50,8 +50,8 @@ impl Owned {
 }
 
 impl SendStep {
-    /// Places in the Send pool for up to `wanted` Journeys: as many as it
-    /// has room for now, each held until the Journey it was taken for is
+    /// Places in the Send pool for up to `wanted` Messages: as many as it
+    /// has room for now, each held until the Message it was taken for is
     /// owned ([`SendStep::own`]) or the place is given back
     /// ([`SendStep::withdraw`]).
     pub(crate) fn admit(&self, wanted: usize) -> usize {
@@ -83,7 +83,7 @@ impl SendStep {
     /// `lined` as its Publication's write answered: only the claims Xmip
     /// Storage says this node `holds` are sent from here, and the place of
     /// every other is given back. A Publication asked again after a lost
-    /// answer holds none another node has taken up since, so a Journey sent
+    /// answer holds none another node has taken up since, so a Message sent
     /// meanwhile is never sent a second time from here.
     pub(crate) fn confirmed(&self, lined: &mut LinedUp, holds: &[Claim]) {
         // Each claim as Xmip Storage holds it: with the fence it set.
@@ -107,8 +107,8 @@ impl SendStep {
         self.withdraw(gone);
     }
 
-    /// How many more Journeys the Send pool can take now: its most threads,
-    /// less every Journey this node owns and every place admitted for one.
+    /// How many more Messages the Send pool can take now: its most threads,
+    /// less every Message this node owns and every place admitted for one.
     pub(crate) fn room(&self) -> usize {
         self.room_in(&self.lock())
     }
@@ -118,7 +118,8 @@ impl SendStep {
         self.limits.most.max(1).saturating_sub(held)
     }
 
-    /// The Journey `id`, claimed under a place admitted for it, owned now.
+    /// The Message of the Journey `id`, claimed under a place admitted for
+    /// it, owned now.
     pub(super) fn own(&self, id: JourneyId, owned: Owned) {
         let mut state = self.lock();
         state.admitted = state.admitted.saturating_sub(1);
@@ -126,9 +127,9 @@ impl SendStep {
         state.owned.insert(id, owned);
     }
 
-    /// The Journey `id`, found by a scan and not claimed by this node after
-    /// all — another holds it, it is not to be sent, or Xmip Storage did not
-    /// answer — and its place given back.
+    /// The Message of the Journey `id`, found by a scan and not claimed by
+    /// this node after all — another holds it, it is not to be sent, or Xmip
+    /// Storage did not answer — and its place given back.
     pub(super) fn untake(&self, id: JourneyId) {
         let mut state = self.lock();
         if state.taking.remove(&id) {
@@ -139,7 +140,7 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// `queue` holds Journeys the pool had no room for: read again as soon
+    /// `queue` holds Messages the pool had no room for: read again as soon
     /// as a place frees.
     pub(super) fn starve(&self, queue: u128) {
         let mut state = self.lock();
@@ -150,7 +151,7 @@ impl SendStep {
 }
 
 impl State {
-    /// A place in the Send pool freed: every queue that had Journeys
+    /// A place in the Send pool freed: every queue that had Messages
     /// waiting for one is read now.
     pub(super) fn freed(&mut self) {
         for queue in std::mem::take(&mut self.starved) {

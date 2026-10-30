@@ -1,9 +1,9 @@
 //! A node killed holding a key (the owner, 2026-10-27: *A node dies holding
 //! a key. Its claim through Xmip Storage expires and passes on with a
-//! fencing token*): the Journey heading its Send Port's sequence is cut
+//! fencing token*): the Message heading its Send Port's sequence is cut
 //! short mid-send, its claim lapses, another node takes it over under a
-//! larger fence and sends it first, and every Journey behind it follows in
-//! the order the Ledger wrote them — the key passed on with the Journey,
+//! larger fence and sends it first, and every Message behind it follows in
+//! the order the Ledger wrote them — the key passed on with the Message,
 //! never lost and never overtaken.
 
 use std::sync::{Arc, Mutex, PoisonError};

@@ -14,19 +14,19 @@ use xcore::IdGenerator;
 use super::{AGAIN, Pickup};
 use crate::pickup::state::Entry;
 
-/// A held Journey let go of to the node to pick up.
+/// A held Message let go of to the node to pick up.
 #[derive(Clone, Debug)]
 pub struct Released {
     /// The Subscription that held it.
     pub subscription: String,
     /// Where it leads.
     pub destination: Subscriber,
-    /// Its place, its Journey and what the holder kept beside it.
+    /// Its place, its Message's Journey and what the holder kept beside it.
     pub held: Held,
 }
 
 impl Pickup {
-    /// Up to `max` held Journeys the node is to pick up now, oldest first
+    /// Up to `max` held Messages the node is to pick up now, oldest first
     /// in each queue, waiting up to `timeout` for a queue to read. Each is
     /// the node's until it says it is [`Pickup::moved`], [`Pickup::passed`]
     /// or to be read [`Pickup::again`]. A queue that could not be read is
@@ -95,7 +95,7 @@ impl Pickup {
     }
 
     /// `released` let go of for good, written as `journey` left it, out of
-    /// its queue in one hand-on under a claim: a held Journey its holder
+    /// its queue in one hand-on under a claim: a held Message its holder
     /// carried on by a way of its own.
     ///
     /// # Errors
@@ -110,7 +110,7 @@ impl Pickup {
             .storage
             .claim(id, &self.node, token, lease)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("the Journey {id} is claimed by another"))?;
+            .ok_or_else(|| format!("the Message of the Journey {id} is claimed by another"))?;
         let let_go = HandOn {
             claim,
             result: crate::ledger::journey_record(journey),
@@ -129,7 +129,9 @@ impl Pickup {
                 self.moved(released);
                 Ok(())
             }
-            Ok(false) => Err(format!("the claim on the Journey {id} lapsed")),
+            Ok(false) => Err(format!(
+                "the claim on the Message of the Journey {id} lapsed"
+            )),
             Err(error) => Err(error.to_string()),
         }
     }
@@ -161,7 +163,7 @@ impl Pickup {
         self.failed(
             "subscription.pickup",
             &format!(
-                "the Journey {} held by '{}' is not picked up: {why}",
+                "the Message of the Journey {} held by '{}' is not picked up: {why}",
                 released.held.hold.journey, released.subscription
             ),
         );

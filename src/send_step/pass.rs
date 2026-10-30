@@ -1,4 +1,4 @@
-//! One pass of a Journey's send and its hand-on, and a Journey read back
+//! One pass of a Message's send and its hand-on, and a Message read back
 //! from the Ledger to be sent: what the Send pool's threads run, and what a
 //! scan finds.
 
@@ -39,7 +39,7 @@ pub enum Ended {
         departed: Vec<Departed>,
     },
     /// The claim was no longer this node's — it lapsed, and another took
-    /// the Journey up, or a renewal found it another's — so nothing was
+    /// the Message up, or a renewal found it another's — so nothing was
     /// written, and nothing more tried from here.
     Lost(Vec<Departed>),
     /// Nothing was tried: the claim was not surely this node's when the
@@ -55,7 +55,7 @@ pub enum Ended {
     /// has ended and a scan takes it up.
     Behind,
     /// Xmip Storage did not take the hand-on, in words: the claim lapses,
-    /// and the Journey is sent again — at least once, never lost.
+    /// and the Message is sent again — at least once, never lost.
     Unwritten(String),
 }
 
@@ -65,7 +65,7 @@ pub enum Ended {
 /// one write: the outcome on the Journey, with what was tried in words and
 /// its tries, its place let go of where it was sent or its due time kept
 /// there where it waits, and the claim released. A claim a renewal found
-/// another's writes nothing: the Journey is the other holder's; nor does a
+/// another's writes nothing: the Message is the other holder's; nor does a
 /// pass that tried nothing ([`Ended::Untried`]).
 pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let step = runtime.send;
@@ -138,7 +138,7 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
 }
 
 /// `departure`, whose send thread panicked before its hand-on, written
-/// Failed with `why` — kept in its queue for an operator, as every Journey
+/// Failed with `why` — kept in its queue for an operator, as every Message
 /// that failed is — and its claim ended; released where Xmip Storage did
 /// not take the write, so it is not held to its lapse.
 pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &str) -> Ended {
@@ -237,7 +237,7 @@ fn written(
         }
         Ok(false) => Ok(false),
         Err(error) => Err(format!(
-            "Xmip Storage did not take the send of the Journey {}: {error}",
+            "Xmip Storage did not take the send of the Message of the Journey {}: {error}",
             journey.journey_id()
         )),
     }
@@ -252,7 +252,7 @@ fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
     }
 }
 
-/// Whether a Journey bound for `to` that failed blocks its sequence:
+/// Whether a Message bound for `to` that failed blocks its sequence:
 /// a Send Port, or a Send Location it may leave by, naming a correlation
 /// set whose `on_failure` is `block`.
 pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
@@ -287,7 +287,7 @@ fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
     Ok(true)
 }
 
-/// What the Ledger holds of a Journey in a queue.
+/// What the Ledger holds of a Message in a queue.
 #[derive(Debug)]
 pub enum Found {
     /// Still to be sent: its Journey and Message, and the identity it
@@ -297,7 +297,7 @@ pub enum Found {
     Failed(Box<ReceivedWork>),
     /// Completed or dismissed already.
     Finished,
-    /// Not readable as a Journey to send, in words: passed over, for an
+    /// Not readable as a Message to send, in words: passed over, for an
     /// operator.
     Unreadable(String),
 }

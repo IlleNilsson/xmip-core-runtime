@@ -1,5 +1,5 @@
 //! When a queue's earliest retry is due, kept per queue rather than per
-//! Journey waiting (the owner, 2026-10-16; open problem 43): what the send
+//! Message waiting (the owner, 2026-10-16; open problem 43): what the send
 //! step wakes for, and how many wait, as each queue's last read showed and
 //! as each hand-on since that read began noted.
 
@@ -125,7 +125,7 @@ mod tests {
     use super::Due;
     use crate::send_step::fixture::step;
 
-    /// A read of the whole queue that passed a Journey's place before its
+    /// A read of the whole queue that passed a Message's place before its
     /// hand-on landed, answering after the hand-on noted its due time: the
     /// node still wakes for that due time, exactly, not at the next scan,
     /// and the queue is read again then.

@@ -1,17 +1,17 @@
-//! Another writer landing between a read of a Journey and the claim taken
+//! Another writer landing between a read of a Message and the claim taken
 //! to act on it (`runtime-model.md` section 3, *A claim is not ordering*),
 //! placed there by Xmip Storage that lets it in first
 //! (`xmip_core_runtime::fixture::Failing::before`), never by timing:
 //!
-//! - an operator's Retry that read a Journey Failed, while another node
+//! - an operator's Retry that read a Message Failed, while another node
 //!   retried and sent it before the claim, is refused in words and writes
-//!   nothing: the Journey stays Completed and is not sent again;
-//! - a scan of a Sequential Send Port that read a Journey waiting, while
+//!   nothing: the Message stays Completed and is not sent again;
+//! - a scan of a Sequential Send Port that read a Message waiting, while
 //!   another node sent it and let go of its place before the claim, does
 //!   not send it a second time;
 //! - a Publication whose answer was lost, asked again after its claim
-//!   lapsed and another node sent its Journey, writes nothing back and
-//!   sends nothing from here: the Journey stays Completed, out of its
+//!   lapsed and another node sent its Message, writes nothing back and
+//!   sends nothing from here: the Message stays Completed, out of its
 //!   queue, delivered once.
 
 use journey::JourneyState;
@@ -67,7 +67,7 @@ fn a_retry_of_a_message_another_writer_moved_after_it_was_read_is_refused_and_wr
 }
 
 #[test]
-fn a_sequential_scan_never_sends_a_journey_another_node_sent_between_its_read_and_its_claim() {
+fn a_sequential_scan_never_sends_a_message_another_node_sent_between_its_read_and_its_claim() {
     let (interleaved, storage) = interleaving();
     // Published by a node that sends nothing: nothing is claimed at the
     // Publication, so the scan is the first to take each.
@@ -117,7 +117,7 @@ fn a_publication_asked_again_after_a_lost_answer_never_resends_what_another_node
         |runtime, pickup, gate| {
             let queue = runtime.send.queue(&Subscriber::SendPort("Out".to_string()));
             // Between the write and its lost answer the Publication's claim
-            // lapses, and another node sends its Journey.
+            // lapses, and another node sends its Message.
             let elsewhere = std::sync::Arc::clone(&storage);
             let lapsing = std::sync::Arc::clone(&clock);
             failing.lose_answer(Box::new(move || {

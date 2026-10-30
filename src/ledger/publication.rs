@@ -29,7 +29,7 @@ pub struct Published {
     pub holding: Holding,
     pub lined: LinedUp,
     /// Waited on before the receive cycle ends and before a far end sees a
-    /// Journey of it: the Publication is answered before its sync.
+    /// Message of it: the Publication is answered before its sync.
     pub durable: Durable,
 }
 
@@ -50,7 +50,7 @@ pub struct Publisher<'a> {
 }
 
 /// A Journey a Publication opens: the Subscription that matched and where
-/// the Journey leads — a Send Port, a Work Process, or a Send Port Group
+/// the Message leads on it — a Send Port, a Work Process, or a Send Port Group
 /// no Application of this node declares.
 #[derive(Clone, Debug)]
 pub struct Opened {
@@ -62,8 +62,8 @@ pub struct Opened {
     pub group: Option<String>,
 }
 
-/// The Send Port Group a Journey routed to `destination` is opened
-/// through, where it is one.
+/// The Send Port Group a Journey of a Message routed to `destination` is
+/// opened through, where it is one.
 pub(crate) fn through(destination: &Subscriber) -> Option<String> {
     match destination {
         Subscriber::SendGroup(group) => Some(group.clone()),
@@ -158,7 +158,7 @@ pub fn publish(
     // The members of each delivery by a Send Port Group naming a
     // Correlation know their delivery (`crate::sequence::delivered`).
     crate::sequence::delivered(publisher.sends, &mut opened, publisher.ids);
-    // A Stream holding sequences end to end has its Journeys take no place
+    // A Stream holding sequences end to end has its Messages take no place
     // where they are bound yet: each takes its places once its Stream heads
     // its own, so destinations hold Streams in the order they are let
     // through (`crate::sequence::take_late`). One holding none takes them

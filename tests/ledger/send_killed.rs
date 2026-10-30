@@ -3,9 +3,9 @@
 //! where at-least-once allows one*; *node failover by a lapsed claim*):
 //!
 //! - a node killed after its Publications and before it sent any: another
-//!   node takes up every Journey it acknowledged once its claims lapse, and
+//!   node takes up every Message it acknowledged once its claims lapse, and
 //!   sends each;
-//! - a node killed mid-send: the node restarted sends again every Journey
+//! - a node killed mid-send: the node restarted sends again every Message
 //!   it acknowledged, those it was sending among them — at least once,
 //!   never lost.
 
@@ -39,7 +39,7 @@ pub(super) fn receive_saying(
     }
 }
 
-/// The child that publishes, claiming each Journey for its own send, and
+/// The child that publishes, claiming each Message for its own send, and
 /// is killed before it sends any: it never dispatches.
 pub fn publish_until_killed(storage: &Arc<dyn XmipStorage>) {
     let (far, _) = FarEnd::answering(Box::new(|_| Ok(())));
@@ -143,7 +143,7 @@ pub(super) fn sent_through(
 }
 
 #[test]
-fn a_node_killed_after_publication_and_before_send_leaves_every_journey_to_another_node() {
+fn a_node_killed_after_publication_and_before_send_leaves_every_message_to_another_node() {
     let place = directory("unsent");
     let child = ChildProcess::start("publish", &place);
     let mut first = Vec::new();

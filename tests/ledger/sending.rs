@@ -81,7 +81,7 @@ pub fn interleaving() -> (Arc<Failing>, Arc<dyn XmipStorage>) {
     (failing, storage)
 }
 
-/// Another node's send of the Journey `id`, written to `storage` through
+/// Another node's send of the Message of the Journey `id`, written to `storage` through
 /// its own claim: Completed, and out of `queue`.
 pub fn sent_elsewhere(storage: &dyn XmipStorage, queue: u128, id: JourneyId) {
     let other = configure::fixture::test_cluster().node_scope(1);
@@ -150,7 +150,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
     port
 }
 
-/// A Send Port's policy that lets its Journeys through one at a time, all
+/// A Send Port's policy that lets its Messages through one at a time, all
 /// of them one sequence, a failure doing what `on_failure` says: the set it
 /// names is `InOrder` and the failure its words.
 pub fn in_order(on_failure: OnFailure) -> impl FnOnce(&mut DesignedSendPort) {
@@ -166,7 +166,7 @@ pub fn in_order(on_failure: OnFailure) -> impl FnOnce(&mut DesignedSendPort) {
 const IN_ORDER: &str = "InOrder";
 
 /// The sequences of `ports` that name a set: each Port's own, one for all
-/// its Journeys.
+/// its Messages.
 pub fn points(ports: &[DesignedSendPort]) -> Vec<Point> {
     ports
         .iter()
@@ -308,12 +308,12 @@ pub fn journey(storage: &dyn XmipStorage, id: JourneyId) -> Journey {
     Journey::from_record(&record.body).expect("a Journey")
 }
 
-/// The Journeys waiting in `Out`'s queue, oldest first.
+/// The Messages waiting in `Out`'s queue, oldest first.
 pub fn waiting(runtime: &Runtime<'_>) -> Vec<JourneyId> {
     waiting_in(runtime, "Out")
 }
 
-/// The Journeys waiting in the queue of the Send Port `port`, oldest first.
+/// The Messages waiting in the queue of the Send Port `port`, oldest first.
 pub fn waiting_in(runtime: &Runtime<'_>, port: &str) -> Vec<JourneyId> {
     let queue = runtime.send.queue(&Subscriber::SendPort(port.to_string()));
     let read = runtime.storage.read_held(queue, 0, 64).expect("read");

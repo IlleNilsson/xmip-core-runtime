@@ -72,7 +72,7 @@ pub fn received_at(tree: &ExecutionTree, location: &str) -> Result<(String, Vec<
 /// The sequences of the Send Port Groups, Send Ports, Send Locations and
 /// Work Processes the node reads that name a Correlation: every Send Port
 /// Group and Send Port of its bound Applications and every Send Location its document holds, sent here or
-/// not, since a Journey published here takes its places whichever node
+/// not, since a Message published here takes its places whichever node
 /// sends it.
 ///
 /// # Errors

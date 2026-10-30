@@ -6,8 +6,8 @@
 //! - on a Sequential Send Port that blocks behind it, Retry keeps its place,
 //!   so its sequence goes on in order from it, and Dismiss ends it
 //!   Dismissed and lets the next of its sequence go;
-//! - an act on a Journey that has not failed, or on none, is refused in
-//!   words, and so is a word that is no act on a Journey;
+//! - an act on a Message that has not failed, or on none, is refused in
+//!   words, and so is a word that is no act on a Message;
 //! - the Port's figures say it is blocked while the failed Message waits,
 //!   and neither failing nor blocked once it is acted on, its last failure
 //!   kept apart as history.

@@ -30,7 +30,7 @@ use context::IdentityFacts;
 use identify::Presented;
 use route::{Promoted, Routing, SourceError};
 
-/// Why a Stream never became a Journey.
+/// Why a Stream never began a Journey.
 #[derive(Clone, Debug)]
 pub enum Refused {
     /// The arrival carried something this mechanism recognizes and could not
@@ -137,9 +137,9 @@ pub struct Outcomes {
     /// Permitted, and not kept: Xmip Storage did not take it, so it was
     /// not acknowledged.
     pub failed: u64,
-    /// Journeys the send step sent: written Completed.
+    /// Messages the send step sent: written Completed.
     pub sent: u64,
-    /// Journeys whose every Send Location failed its tries, not permitted
+    /// Messages whose every Send Location failed its tries, not permitted
     /// or with nowhere to go: written Failed with why.
     pub not_sent: u64,
 }
@@ -175,12 +175,12 @@ impl Tally {
         self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
     }
 
-    /// Count a Journey the send step wrote Completed.
+    /// Count a Message the send step wrote Completed.
     pub(crate) fn sent(&self) {
         self.sent.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Count a Journey the send step wrote Failed.
+    /// Count a Message the send step wrote Failed.
     pub(crate) fn not_sent(&self) {
         self.not_sent.fetch_add(1, Ordering::Relaxed);
     }

@@ -1,16 +1,16 @@
 //! An operator's acts on a Message that failed: Retry and Dismiss
-//! (`runtime-model.md` section 13: *Retry resumes from the failed audited
-//! stage of the same Journey … an authorized operator may retry after
-//! automatic retries are exhausted and the underlying fault is fixed*;
-//! *Dismiss intentionally terminates a Journey without deleting its
-//! history*; ADR-0013, amendment 2026-08-26, `Dismissed`).
+//! (`runtime-model.md` section 13: *Retry resumes the Message from the
+//! failed audited stage its Journey records … an authorized operator may
+//! retry after automatic retries are exhausted and the underlying fault is
+//! fixed*; *Dismiss intentionally ends a Message's travel without deleting
+//! its Journey's history*; ADR-0013, amendment 2026-08-26, `Dismissed`).
 //!
 //! **Each is one hand-on under a claim**, through Xmip Storage, so it is the
-//! one writer of its Journey while it acts and a repeat after a lost answer
-//! writes nothing twice:
+//! one writer of its Message's Journey while it acts and a repeat after a
+//! lost answer writes nothing twice:
 //!
 //! - **Retry** writes the Journey Active again, its tries begun anew, and
-//!   moves it to the end of its Send Port's queue, from where the Send pool
+//!   moves the Message to the end of its Send Port's queue, from where the Send pool
 //!   takes it up as it takes up every Message; where it blocks a Sequential
 //!   Send Port (`on_failure = "block"`) it keeps its place, so its sequence
 //!   goes on in order from it.
@@ -21,7 +21,7 @@
 //! Either takes it out of its queue's index of failed Messages in the same
 //! write (`HandOn::cleared`).
 //!
-//! An act is taken by a node that sends the Journey's Send Port, the one
+//! An act is taken by a node that sends the Message's Send Port, the one
 //! whose figures showed it failed: that node knows whether the Port blocks.
 //! Who may act is the surface's to decide by role; the node applies what
 //! reaches it and audits it with who acted.
@@ -66,7 +66,8 @@ impl SendStep {
             Ok(Some(claim)) => claim,
             Ok(None) => {
                 return Err(format!(
-                    "REFUSED: the Journey {id} is claimed by another; act again once it is free"
+                    "REFUSED: the Message of the Journey {id} is claimed by another; \
+                     act again once it is free"
                 ));
             }
             Err(error) => return Err(self.not_done(act, id, &error.to_string())),
@@ -139,8 +140,8 @@ impl SendStep {
         }
     }
 
-    /// The Send Port `kept` waits in, and whether a Journey of it that
-    /// failed blocks its sequence: refused, in words, where `kept` has not
+    /// The Send Port the Message of `kept` waits in, and whether a Message
+    /// of it that failed blocks its sequence: refused, in words, where `kept` has not
     /// failed or this node does not send its Port.
     fn taken_by(&self, id: JourneyId, kept: &Journey) -> Result<(String, bool), String> {
         if kept.state != JourneyState::Failed {
@@ -151,7 +152,9 @@ impl SendStep {
             ));
         }
         let Some(port) = kept.send_port.clone() else {
-            return Err(format!("REFUSED: the Journey {id} leads to no Send Port"));
+            return Err(format!(
+                "REFUSED: the Message of the Journey {id} leads to no Send Port"
+            ));
         };
         let Some(blocks) = self.lock().ports.get(&port).copied() else {
             return Err(format!(
@@ -213,7 +216,8 @@ impl SendStep {
     /// FAILED, said and audited: nothing of the act was written.
     fn not_done(&self, act: Act, id: JourneyId, problem: &str) -> String {
         let said = format!(
-            "FAILED: the Journey {id} is not {}: Xmip Storage did not take it: {problem}",
+            "FAILED: the Message of the Journey {id} is not {}: Xmip Storage did not take it: \
+             {problem}",
             if act == Act::Retry {
                 "retried"
             } else {

@@ -1,4 +1,4 @@
-//! A Journey's key in a Correlation: the tuple of the values its set's
+//! A Message's key in a Correlation: the tuple of the values its set's
 //! keys read, each read as a Subscription's filter reads a name (ADR-0024
 //! and ADR-0066, amendments 2026-10-22).
 //!

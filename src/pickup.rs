@@ -2,8 +2,8 @@
 //! what a paused one holds (ADR-0013, amendment 2026-09-30;
 //! `runtime-model.md` section 9).
 //!
-//! **What a pause holds is in the Ledger.** Every Journey a Publication
-//! opens for a paused Subscription is held: the Publication's one write
+//! **What a pause holds is in the Ledger.** Every Message a Publication
+//! matches to a paused Subscription is held: the Publication's one write
 //! keeps it at the end of the Subscription's queue ([`Holding`],
 //! `persist::storage::Hold`), so a receive whose hold was not written is not
 //! acknowledged, and nothing is held in memory. Its Message and its Stream
@@ -13,7 +13,7 @@
 //! **A resume** lets the node pick up what is held, oldest first, in the
 //! order Xmip Storage numbered it ([`Pickup::released`]): each is moved on,
 //! in one hand-on, to the queue of the Send Port its Subscription leads to,
-//! and sent from there by the send step as every Journey is
+//! and sent from there by the send step as every Message is
 //! (`crate::held_work`, [`Pickup::moved`]). A queue that cannot be read is
 //! read again from where it was, never past what was not read
 //! ([`Pickup::again`]). While a Subscription's queue holds anything, what
@@ -241,7 +241,7 @@ impl Pickup {
         Ok(said)
     }
 
-    /// Where the Journeys the Subscription `name` opens lead, one Journey
+    /// Where the Messages the Subscription `name` matches lead, one Journey
     /// each: every Send Port it reaches, or, where it reaches none this
     /// node knows — a Work Process, a Send Port Group no Application here
     /// declares, a Subscription not configured — `destination` itself.

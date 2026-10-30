@@ -144,14 +144,14 @@ pub const TUNING: &Settings = &Settings {
             name: "send_lease",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(SEND_LEASE)),
-            meaning: "How long a claim on a Journey holds before it lapses, unless renewed.",
+            meaning: "How long a claim on a Message holds before it lapses, unless renewed.",
             applies: Applies::Both,
         },
         Setting {
             name: "send_scan",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(SEND_SCAN)),
-            meaning: "How often the queues this node sends are read for unclaimed Journeys.",
+            meaning: "How often the queues this node sends are read for unclaimed Messages.",
             applies: Applies::Both,
         },
         Setting {

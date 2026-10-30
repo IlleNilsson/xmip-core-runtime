@@ -123,7 +123,7 @@ impl SendStep {
     /// How `departure`'s pass ended, settled: counted, or let go of — a
     /// retry's due time noted for its queue, a failure's Port's window read
     /// again — and only then told, so whoever is told reads figures that
-    /// already hold it. Nothing it settles stays owned: a Journey waiting
+    /// already hold it. Nothing it settles stays owned: a Message waiting
     /// for a retry holds no claim and no place.
     fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
         let id = departure.work.journey.journey_id();
@@ -176,7 +176,10 @@ impl SendStep {
                 let figures = state.figures.entry(port).or_default();
                 figures.failed += 1;
                 figures.last_failure = Some((id.to_string(), reason.clone()));
-                self.failed(&format!("the Journey {id} to {}: {reason}", departure.to));
+                self.failed(&format!(
+                    "the Message of the Journey {id} to {}: {reason}",
+                    departure.to
+                ));
             }
             Ended::Lost(_) => {
                 drop(state);
@@ -260,7 +263,7 @@ fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: D
     if let Some(departure) = sending.departure.take() {
         runtime.send.settle(settled, departure, ended);
     }
-    // A Journey of a Stream that holds a sequence has ended: what waits
+    // A Message of a Stream that holds a sequence has ended its Journey: what waits
     // behind it in either step may go on now (`crate::sequence`).
     if closed {
         runtime.send.rescan();
@@ -268,7 +271,7 @@ fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: D
     }
 }
 
-/// A Journey a scan found, being claimed on a send thread: its place given
+/// A Message a scan found, being claimed on a send thread: its place given
 /// back unless it was claimed and owned, however the claim ended.
 struct Taking<'env> {
     runtime: &'env Runtime<'env>,
@@ -283,7 +286,7 @@ impl Drop for Taking<'_> {
     }
 }
 
-/// One Journey on a send thread, settled however its send ends. Sent to
+/// One Message on a send thread, settled however its send ends. Sent to
 /// its end, it is settled by what the send wrote. A send that panicked is
 /// settled on the way out: written Failed with why — kept in its queue for
 /// an operator — its claim ended, audited, and let go of, so it is never

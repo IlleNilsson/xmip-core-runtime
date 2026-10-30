@@ -21,7 +21,7 @@
 //!                            configuration does not say `start = true`
 //! <node>/send/<Port>         each Send Port this node sends, apart from its
 //!                            Send Locations: what it sent, what failed — the
-//!                            last Journey that did, and why — what waits,
+//!                            last Message that did, and why — what waits,
 //!                            and how many failed wait in its queue: Done
 //!                            while any does, Fine once none does
 //! <node>/process/<name>      each Subscription: Fine, or Paused by whom
@@ -39,7 +39,7 @@
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
 //! that counts each kind (`observe::Counted::at`): Streams received at
 //! `receive`, Journeys opened at `process`, Messages sent at `send`, and at
-//! the node what failed — refused at a gate, or a Journey written Failed.
+//! the node what failed — refused at a gate, or a Message written Failed.
 //! At each Send Port, `send/<Port>`, what the send step counted there
 //! (`crate::send_step::PortFigures`): Messages sent, Messages failed, and
 //! those retrying; the stage and the node keep only what no Port counted.
@@ -329,7 +329,7 @@ const fn severity(health: Health) -> u8 {
     }
 }
 
-/// The severity of a Send Port whose sequence is blocked behind a Journey
+/// The severity of a Send Port whose sequence is blocked behind a Message
 /// that failed: above every other Done, since nothing more of that order
 /// key goes until an operator acts.
 const BLOCKED_SEVERITY: u8 = 95;

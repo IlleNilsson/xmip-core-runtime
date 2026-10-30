@@ -1,7 +1,7 @@
-//! The send step, reading its Journeys from the Ledger (`runtime-model.md`
+//! The send step, reading its Messages from the Ledger (`runtime-model.md`
 //! section 10, *How a send runs*):
 //!
-//! - a send that fails is written Failed on its Journey with why, its
+//! - a send that fails is written Failed on its Message with why, its
 //!   Message with it, kept in its queue for an operator, and the sender of
 //!   the receive was acknowledged all the same: the receive cycle completed
 //!   before anything was sent;
@@ -10,7 +10,7 @@
 //!   place: its due time is kept at its place in its queue, a stop does not
 //!   wait it out, and a short one is tried again and sent; a restart keeps
 //!   its due time and its count of tries;
-//! - a Sequential Send Port keeps its order, and a Journey of it that
+//! - a Sequential Send Port keeps its order, and a Message of it that
 //!   failed blocks its sequence, or is set aside, as `on_failure` says.
 
 use std::sync::Arc;

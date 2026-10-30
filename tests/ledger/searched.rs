@@ -1,6 +1,6 @@
 //! What a receive's Publication is found by (proposed 2026-10-09): its
-//! Journey by its Send Port and its state and by the Message it holds, its
-//! Message by when it was written, and its audit record by when it
+//! Message by its Send Port and its Journey's state, its Journey by the
+//! Message it holds, its Message by when it was written, and its audit record by when it
 //! happened once the keeper kept it — each through `XmipStorage::query`,
 //! as an operator's search would ask it.
 
@@ -24,7 +24,7 @@ fn query(ask: Ask) -> Query {
 }
 
 #[test]
-fn a_published_journey_is_found_by_its_send_port_and_its_message_by_when() {
+fn a_published_message_is_found_by_its_send_port_and_by_when() {
     let storage = memory();
     let carried = on_runtime(&storage, 64, |runtime, pickup, gate| {
         let order = Cursor::new(b"order 1".to_vec());
