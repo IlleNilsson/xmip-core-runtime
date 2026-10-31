@@ -7,6 +7,11 @@ use receive::ReceivedStream;
 
 /// Put what the gates concluded where a Subscription can read it.
 ///
+/// `xmip.<layer>.proven` and `xmip.<layer>.verified` are the gate's verdict
+/// on that layer's claim, never the assurance its mechanism's catalog
+/// states: a drop folder's circumstance is claimed, and says so
+/// (ADR-0019, amendment 2026-10-30).
+///
 /// Routing reads the promoted set and nothing else, so an identity that stays
 /// inside `IdentityFacts` cannot be routed on. These names are the contract
 /// between the two, and they are prefixed so a Contract promoting `Party`
@@ -50,7 +55,11 @@ pub(super) fn promote_identity(facts: &IdentityFacts, received: &ReceivedStream)
         )
         .with_value(
             "xmip.transport.proven",
-            ScalarValue::Bool(facts.transport.mechanism.authenticates()),
+            ScalarValue::Bool(facts.transport.verified.is_proven()),
+        )
+        .with_value(
+            "xmip.transport.verified",
+            ScalarValue::Text(facts.transport.verified.word().to_string()),
         )
         .with_value(
             "xmip.transport.established",
@@ -77,7 +86,11 @@ pub(super) fn promote_identity(facts: &IdentityFacts, received: &ReceivedStream)
             )
             .with_value(
                 "xmip.message.proven",
-                ScalarValue::Bool(message.mechanism.authenticates()),
+                ScalarValue::Bool(message.verified.is_proven()),
+            )
+            .with_value(
+                "xmip.message.verified",
+                ScalarValue::Text(message.verified.word().to_string()),
             )
             .with_value(
                 "xmip.message.established",
