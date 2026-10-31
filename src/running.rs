@@ -517,6 +517,7 @@ address = "tcp://{receive}"
 timeout = "100ms"
 [applications.receive_locations.accept]
 mechanism = ["circumstance"]
+transport = "claimed"
 
 [[applications.send_ports]]
 name = "Out"

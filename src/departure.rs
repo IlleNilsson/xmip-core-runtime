@@ -260,12 +260,15 @@ fn depart_one(
     let location = &sending.configured;
 
     // Authorized again, now, against the clock. What receive concluded may be
-    // days old by the time a Process finished waiting for a human.
+    // days old by the time a Process finished waiting for a human. The
+    // verdicts were held to their Receive Location's minimum as they arrived,
+    // so what was taken there is taken here.
     let permitted = authorize(
         runtime.policies,
         facts,
         &Attempt::new(Action::Send, &location.name).at(runtime.clock.unix_timestamp_nanos()),
         context::OnMisalignment::Accept,
+        context::Minimum::TAKEN,
     );
 
     if !permitted.allowed() {
