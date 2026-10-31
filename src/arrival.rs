@@ -154,6 +154,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
         &transport_facts,
         &Attempt::new(Action::Receive, &gate.location).at(now),
         gate.identity.on_misalignment,
+        gate.identity.minimum,
     );
 
     if !permitted.allowed() {
@@ -335,6 +336,7 @@ fn settle_message_identity(
         &facts,
         &Attempt::new(Action::Receive, &gate.location).at(now),
         gate.identity.on_misalignment,
+        gate.identity.minimum,
     );
 
     if !permitted.allowed() {
@@ -372,7 +374,7 @@ mod tests {
     use crate::sending::{Sending, Sends};
     use authenticate::{Acceptance, Authenticator, Refusal};
     use authorize::Authorizer;
-    use context::Verified;
+    use context::{Minimum, Required, Verified};
     use identify::{MessageIdentifier, TransportIdentifier};
     use message::MessageTreatment;
     use party::{Identity, Party, PartyKind};
@@ -964,7 +966,11 @@ filter = "xmip.party = '{party}'"
         let folder = ReceiveGate::new(
             "drop",
             Acceptance::closed().accepting(&mechanism::circumstance()),
-        );
+        )
+        .taking(Minimum {
+            transport: Required::Claimed,
+            ..Minimum::default()
+        });
 
         let arrived = arrive(
             &runtime(
@@ -1346,7 +1352,11 @@ filter = "xmip.party = '{party}'"
             Acceptance::closed()
                 .accepting(&mechanism::mutual_tls())
                 .accepting(&mechanism::edi_x12_interchange()),
-        );
+        )
+        .taking(Minimum {
+            message: Required::Claimed,
+            ..Minimum::default()
+        });
 
         let arrived = arrive(
             &engine,
@@ -1447,7 +1457,8 @@ filter = "xmip.party = '{party}'"
         // The gates still run. ADR-0019 clause 7: this is not an absence of
         // identity, it is an inferred one, and the record says which.
         let ids = Counter::default();
-        let circumstance = Always(mechanism::circumstance(), Verified::Proven);
+        // Claimed, as `authenticate::Circumstance` answers.
+        let circumstance = Always(mechanism::circumstance(), Verified::Claimed);
         let authenticators: [&dyn Authenticator; 1] = [&circumstance];
         let parties = Parties::default();
         let allow = Open;
@@ -1463,7 +1474,11 @@ filter = "xmip.party = '{party}'"
         let nightly = ReceiveGate::new(
             "party-y-nightly",
             Acceptance::closed().accepting(&mechanism::circumstance()),
-        );
+        )
+        .taking(Minimum {
+            transport: Required::Claimed,
+            ..Minimum::default()
+        });
 
         let arrived = arrive(
             &runtime(
@@ -1542,7 +1557,11 @@ filter = "xmip.party = '{party}'"
             Acceptance::closed()
                 .accepting(&mechanism::mutual_tls())
                 .accepting(&mechanism::edi_x12_interchange()),
-        );
+        )
+        .taking(Minimum {
+            message: Required::Claimed,
+            ..Minimum::default()
+        });
 
         let arrived = arrive(
             &engine,

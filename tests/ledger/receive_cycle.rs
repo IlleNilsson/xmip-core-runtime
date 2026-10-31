@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use authenticate::{Acceptance, Authenticator};
 use authorize::Authorizer;
+use context::{Minimum, Required};
 use message::MessageTreatment;
 use path::expression::Expression;
 use persist::storage::XmipStorage;
@@ -189,10 +190,16 @@ pub fn on_working_node<T>(
         })
         .collect();
     let pickup = Pickup::open(&node, configured, Arc::clone(storage), None).expect("opened");
+    // A drop folder's circumstance is claimed, so the Location takes claimed
+    // at the transport, as a configured one writes `accept.transport`.
     let gate = ReceiveGate::new(
         "In",
         Acceptance::closed().accepting(&mechanism::circumstance()),
-    );
+    )
+    .taking(Minimum {
+        transport: Required::Claimed,
+        ..Minimum::default()
+    });
     run(&runtime, &pickup, &gate)
 }
 
