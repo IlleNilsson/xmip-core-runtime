@@ -36,7 +36,7 @@
 
 use authenticate::authenticate;
 use authorize::{Action, Attempt, authorize};
-use context::IdentityFacts;
+use context::{IdentityFacts, UncheckedClaim};
 use identify::{IdentifyError, Presented, StreamArrival, identify_message, identify_transport};
 use journey::{Journey, JourneyMessageRef};
 use message::{Message, MessageSection};
@@ -101,9 +101,22 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     // and neither is a schedule: where nothing identified anything, the
     // circumstance *is* the transport identity and is authenticated as that —
     // inferred, weakly, and on the record.
-    let presented = claims
-        .into_iter()
-        .next()
+    //
+    // One claim is authenticated per layer. Every other one an arrival
+    // presented is recorded as claimed and goes no further: nothing checked
+    // it, so nothing may authorize on it (ADR-0019, amendment 2026-10-30).
+    let mut claims = claims.into_iter();
+    let identified = claims.next();
+    let unchecked: Vec<UncheckedClaim> = claims
+        .chain(
+            identified
+                .is_some()
+                .then(|| received.presented.clone())
+                .flatten(),
+        )
+        .map(|claim| unchecked_claim(&claim))
+        .collect();
+    let presented = identified
         .or_else(|| received.presented.clone())
         .unwrap_or_else(|| {
             Presented::inferred(mechanism::circumstance(), received.source_uri.clone())
@@ -133,7 +146,8 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     // permitted to post here, and an unconfigured Receive Location permits
     // nothing. Alignment is vacuous while there is one layer, and is evaluated
     // again below once there may be two.
-    let transport_facts = IdentityFacts::evaluate(gate.identity.alignment, transport, None);
+    let transport_facts =
+        IdentityFacts::evaluate(gate.identity.alignment, transport, None).with_unchecked(unchecked);
 
     let permitted = authorize(
         runtime.policies,
@@ -229,6 +243,12 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     }
 }
 
+/// A claim no authenticator checked, as the record keeps it: its proof
+/// left behind.
+fn unchecked_claim(claim: &Presented) -> UncheckedClaim {
+    UncheckedClaim::new(claim.mechanism.clone(), &claim.value, claim.established)
+}
+
 /// What routing reads: every name the Subscriptions' filters use, compiled
 /// once when the Runtime was built (`Runtime::gathering`) and read here
 /// through the route technology its prefix names. A `Null` is absent and
@@ -265,12 +285,26 @@ fn settle_message_identity(
     let claims = identify_message(runtime.message_identifiers, &message)
         .map_err(|failure| Refused::Identification(failure.message))?;
 
-    let Some(claimed) = claims
+    // The first message-layer claim is authenticated; any other is recorded
+    // as claimed beside the transport's.
+    let (mut claimed, others): (Vec<Presented>, Vec<Presented>) = claims
         .into_iter()
-        .find(|claim| claim.layer() == Layer::Message)
-    else {
-        return Ok((transport_facts, message));
-    };
+        .partition(|claim| claim.layer() == Layer::Message);
+    let others = claimed.iter().skip(1).chain(&others).map(unchecked_claim);
+    let unchecked: Vec<UncheckedClaim> = transport_facts
+        .unchecked
+        .iter()
+        .cloned()
+        .chain(others)
+        .collect();
+    if claimed.is_empty() {
+        let facts = IdentityFacts {
+            unchecked,
+            ..transport_facts
+        };
+        return Ok((facts, message));
+    }
+    let claimed = claimed.swap_remove(0);
 
     // Authenticated against the same closed set. A location that never declared
     // the mechanism refuses it here exactly as it would at the transport, and
@@ -291,9 +325,10 @@ fn settle_message_identity(
     // the attack.
     let facts = IdentityFacts::evaluate(
         gate.identity.alignment,
-        transport_facts.transport.clone(),
+        transport_facts.transport,
         Some(identity),
-    );
+    )
+    .with_unchecked(unchecked);
 
     let permitted = authorize(
         runtime.policies,
@@ -911,7 +946,9 @@ filter = "xmip.party = '{party}'"
         // ADR-0019 clause 7. No transport secret is presented, and the
         // circumstance is the identity rather than the absence of one.
         let ids = Counter::default();
-        let circumstance = Always(mechanism::circumstance(), Verified::Proven);
+        // Claimed, as `authenticate::Circumstance` answers: nothing
+        // cryptographic stands behind a folder.
+        let circumstance = Always(mechanism::circumstance(), Verified::Claimed);
         let authenticators: [&dyn Authenticator; 1] = [&circumstance];
         let parties = Parties::default();
         let allow = Open;
@@ -943,7 +980,7 @@ filter = "xmip.party = '{party}'"
             ReceivedStream::new(&b"ISA*00*"[..], "file:///in/party-y/order-1.edi"),
         );
 
-        let Arrived::Routed { facts, .. } = arrived else {
+        let Arrived::Routed { facts, work, .. } = arrived else {
             panic!("expected a route, got {arrived:?}");
         };
 
@@ -951,6 +988,72 @@ filter = "xmip.party = '{party}'"
         // shortcut, not a permission.
         assert_eq!(facts.accountable().party_id, None);
         assert_eq!(facts.transport.mechanism.name(), "circumstance");
+
+        // The Message Context says what the gate concluded, claimed, and not
+        // what the mechanism's catalog would have it be.
+        let context = work.message.context();
+        assert_eq!(
+            context.get("xmip.transport.proven"),
+            Some(&xcore::ScalarValue::Bool(false))
+        );
+        assert_eq!(
+            context.get("xmip.transport.verified"),
+            Some(&xcore::ScalarValue::Text("claimed".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_second_claim_is_recorded_as_claimed_and_never_authenticated() {
+        // Two identifiers each read a claim off the connection. The first is
+        // authenticated; the second is on the record as claimed and reaches
+        // no authorizer.
+        let ids = Counter::default();
+        let proves = Always(mechanism::mutual_tls(), Verified::Proven);
+        let authenticators: [&dyn Authenticator; 1] = [&proves];
+        let parties = registry();
+        let allow = Open;
+        let open: [&dyn Authorizer; 1] = [&allow];
+        let clock = Fixed(NOW);
+        let subscriptions = subscribed_to_party_x();
+        let sends = sends(Recording::ok());
+
+        let subject = ReadsProperty(mechanism::mutual_tls(), "tls.client.subject");
+        let user = ReadsProperty(mechanism::username(), "username");
+        let identifiers: [&dyn TransportIdentifier; 2] = [&subject, &user];
+
+        let mut engine = runtime(
+            &ids,
+            &authenticators,
+            &parties,
+            &subscriptions,
+            &sends,
+            &open,
+            &clock,
+        );
+        engine.transport_identifiers = &identifiers;
+
+        let arrived = arrive(
+            &engine,
+            &location(),
+            ReceivedStream::new(&b"<order/>"[..], "https://xmip.example/in/party-x")
+                .with_property("tls.client.subject", "CN=party-x.example")
+                .with_property("username", "jane"),
+        );
+
+        let Arrived::Routed { facts, .. } = arrived else {
+            panic!("expected a route, got {arrived:?}");
+        };
+
+        assert_eq!(facts.transport.value, "CN=party-x.example");
+        assert_eq!(
+            facts.unchecked,
+            vec![UncheckedClaim::new(
+                mechanism::username(),
+                "jane",
+                Established::Passed
+            )]
+        );
+        assert!(facts.held().all(|held| held.value != "jane"));
     }
 
     #[test]
