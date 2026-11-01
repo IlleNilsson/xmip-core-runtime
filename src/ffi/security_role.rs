@@ -8,7 +8,7 @@ use abi::ffi::{Str, status};
 
 use crate::ffi::rule::refuse;
 use crate::ffi::text::{borrow, scope_text};
-use crate::plane::role::{Role, admitted};
+use crate::plane::role::{Role, act_admitted};
 
 /// The role a word names, Observer for any other.
 ///
@@ -47,9 +47,10 @@ pub unsafe extern "C" fn xmip_security_role_words_v1(
     status::OK
 }
 
-/// Whether `who` — proven where `proven` is non-zero — holding `role` may
-/// `act` on `target`: `XMIP_OK` with nothing said, or `XMIP_E_AUTH` with
-/// the refusal in `said`.
+/// Whether `who` — the caller the hosts runtime proved, what
+/// `xmip_caller_proven_v1` answered for a web hosts connection; empty for
+/// no one — holding `role` may `act` on `target`: `XMIP_OK` with nothing
+/// said, or `XMIP_E_AUTH` with the refusal in `said`.
 ///
 /// # Safety
 /// The strings point at their stated lengths; `said` has room for `cap`
@@ -57,7 +58,6 @@ pub unsafe extern "C" fn xmip_security_role_words_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_act_admitted_v1(
     who: Str,
-    proven: u8,
     role: i32,
     act: Str,
     target: Str,
@@ -76,8 +76,7 @@ pub unsafe extern "C" fn xmip_act_admitted_v1(
     let Some(role) = Role::from_wire(role) else {
         return status::INVALID;
     };
-    let caller = (proven != 0).then_some(who);
-    let (code, sentence) = match admitted(caller, role, crate::plane::call::ACT, (act, target)) {
+    let (code, sentence) = match act_admitted(Some(who), role, (act, target)) {
         Ok(()) => (status::OK, String::new()),
         Err(refused) => (status::AUTH, refused),
     };
@@ -102,7 +101,6 @@ mod tests {
         let code = unsafe {
             xmip_act_admitted_v1(
                 text("CN=a"),
-                1,
                 0,
                 text("pause"),
                 text("x"),
@@ -120,7 +118,6 @@ mod tests {
             xmip_act_admitted_v1(
                 text("CN=a"),
                 1,
-                1,
                 text("pause"),
                 text("x"),
                 said.as_mut_ptr(),
@@ -129,6 +126,23 @@ mod tests {
             )
         };
         assert_eq!((admitted, length), (status::OK, 0));
+
+        // No one: an empty caller, whatever the role.
+        // SAFETY: as above.
+        let nobody = unsafe {
+            xmip_act_admitted_v1(
+                text(""),
+                2,
+                text("pause"),
+                text("x"),
+                said.as_mut_ptr(),
+                said.len(),
+                &raw mut length,
+            )
+        };
+        assert_eq!(nobody, status::AUTH);
+        let sentence = String::from_utf8_lossy(&said[..length]).to_string();
+        assert!(sentence.starts_with("REFUSED. Nothing proved who asks to pause x"));
     }
 
     #[test]

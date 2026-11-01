@@ -439,12 +439,10 @@ mod tests {
         let browser = browse(&listener, &authority, Some(&operator), b"get");
         let named = session(&listener);
         let leaf = named.presented().expect("the operator's certificate");
-        assert!(
-            tls::Name::subject_of(leaf)
-                .expect("a subject")
-                .to_string()
-                .contains("alice")
-        );
+        // Who it is, through the gate: proven, by its subject.
+        let caller = crate::plane::caller::certificate(leaf).expect("proven");
+        assert!(caller.verified.is_proven());
+        assert!(caller.value.contains("alice"), "{}", caller.value);
         answer(&named, 3);
         assert_eq!(
             browser.join().expect("the browser").expect("answered"),

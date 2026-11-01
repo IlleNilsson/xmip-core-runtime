@@ -219,9 +219,10 @@ node = [
 # halves around a keeper's signature, `xmip_operator_information_v1` and
 # `xmip_operator_assemble_v1`, and the chain and anchors kept whole,
 # `xmip_operator_keep_v1`), and a refusal's message percent-encoded on the
-# call (`codec::percent`). Built alone with
+# call (`codec::percent`), with the authenticated identity the gate's role
+# check takes (`context::AuthenticatedIdentity`). Built alone with
 # `--no-default-features --features remote`.
-remote = ["dep:codec", "dep:authorize"]
+remote = ["dep:codec", "dep:authorize", "dep:context"]
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
 # them are guarded on this.
 # Declared so the cfg is a real switch rather than a condition that is
