@@ -124,6 +124,9 @@ impl Running {
     /// # Errors
     /// The phase that refused the node, and every problem it found there.
     pub fn start(path: &str, mut linked: Linked) -> Result<Self, Refusal> {
+        // The rate a thread's processor time is read at, measured now, so
+        // it never lands in a Message's own share (`xcore::spent`).
+        xcore::processor_time::ProcessorTime::calibrate();
         let (document, applications, files) = read(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
         let data = document.service.data_directory(Path::new(path));
@@ -419,6 +422,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use tcp::TcpTransport;
     use transport::{Configured, Transport};
+    use xcore::latency::spread;
     use xcore::settings::{Applies, Given};
 
     thread_local! {
@@ -653,15 +657,11 @@ address = "tcp://{far}"
             .expect("read whole");
         assert_eq!(first.bytes, b"order 0");
 
-        // Each Message timed on its own, and the load sampled between them,
-        // so both meet the same machine; the medians decide.
-        let (load_far, (load_listener, load_address)) = {
-            let far = TcpTransport::loopback();
-            let bound = far.bind().expect("a far end for the load binds");
-            (far, bound)
-        };
+        // The node counts the processor time its threads work for each
+        // Message and reports Xmip's own share, the fastest of five
+        // (`Outcomes::own_share`); each Message's time end to end is
+        // printed beside it, for information.
         let mut times = Vec::new();
-        let mut loads = Vec::new();
         for message in 1..=MESSAGES {
             let payload = format!("order {message}");
             let started = Instant::now();
@@ -675,18 +675,8 @@ address = "tcp://{far}"
                 .expect("read whole");
             times.push(started.elapsed());
             assert_eq!(arrived.bytes, payload.as_bytes());
-            if message % 5 == 0 {
-                loads.push(load_of_one_message(
-                    &running,
-                    (&load_far, &load_listener, &load_address),
-                    message,
-                ));
-            }
         }
-        let each = median(times);
-        let load = median(loads);
-        eprintln!("LEDGER loopback end to end: {each:?} per Message, median");
-        eprintln!("LEDGER the load of one Message here: {load:?}, median");
+        let _ = spread("a Message end to end, for information", times);
 
         let outcomes = running.stop();
         let carried = u64::from(MESSAGES) + 1;
@@ -698,53 +688,21 @@ address = "tcp://{far}"
             0
         );
         // The millisecond rule, with the load counted as load (the owner,
-        // 2026-10-03: *Go for A*): each Message costs one durable sync on
-        // this machine's disk and the test's own two loopback connections,
-        // measured here; the whole message path around them may add a
-        // millisecond, no more.
-        assert!(
-            each < load + Duration::from_millis(1),
-            "{each:?} per Message against {load:?} of load"
-        );
+        // 2026-10-03: *Go for A*; 2026-11-01: *the processor time its
+        // threads spent working for the Message*): what the node's threads
+        // ran for a Message outside its I/O — its Stream read off the
+        // connection, the Ledger's append and sync, its send to the far end
+        // — is Xmip's own share, and it is held under a millisecond. A
+        // thread waiting for a wake runs nothing, so no wake is counted.
+        let own = outcomes.own_share.expect("the node measured its own share");
+        eprintln!("Xmip's own share per Message {own:?}, the fastest of five");
+        assert!(own < OWN, "Xmip's own share {own:?}, over {OWN:?}");
         let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 
-    /// The middle one of `times`, so one slow round decides nothing.
-    fn median(mut times: Vec<Duration>) -> Duration {
-        times.sort();
-        times[times.len() / 2]
-    }
-
-    /// What one Message costs that is not the message path, sampled once:
-    /// one durable write through the node's own Xmip Storage — its sync —
-    /// and two loopback connections carrying a few bytes to `far`.
-    fn load_of_one_message(
-        running: &Running,
-        (far, listener, address): (&TcpTransport, &std::net::TcpListener, &str),
-        round: u32,
-    ) -> Duration {
-        let record = persist::storage::JourneyRecord {
-            journey: xcore::JourneyId::new(u128::MAX - u128::from(round)),
-            body: vec![0; 512],
-            facts: persist::storage::JourneyFacts::default(),
-        };
-        let started = Instant::now();
-        running
-            .storage()
-            .storage()
-            .write_journey(&record)
-            .expect("written durably");
-        let sync = started.elapsed();
-        let started = Instant::now();
-        TcpTransport::loopback()
-            .send(address, b"load")
-            .expect("sent");
-        far.accept_one(listener)
-            .expect("taken")
-            .taken()
-            .expect("read whole");
-        sync + 2 * started.elapsed()
-    }
+    /// The most Xmip's own share of a carried Message may take, the fastest
+    /// of five: the millisecond rule.
+    const OWN: Duration = Duration::from_millis(1);
 
     /// `body` posted over `connection` as the sender `who` names itself in
     /// its `X-Sender` header, and the node's answer read: accepted.

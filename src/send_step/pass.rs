@@ -10,6 +10,7 @@ use journey::{Journey, JourneyEntry, JourneyState};
 use message::Message;
 use persist::storage::{Durable, Failure, HandOn, Wait};
 use route::Subscriber;
+use xcore::spent::Spent;
 use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
 
 use super::Departure;
@@ -87,8 +88,13 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         progress,
         durable,
         claim,
+        spent,
+        own,
         ..
     } = departure;
+    // The send thread works for its Message now, its send apart as the
+    // payload's I/O (`xcore::spent`).
+    let entered = spent.as_ref().map(Spent::entered);
     // The far end is told the claim's fence beside the deduplication key.
     progress.fence = claim.fence;
     let id = work.journey.journey_id();
@@ -100,6 +106,15 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
             .map_err(|why| format!("its Publication was not kept in the Ledger: {why}"))
     };
     let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
+    drop(entered);
+    // Sent, its far end has it: Xmip's own share of its Message is read
+    // now, with its share of the Storage node's work on its Publication.
+    if departed.iter().any(Departed::sent)
+        && let Some(spent) = spent
+    {
+        let ledger = durable.as_ref().map(Durable::worked).unwrap_or_default();
+        *own = Some(spent.own(ledger));
+    }
     if step.is_lost(id) {
         return Ended::Lost(departed);
     }

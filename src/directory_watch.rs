@@ -149,7 +149,8 @@ mod tests {
         // when a Location stops: told of a change first, so what is
         // measured is the drop, never the thread's start on a machine with
         // no processor free for it.
-        use xcore::latency::{FIVE, PlainWake, spread};
+        use xcore::fastest::FIVE;
+        use xcore::latency::{PlainWake, spread};
         let directory = directory("dropped");
         let plain = PlainWake::start();
         let (mut ended, mut woke) = (Vec::new(), Vec::new());

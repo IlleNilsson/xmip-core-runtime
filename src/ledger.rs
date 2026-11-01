@@ -226,7 +226,13 @@ pub fn write_stream(
 /// come, never set aside ahead of what arrived — a small Stream costs its
 /// size, not a chunk.
 fn fill(content: &mut dyn Read, chunk: usize) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
+    // Room for a read of the standard library's buffer size first, so a
+    // small Stream is read in one read and the one that finds its end —
+    // each an I/O counted around (`xcore::spent::on_io`) — never grown one
+    // doubling at a time from a probe of thirty-two bytes; and no more, as
+    // a whole chunk's room is the operating system's heap's larger and
+    // slower kind of block.
+    let mut bytes = Vec::with_capacity(chunk.min(8 * 1024));
     content
         .take(chunk as u64)
         .read_to_end(&mut bytes)

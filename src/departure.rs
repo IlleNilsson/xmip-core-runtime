@@ -61,6 +61,7 @@ use send::SendLevel;
 use transport::Outgoing;
 use transport::error::TransportError;
 use xcore::Purpose;
+use xcore::spent::on_io;
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
@@ -342,7 +343,11 @@ fn depart_one(
     .kept_by(&durable)
     .carrying(work.message.context())
     .of_message(&message);
-    let sent = sending.transport.send_from(&sending.target, outgoing);
+    // The send is the payload's I/O, not Xmip's own share
+    // (`xcore::spent`): its far end written — synced and renamed into
+    // place, for a file — and the Message read back from the Ledger as it
+    // is written.
+    let sent = on_io(|| sending.transport.send_from(&sending.target, outgoing));
     drop(held);
     // The claim lost while the Message was read, before its first byte
     // went: nothing was sent, and nothing more is tried from here.

@@ -85,6 +85,7 @@ use journey::Journey;
 use persist::storage::{Claim, Durable, Hold, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
+use xcore::spent::Spent;
 use xcore::wake::Wake;
 use xcore::{IdGenerator, JourneyId};
 
@@ -157,6 +158,14 @@ pub struct Departure {
     /// on before the Ledger synced it: the far end sees it only then.
     /// `None` where it was read from the Ledger, durable already.
     pub durable: Option<Durable>,
+    /// Its Message's account, the processor time worked for it since its
+    /// transport handed it over, where its receive cycle handed it on
+    /// (`xcore::spent`); `None` where it was read from the Ledger.
+    pub spent: Option<Spent>,
+    /// Xmip's own share of its Message, once sent: the processor time its
+    /// threads worked for it outside its I/O, from its transport handing it
+    /// over to its far end having it ([`Spent::own`]).
+    pub own: Option<Duration>,
 }
 
 /// What a Publication writes for the Messages that go on to be sent: each
@@ -328,7 +337,8 @@ impl SendStep {
     /// each of `journeys` it claimed, with `work`'s Message and the
     /// identity it arrived with, `facts`, each in the place admitted for
     /// it, and let out to its far end once `durable` says the Publication
-    /// is. A queue holding a Message this node sends and did not claim is
+    /// is; the Message's time goes with each, the account the calling
+    /// thread works for (`xcore::spent::current`). A queue holding a Message this node sends and did not claim is
     /// read at once, or once a place frees.
     pub fn handed(
         &self,
@@ -339,6 +349,8 @@ impl SendStep {
         durable: &Durable,
     ) {
         let until = lined.asked.unwrap_or_else(Instant::now) + self.lease;
+        // The Message's account, which the carrying thread works for.
+        let spent = xcore::spent::current();
         let mut state = self.lock();
         state.admitted = state.admitted.saturating_sub(lined.admitted);
         for (id, to, queue, claim) in lined.claimed {
@@ -357,6 +369,8 @@ impl SendStep {
                 progress: Progress::of(journey.attempts),
                 until,
                 durable: Some(durable.clone()),
+                spent: spent.clone(),
+                own: None,
             };
             state.owned.insert(id, Owned::of(&departure));
             state.handed.push_back(departure);
