@@ -12,6 +12,7 @@ use std::time::Instant;
 use configure::ConfiguredLocation;
 use transport::Transport;
 use xaudit::program_audit::ProgramAudit;
+use xcore::spent::Spent;
 
 use crate::message_path::{Carried, Runtime, carry};
 
@@ -278,7 +279,12 @@ impl Receiving {
             });
             let tell = tell.clone();
             let held = places.split(1);
+            // Its account opens as its transport hands it over, and the
+            // carrying thread works for it: what it runs for it outside
+            // its I/O is Xmip's own share (`xcore::spent`).
+            let spent = Spent::begin();
             pool.run(Box::new(move || {
+                let _entered = spent.entered();
                 let (received, acknowledgement) = received::received(arrived);
                 let telling = Telling {
                     tell: Some(tell),

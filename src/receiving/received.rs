@@ -14,6 +14,7 @@
 use receive::ReceivedStream;
 use transport::{Acknowledgement, Arrived};
 use xcore::Arriving;
+use xcore::spent::ReadOnIo;
 
 /// `arrived` as the message path reads it, and the acknowledgement its far
 /// end is told by once the receive cycle ends.
@@ -22,6 +23,10 @@ pub(super) fn received(mut arrived: Arrived) -> (ReceivedStream, Acknowledgement
     let observed = arrived.take_observed();
     let arriving = arrived.arriving();
     let (origin_uri, body, acknowledgement) = arrived.into_parts();
+    // Each read from the transport is the payload's I/O, and its closing
+    // there — a file let go of — apart from Xmip's own share
+    // (`xcore::spent`).
+    let body = ReadOnIo::new(body);
 
     let mut received = match arriving {
         Arriving::Pushed => ReceivedStream::new(body, origin_uri),

@@ -154,6 +154,8 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             claim,
             until: asked + step.lease(),
             durable: None,
+            spent: None,
+            own: None,
         });
     } else {
         step.ask(queue);

@@ -4,6 +4,7 @@
 use std::sync::mpsc;
 
 use transport::{Acknowledgement, Verdict};
+use xcore::spent::on_io;
 
 use super::refusal::verdict;
 use super::turn::Ticket;
@@ -34,13 +35,20 @@ impl Telling {
 
     /// The far end told `verdict` in its turn, once: the acknowledgement is
     /// taken before it is given, so one that panics is not given again.
+    ///
+    /// Telling it is the transport's I/O with its far end — a file deleted
+    /// from its drop directory, a reply on a connection — as its Stream's
+    /// read is, so it is not its Message's own share (`xcore::spent`).
+    /// Counted, its share took it or not by which thread came first: the
+    /// telling, or the send reading the share once its far end had it.
     fn acknowledge(&mut self, verdict: Verdict) -> transport::Result<()> {
         let Some(acknowledgement) = self.acknowledgement.take() else {
             return Ok(());
         };
+        let tell = || on_io(|| acknowledgement.acknowledge(verdict));
         match self.ticket.take() {
-            Some(ticket) => ticket.in_turn(|| acknowledgement.acknowledge(verdict)),
-            None => acknowledgement.acknowledge(verdict),
+            Some(ticket) => ticket.in_turn(tell),
+            None => tell(),
         }
     }
 }

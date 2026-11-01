@@ -21,6 +21,9 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+use xcore::fastest::FastestOfFive;
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Carried;
@@ -142,6 +145,14 @@ pub struct Outcomes {
     /// Messages whose every Send Location failed its tries, not permitted
     /// or with nowhere to go: written Failed with why.
     pub not_sent: u64,
+    /// Xmip's own share of a sent Message, the fastest of five
+    /// (`xcore::fastest`): the processor time the node's threads worked for
+    /// it from its transport handing it over to its far end having it,
+    /// outside the payload's I/O — its Stream read from its transport, the
+    /// Ledger's appends and syncs, its send — with its share of the Storage
+    /// node's batch (`xcore::spent`). What the millisecond rule holds;
+    /// `None` until a Message carried in memory from its receive is sent.
+    pub own_share: Option<Duration>,
 }
 
 /// The counts a running node keeps as each Stream is carried, and why any
@@ -157,7 +168,15 @@ pub(crate) struct Tally {
     sent: AtomicU64,
     not_sent: AtomicU64,
     failures: Mutex<Vec<(String, String)>>,
+    /// The own share of each Message sent, the last [`OWN_SHARE_FIVES`]
+    /// fives kept.
+    own: Mutex<Option<FastestOfFive>>,
 }
+
+/// How many fives of sent Messages' own shares a node keeps for its
+/// report: the last thousand, so what it holds stays bounded however long
+/// it runs.
+pub const OWN_SHARE_FIVES: usize = 1000;
 
 impl Tally {
     /// Count what became of one Stream.
@@ -175,9 +194,15 @@ impl Tally {
         self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
     }
 
-    /// Count a Message the send step wrote Completed.
-    pub(crate) fn sent(&self) {
+    /// Count a Message the send step wrote Completed, with Xmip's own share
+    /// of its time where it was measured.
+    pub(crate) fn sent(&self, own: Option<Duration>) {
         self.sent.fetch_add(1, Ordering::Relaxed);
+        if let Some(own) = own {
+            let mut kept = self.own.lock().unwrap_or_else(PoisonError::into_inner);
+            kept.get_or_insert_with(|| FastestOfFive::keeping(OWN_SHARE_FIVES))
+                .push(own);
+        }
     }
 
     /// Count a Message the send step wrote Failed.
@@ -212,6 +237,12 @@ impl Tally {
             failed: read(&self.failed),
             sent: read(&self.sent),
             not_sent: read(&self.not_sent),
+            own_share: self
+                .own
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .and_then(FastestOfFive::read),
         }
     }
 }
