@@ -231,6 +231,36 @@ pub unsafe extern "C" fn xmip_session_peer_v1(
     status::OK
 }
 
+/// Who the session's client is, proven: the certificate the handshake
+/// verified against the anchors run through the authentication gate
+/// (`plane::caller::certificate`), and the identity it answered, a
+/// distinguished name; empty where the client presented none or the gate
+/// refused it, for no one (ADR-0009, amendment 2026-11-01).
+///
+/// # Safety
+/// `session` is null or a live handle; `out` has room for `cap` bytes and
+/// `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_caller_proven_v1(
+    session: *const SecureSession,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: `session` is null or a live handle per the contract.
+    let Some(session) = (unsafe { session.as_ref() }) else {
+        return status::INVALID;
+    };
+    let caller = session
+        .presented()
+        .and_then(|leaf| crate::plane::caller::certificate(leaf).ok())
+        .map(|caller| caller.value)
+        .unwrap_or_default();
+    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
+    unsafe { refuse(&caller, out, cap, out_len) };
+    status::OK
+}
+
 /// Where the session was accepted and where its client is, `host:port`
 /// each, one space between.
 ///
@@ -417,6 +447,10 @@ mod tests {
         let (code, peer) =
             answer(|out, cap, len| unsafe { xmip_session_peer_v1(session, out, cap, len) });
         assert_eq!((code, peer.as_str()), (status::OK, ""), "it presented none");
+        // SAFETY: a live session.
+        let (code, caller) =
+            answer(|out, cap, len| unsafe { xmip_caller_proven_v1(session, out, cap, len) });
+        assert_eq!((code, caller.as_str()), (status::OK, ""), "no one");
         let mut asked = [0u8; 3];
         let mut length = 0usize;
         // SAFETY: a live session, `asked` writable.

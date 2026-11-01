@@ -10,7 +10,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use authenticate::x509::Name;
+use context::AuthenticatedIdentity;
 use net::http::{Request, Response};
 use net::http2::{Boxed, BoxedServer};
 use net::watched::Watched;
@@ -21,6 +21,7 @@ use xcore::{ExecutionPhase, Severity};
 use crate::applied::{Applied, apply};
 use crate::plane::call::{self, ACT, PUBLICATION, SECRET, SECRETS, WAIT};
 use crate::plane::call::{LONGEST_WAIT, WATCH};
+use crate::plane::caller;
 use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
 use crate::plane::role::{Role, admitted};
@@ -34,7 +35,8 @@ const PATIENCE: Duration = Duration::from_secs(5);
 pub const AUDIT_ACTION: &str = "act";
 
 /// Serve one network connection until the surface or the listener ends
-/// it: mutual TLS agreeing `h2`, the caller its certificate's subject.
+/// it: mutual TLS agreeing `h2`, the caller what the authentication gate
+/// answers for its certificate (`plane::caller::certificate`).
 pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
     let settled = connection
         .set_nodelay(true)
@@ -61,9 +63,9 @@ pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
             Ok((guarded, who))
         });
     match guarded {
-        Ok((guarded, who)) => calls(
+        Ok((guarded, caller)) => calls(
             Box::new(Watched::new(guarded, || serve.stopped())),
-            &who,
+            &caller,
             serve,
         ),
         Err(reason) => noted(serve, &peer.to_string(), &format!("refused: {reason}")),
@@ -71,18 +73,20 @@ pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
 }
 
 /// Serve one connection on the node's local endpoint: plain HTTP/2, the
-/// caller the user the operating system says its process runs as.
+/// caller what the authentication gate answers for the account the
+/// operating system says its process runs as (`plane::caller::local`).
 pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
-    let who = match stream.caller() {
-        Ok(who) => who,
+    let proven = stream.caller().and_then(|account| caller::local(&account));
+    let caller = match proven {
+        Ok(caller) => caller,
         Err(reason) => return noted(serve, "the local endpoint", &format!("refused: {reason}")),
     };
     if let Err(error) = stream.watch(WATCH) {
-        return noted(serve, &who, &format!("refused: {error}"));
+        return noted(serve, &caller.value, &format!("refused: {error}"));
     }
     calls(
         Box::new(Watched::new(stream, || serve.stopped())),
-        &who,
+        &caller,
         serve,
     );
 }
@@ -95,7 +99,7 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
 /// answered a surface's `GOAWAY` with its own and read on until it closed,
 /// a quarter of a millisecond of processor time a connection on the local
 /// endpoint (open problem 35).
-fn calls(connection: Boxed<'_>, who: &str, serve: &Serve) {
+fn calls(connection: Boxed<'_>, caller: &AuthenticatedIdentity, serve: &Serve) {
     let Ok(mut server) = BoxedServer::handshake(connection) else {
         return;
     };
@@ -103,29 +107,28 @@ fn calls(connection: Boxed<'_>, who: &str, serve: &Serve) {
         let Ok(Some((stream, request))) = server.next_request() else {
             break;
         };
-        let response = called(serve, who, &request);
+        let response = called(serve, caller, &request);
         if server.respond(stream, &response).is_err() {
             break;
         }
     }
 }
-/// The subject of the certificate the surface presented, which the
-/// handshake checked against the anchors.
-fn proven(guarded: &tls::GuardedServer) -> Result<String, String> {
+
+/// The caller the certificate the surface presented proves, which the
+/// handshake checked against the anchors, through the authentication gate.
+fn proven(guarded: &tls::GuardedServer) -> Result<AuthenticatedIdentity, String> {
     let leaf = guarded
         .conn
         .peer_certificates()
         .and_then(<[_]>::first)
         .ok_or_else(|| "the surface presented no certificate".to_string())?;
-    Name::subject_of(leaf)
-        .map(|name| name.to_string())
-        .map_err(|failed| failed.to_string())
+    caller::certificate(leaf)
 }
 
 /// The answer to one call: decided from its method, the identity the
 /// connection proved and the role it holds before a byte of it is read
 /// (`role::admitted`), and only then read and answered.
-fn called(serve: &Serve, who: &str, request: &Request) -> Response {
+fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> Response {
     let Some(method) = call::method(&request.path).filter(|method| METHODS.contains(method)) else {
         return call::refusal(
             "UNIMPLEMENTED",
@@ -133,7 +136,8 @@ fn called(serve: &Serve, who: &str, request: &Request) -> Response {
         );
     };
     let role = serve.stated.unwrap_or_default();
-    if let Err(refused) = admitted(Some(who), role, method, (asked(method), "on this node")) {
+    let who = caller.value.as_str();
+    if let Err(refused) = admitted(Some(caller), role, method, (asked(method), "on this node")) {
         record(serve, who, role, method, "", Some(&refused));
         return match method {
             ACT | SECRET => outcome("denied", &refused),
