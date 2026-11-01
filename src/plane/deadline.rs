@@ -212,12 +212,68 @@ fn watch(watcher: &Watcher) {
     }
 }
 
+/// A hung node on this machine, as a test stands one up: a local endpoint
+/// that takes a connection and never answers, so a surface's call on it
+/// waits out its deadline. The node's end, so only where the node is
+/// built; a test's, never a node's — the module's timing program's
+/// (`tests/measured`) and this file's tests.
+#[cfg(all(feature = "node", any(test, feature = "test-support")))]
+pub struct Hung {
+    path: std::path::PathBuf,
+    held: Option<std::thread::JoinHandle<HungAccept>>,
+}
+
+/// What a [`Hung`] node's accept ends with: the connection it took and its
+/// endpoint, kept open until both are let go.
+#[cfg(all(feature = "node", any(test, feature = "test-support")))]
+type HungAccept = std::io::Result<(crate::plane::local::Stream, crate::plane::local::Acceptor)>;
+
+#[cfg(all(feature = "node", any(test, feature = "test-support")))]
+impl Hung {
+    /// A hung node at the local endpoint called `name`.
+    ///
+    /// # Panics
+    ///
+    /// Where `name` is no endpoint's name, or the endpoint does not bind.
+    #[must_use]
+    pub fn at(name: &str) -> Self {
+        use crate::plane::local::{Acceptor, Admitting, place};
+        let path = place(name).expect("a name");
+        let acceptor = Acceptor::bind(&path, Admitting::default()).expect("bound");
+        let held = std::thread::spawn(move || acceptor.accept().map(|stream| (stream, acceptor)));
+        Self {
+            path,
+            held: Some(held),
+        }
+    }
+}
+
+#[cfg(all(feature = "node", any(test, feature = "test-support")))]
+impl Drop for Hung {
+    fn drop(&mut self) {
+        if let Some(held) = self.held.take() {
+            drop(accepted(held, &self.path));
+        }
+    }
+}
+
+/// `held`, a stand-in node's accept, joined once it has taken a
+/// connection: knocked on until it has (`net::accepting::woken`). A client
+/// that connected and left before the accept began is passed over by it,
+/// and the accept waits for the next: joined bare, a stand-in kept from its
+/// processor that long waited for good, and the test with it (2026-10-21,
+/// beside eight processor-bound jobs).
+#[cfg(all(feature = "node", any(test, feature = "test-support")))]
+fn accepted<T>(held: std::thread::JoinHandle<T>, path: &Path) -> std::thread::Result<T> {
+    net::accepting::woken(held, Duration::from_secs(1), || {
+        crate::plane::local::wake(path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "node")]
-    use crate::plane::Remote;
-    #[cfg(feature = "node")]
+    #[cfg(all(windows, feature = "node"))]
     use crate::plane::local::{Acceptor, Admitting, place};
 
     #[test]
@@ -230,41 +286,6 @@ mod tests {
             not_answered(Duration::from_millis(150)),
             "the node did not answer within 150 ms"
         );
-    }
-
-    /// Decided by the owner, 2026-10-13: *a local call waits at most a set
-    /// time, then says the node did not answer and shows it so.* An
-    /// endpoint that takes the connection and never answers stands for a
-    /// hung node: the node's end, so only where the node is built.
-    #[cfg(feature = "node")]
-    #[test]
-    fn a_node_that_does_not_answer_within_the_wait_is_unreachable_at_once_after() {
-        let name = format!("xmip-deadline-test-{}", std::process::id());
-        let acceptor =
-            Acceptor::bind(&place(&name).expect("a name"), Admitting::default()).expect("bound");
-        let held = std::thread::spawn(move || acceptor.accept().map(|stream| (stream, acceptor)));
-        let within = Duration::from_millis(150);
-        let surface = Remote::local_retrying(&name, within, vec![Duration::from_secs(60)])
-            .expect("a surface");
-
-        let asked = Instant::now();
-        let said = surface.publication().expect_err("no answer");
-        assert!(asked.elapsed() < within * 4, "{:?}", asked.elapsed());
-        assert!(said.ends_with(&not_answered(within)), "{said}");
-        assert!(!surface.state().reachable);
-        // Said at once from now on, while the follow recovers it: the
-        // fastest of five under the millisecond, and no more than that of
-        // the caller's processor time in any (xcore::latency::at_once).
-        let (again, fastest, spent) =
-            xcore::latency::at_once("a hung node, asked again", || surface.publication());
-        assert!(again.is_err());
-        assert!(fastest < Duration::from_millis(1), "said in {fastest:?}");
-        assert!(
-            spent < Duration::from_millis(1),
-            "{spent:?} of processor time"
-        );
-        drop(surface);
-        drop(accepted(held, &place(&name).expect("a name")));
     }
 
     /// A read begun only after its call's deadline passed — the asking
@@ -309,18 +330,5 @@ mod tests {
         shared.ending.store(true, Ordering::SeqCst);
         drop(stream);
         drop(accepted(held, &place(&name).expect("a name")));
-    }
-
-    /// `held`, a stand-in node's accept, joined once it has taken a
-    /// connection: knocked on until it has (`net::accepting::woken`). A
-    /// client that connected and left before the accept began is passed
-    /// over by it, and the accept waits for the next: joined bare, a
-    /// stand-in kept from its processor that long waited for good, and the
-    /// test with it (2026-10-21, beside eight processor-bound jobs).
-    #[cfg(feature = "node")]
-    fn accepted<T>(held: std::thread::JoinHandle<T>, path: &Path) -> std::thread::Result<T> {
-        net::accepting::woken(held, Duration::from_secs(1), || {
-            crate::plane::local::wake(path)
-        })
     }
 }

@@ -8,7 +8,9 @@
 //! A caller nothing proved acts on nothing; one proven acts where the role
 //! it holds may (Operator and up). On the listener a caller is what the
 //! authentication gate answered for the connection (`plane::caller`,
-//! ADR-0009, amendment 2026-11-01), never a name read beside it. Which role
+//! ADR-0009, amendment 2026-11-01), never a name read beside it; on a
+//! screen, the caller a handle the runtime handed out holds
+//! (`plane::held`), never a name its host passes. Which role
 //! a proven caller holds is the host's to say: `RoleAssignment` in
 //! `Xmip.Surface` for a web host or the desktop, `[operate] role` for a
 //! node's operate listener, where no directory is asked yet.
@@ -128,31 +130,7 @@ pub fn admitted(
     let who = caller
         .filter(|caller| caller.verified.is_proven())
         .map(|caller| caller.value.as_str());
-    decided(who, role, method, asked)
-}
-
-/// Whether `who` — the caller a host's runtime proved for it, what
-/// `xmip_caller_proven_v1` answered for a web host's connection, or the
-/// operating system user a desktop runs as; `None` or empty where nothing
-/// proved anyone — holding `role` may `act` on `target`: the check every
-/// surface asks for an act a screen takes (`xmip_act_admitted_v1`), by
-/// [`admitted`]'s rule.
-///
-/// # Errors
-///
-/// As [`admitted`].
-pub fn act_admitted(who: Option<&str>, role: Role, asked: (&str, &str)) -> Result<(), String> {
-    let who = who.filter(|who| !who.trim().is_empty());
-    decided(who, role, call::ACT, asked)
-}
-
-/// The rule [`admitted`] and [`act_admitted`] ask, once.
-fn decided(
-    who: Option<&str>,
-    role: Role,
-    method: &str,
-    (act, target): (&str, &str),
-) -> Result<(), String> {
+    let (act, target) = asked;
     let admitted = plane::admit(who, role as u8, (action(method), method), RULES);
     match (who, admitted) {
         (_, Ok(())) => Ok(()),
@@ -168,6 +146,22 @@ fn decided(
             role.describe()
         )),
     }
+}
+
+/// Whether the caller `held` — a handle the runtime handed out for a caller
+/// it proved (`plane::held`): what `xmip_caller_proven_v1` answered for a
+/// web host's connection, or `xmip_caller_process_v1` for the account a
+/// desktop runs as; 0, or one unknown, released, revoked or expired, for
+/// no one — holding `role` may `act` on `target`: the check every surface
+/// asks for an act a screen takes (`xmip_act_admitted_v1`), by
+/// [`admitted`]'s rule. No name a host passes is read.
+///
+/// # Errors
+///
+/// As [`admitted`].
+pub fn act_admitted(held: u64, role: Role, asked: (&str, &str)) -> Result<(), String> {
+    let caller = crate::plane::held::proven(held);
+    admitted(caller.as_ref(), role, call::ACT, asked)
 }
 
 #[cfg(test)]
@@ -224,15 +218,20 @@ mod tests {
     }
 
     #[test]
-    fn a_screens_act_is_admitted_by_the_same_rule_and_an_empty_name_is_no_one() {
-        assert!(act_admitted(Some("CN=a"), Role::Operator, ("pause", "x")).is_ok());
-        let observer = act_admitted(Some("CN=a"), Role::Observer, ("pause", "x"));
+    fn a_screens_act_is_admitted_by_the_same_rule_and_a_handle_held_by_no_one_is_no_one() {
+        use crate::plane::held;
+        let a = held::hold(caller(Verified::Proven), None, None);
+        assert!(act_admitted(a, Role::Operator, ("pause", "x")).is_ok());
+        let observer = act_admitted(a, Role::Observer, ("pause", "x"));
         assert!(
             observer
                 .unwrap_err()
                 .starts_with("REFUSED. CN=a may not pause x")
         );
-        let empty = act_admitted(Some(" "), Role::Developer, ("pause", "x"));
-        assert!(empty.unwrap_err().starts_with("REFUSED. Nothing proved"));
+        assert!(held::release(a));
+        for nobody in [a, 0, a ^ 1] {
+            let refused = act_admitted(nobody, Role::Developer, ("pause", "x"));
+            assert!(refused.unwrap_err().starts_with("REFUSED. Nothing proved"));
+        }
     }
 }

@@ -215,7 +215,7 @@ impl XmipStorage for Failing {
         self.answered(Operation::ReadJourney, answer)
     }
 
-    fn publish(&self, publication: &Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
+    fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
         self.asked(Operation::Publish)?;
         let lost = self
             .lost
@@ -223,7 +223,7 @@ impl XmipStorage for Failing {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(meanwhile) = lost {
-            self.beneath.publish(publication)?.1.wait()?;
+            self.beneath.publish(publication.clone())?.1.wait()?;
             meanwhile();
         }
         let answer = self.beneath.publish(publication);

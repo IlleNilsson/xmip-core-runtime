@@ -13,6 +13,7 @@ use serde_json::json;
 use crate::ffi::remote::texts;
 use crate::ffi::rule::{hand, refuse};
 use crate::ffi::text::slice_bytes;
+use crate::plane::held;
 use crate::secure_listener::{Accepted, Protection, SecureListener, SecureSession};
 
 /// The authority kept in the folder `authority` — made there, called
@@ -233,16 +234,20 @@ pub unsafe extern "C" fn xmip_session_peer_v1(
 
 /// Who the session's client is, proven: the certificate the handshake
 /// verified against the anchors run through the authentication gate
-/// (`plane::caller::certificate`), and the identity it answered, a
-/// distinguished name; empty where the client presented none or the gate
-/// refused it, for no one (ADR-0009, amendment 2026-11-01).
+/// (`plane::caller::certificate`), held behind a handle of its own in
+/// `out_caller` (`plane::held`) — the one caller a host acts as — until its
+/// holder releases it, the certificate ends or the listener stops; 0 for
+/// no one, where the client presented none or the gate refused it. The
+/// identity in `out`, a distinguished name, for display alone (ADR-0009,
+/// amendment 2026-11-01).
 ///
 /// # Safety
-/// `session` is null or a live handle; `out` has room for `cap` bytes and
-/// `out_len` is writable.
+/// `session` is null or a live handle; `out_caller` is writable; `out` has
+/// room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_caller_proven_v1(
     session: *const SecureSession,
+    out_caller: *mut u64,
     out: *mut u8,
     cap: usize,
     out_len: *mut usize,
@@ -251,13 +256,23 @@ pub unsafe extern "C" fn xmip_caller_proven_v1(
     let Some(session) = (unsafe { session.as_ref() }) else {
         return status::INVALID;
     };
-    let caller = session
-        .presented()
-        .and_then(|leaf| crate::plane::caller::certificate(leaf).ok())
-        .map(|caller| caller.value)
-        .unwrap_or_default();
-    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
-    unsafe { refuse(&caller, out, cap, out_len) };
+    let (handle, name) = session.presented().map_or((0, String::new()), |leaf| {
+        let Ok(caller) = crate::plane::caller::certificate(leaf) else {
+            return (0, String::new());
+        };
+        let until = authenticate::x509::not_after_of(leaf).ok();
+        let name = caller.value.clone();
+        match held::hold(caller, until, session.prover()) {
+            0 => (0, String::new()),
+            handle => (handle, name),
+        }
+    });
+    // SAFETY: `out_caller` is writable; `out` has room for `cap` bytes and
+    // `out_len` is writable.
+    unsafe {
+        *out_caller = handle;
+        refuse(&name, out, cap, out_len);
+    }
     status::OK
 }
 
@@ -447,10 +462,12 @@ mod tests {
         let (code, peer) =
             answer(|out, cap, len| unsafe { xmip_session_peer_v1(session, out, cap, len) });
         assert_eq!((code, peer.as_str()), (status::OK, ""), "it presented none");
-        // SAFETY: a live session.
-        let (code, caller) =
-            answer(|out, cap, len| unsafe { xmip_caller_proven_v1(session, out, cap, len) });
-        assert_eq!((code, caller.as_str()), (status::OK, ""), "no one");
+        let mut held = 7u64;
+        // SAFETY: a live session, `held` writable.
+        let (code, caller) = answer(|out, cap, len| unsafe {
+            xmip_caller_proven_v1(session, &raw mut held, out, cap, len)
+        });
+        assert_eq!((code, held, caller.as_str()), (status::OK, 0, ""), "no one");
         let mut asked = [0u8; 3];
         let mut length = 0usize;
         // SAFETY: a live session, `asked` writable.
