@@ -363,7 +363,7 @@ pub(crate) mod tests {
             claims: Vec::new(),
             lease_nanos: 0,
         };
-        storage.publish(&publication).map_err(|e| e.to_string())?;
+        storage.publish(publication).map_err(|e| e.to_string())?;
         pickup.published(&holding);
         Ok(holding.holds().len())
     }

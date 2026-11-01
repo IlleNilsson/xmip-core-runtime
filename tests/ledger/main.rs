@@ -55,7 +55,12 @@
 //! `audited.rs` a Publication's audit record carrying its Message and its
 //! Stream's bytes, verified when read (ADR-0070); `work_process.rs` a Work
 //! Process's Instances correlated, batched and finished after a kill;
-//! `work_debatch.rs` its Debatch through the one splitting implementation.
+//! `work_design.rs` that Work Process's design and the node it runs on;
+//! `work_debatch.rs` its Debatch through the one splitting implementation;
+//! `said.rs` a line said at once. `receive_cycle.rs`, `sending.rs`,
+//! `work_design.rs` and `said.rs` are the timing program's too
+//! (`tests/measured`), where what a hop's sequence check and a Work
+//! Process's turn cost is measured.
 
 mod audited;
 mod bounded;
@@ -72,6 +77,7 @@ mod paced;
 mod panicked;
 mod receive_cycle;
 mod roomed;
+mod said;
 mod searched;
 mod send;
 mod send_bounded;
@@ -82,13 +88,12 @@ mod send_raced;
 mod send_streamed;
 mod send_waiting;
 mod sending;
-mod sequenced_cost;
 mod stream_order;
 mod untold;
 mod work_debatch;
+mod work_design;
 mod work_process;
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +105,7 @@ use sqlite::Sqlite;
 
 use halts_at_publication::halting;
 use receive_cycle::receive_until_killed;
+use said::say;
 
 /// The environment variable naming what a child does.
 const CHILD: &str = "XMIP_LEDGER_CHILD";
@@ -145,13 +151,6 @@ fn test_node(place: &Path) -> Arc<dyn XmipStorage> {
         )
         .expect("the test Storage node"),
     )
-}
-
-/// A line said and on its way at once.
-fn say(line: &str) {
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{line}");
-    let _ = out.flush();
 }
 
 /// The child: does what [`CHILD`] names, and nothing where nothing is named.

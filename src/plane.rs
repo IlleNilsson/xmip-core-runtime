@@ -31,6 +31,7 @@ pub mod call;
 pub mod caller;
 pub mod deadline;
 mod follow;
+pub mod held;
 mod line;
 #[cfg(feature = "node")]
 pub mod listener;

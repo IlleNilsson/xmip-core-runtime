@@ -29,6 +29,8 @@ use std::time::Duration;
 use tls::duplex::{ServedReading, ServedWriting};
 use tls::peer::Unanswered;
 
+use crate::plane::held::{self, Prover};
+
 /// How long a client has to finish its handshake once it has connected; a
 /// wait on the socket, so one that never speaks costs its own thread this
 /// long and no one else anything.
@@ -77,6 +79,7 @@ impl Waiting {
 /// A web host's HTTPS listener.
 pub struct SecureListener {
     local: SocketAddr,
+    prover: Prover,
     waiting: Arc<Waiting>,
     accepting: Mutex<Option<JoinHandle<()>>>,
 }
@@ -151,6 +154,7 @@ impl SecureListener {
             .map_err(|failure| format!("starting the listener's thread: {failure}"))?;
         Ok(Self {
             local,
+            prover: Prover::next(),
             waiting,
             accepting: Mutex::new(Some(accepting)),
         })
@@ -173,7 +177,10 @@ impl SecureListener {
             }
             if let Some(handshake) = finished.pop_front() {
                 return match handshake {
-                    Ok(session) => Accepted::Session(session),
+                    Ok(session) => Accepted::Session(SecureSession {
+                        prover: Some(self.prover),
+                        ..session
+                    }),
                     Err(Unanswered::Refused(said)) => Accepted::Refused(said.message),
                     Err(Unanswered::Failed(said)) => Accepted::Failed(said.message),
                 };
@@ -187,9 +194,11 @@ impl SecureListener {
     }
 
     /// Stop: nothing accepted after, every accept waiting woken and told
-    /// [`Accepted::Stopped`], the accepting thread joined. A connection
+    /// [`Accepted::Stopped`], the accepting thread joined, and every caller
+    /// its sessions proved revoked (`plane::held::revoke`). A connection
     /// already handed over is its holder's to close.
     pub fn stop(&self) {
+        held::revoke(self.prover);
         self.waiting.stopping.store(true, Ordering::SeqCst);
         {
             let _finished = self.waiting.finished();
@@ -249,6 +258,7 @@ pub struct SecureSession {
     presented: Option<Vec<u8>>,
     local: SocketAddr,
     remote: SocketAddr,
+    prover: Option<Prover>,
 }
 
 impl core::fmt::Debug for SecureSession {
@@ -297,6 +307,7 @@ impl SecureSession {
             presented,
             local,
             remote,
+            prover: None,
         })
     }
 
@@ -304,6 +315,13 @@ impl SecureSession {
     #[must_use]
     pub fn presented(&self) -> Option<&[u8]> {
         self.presented.as_deref()
+    }
+
+    /// The listener that accepted it, which revokes every caller it proved
+    /// when it stops; `None` before it was handed over.
+    #[must_use]
+    pub const fn prover(&self) -> Option<Prover> {
+        self.prover
     }
 
     /// Where the connection was accepted, and where the client is.

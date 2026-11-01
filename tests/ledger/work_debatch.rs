@@ -22,7 +22,7 @@ use xmip_core_runtime::work_step::{Running, Turned, turn_due};
 
 use super::receive_cycle::on_working_node;
 use super::sending::memory;
-use super::work_process::{client, from_client, published_to, sending_nothing};
+use super::work_design::{client, from_client, published_to, sending_nothing};
 
 /// The design: a Message marked, split a record a line, each part
 /// published; a refused record caught and the Message published to

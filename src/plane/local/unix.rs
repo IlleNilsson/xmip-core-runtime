@@ -238,6 +238,29 @@ pub(crate) struct Stream {
     admitted: Option<Arc<Admitted>>,
 }
 
+/// The account `uid` is: its name where the system names it, else `uid`
+/// and the number.
+#[cfg(feature = "node")]
+fn named(uid: u32) -> String {
+    User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map_or_else(|| format!("uid {uid}"), |user| user.name)
+}
+
+/// The account this process runs as, by the kernel's word, named as a
+/// local endpoint names one connecting ([`Stream::caller`]); never what
+/// the environment says.
+///
+/// # Errors
+///
+/// None on Unix: the kernel always says.
+#[cfg(feature = "node")]
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn running_as() -> Result<String, String> {
+    Ok(named(nix::unistd::geteuid().as_raw()))
+}
+
 impl Stream {
     /// The account the connecting process runs as, by the kernel's word:
     /// its name where the system names it, else `uid` and the number —
@@ -250,10 +273,7 @@ impl Stream {
     pub(crate) fn caller(&mut self) -> Result<String, String> {
         let (uid, gid) =
             peer(&self.socket).map_err(|error| format!("the caller is not known: {error}"))?;
-        let name = User::from_uid(Uid::from_raw(uid))
-            .ok()
-            .flatten()
-            .map_or_else(|| format!("uid {uid}"), |user| user.name);
+        let name = named(uid);
         let node = nix::unistd::geteuid().as_raw();
         if self
             .admitted

@@ -215,7 +215,8 @@ mod tests {
         xmip_remote_publication_v1, xmip_remote_wait_v1,
     };
     use crate::ffi::security_role::{
-        xmip_act_admitted_v1, xmip_security_role_named_v1, xmip_security_role_words_v1,
+        xmip_act_admitted_v1, xmip_caller_hold_v1, xmip_caller_named_v1, xmip_caller_process_v1,
+        xmip_caller_release_v1, xmip_security_role_named_v1, xmip_security_role_words_v1,
     };
     use crate::fixture::Authority;
 
@@ -246,6 +247,10 @@ mod tests {
         let _: header::SecurityRoleNamedFn = xmip_security_role_named_v1;
         let _: header::SecurityRoleWordsFn = xmip_security_role_words_v1;
         let _: header::ActAdmittedFn = xmip_act_admitted_v1;
+        let _: header::CallerHoldFn = xmip_caller_hold_v1;
+        let _: header::CallerReleaseFn = xmip_caller_release_v1;
+        let _: header::CallerNamedFn = xmip_caller_named_v1;
+        let _: header::CallerProcessFn = xmip_caller_process_v1;
     }
 
     #[test]

@@ -111,6 +111,18 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// The account this process runs as, `DOMAIN\user`, by its own token's
+/// word (`net::pipe::running_as`), as a local endpoint names one
+/// connecting ([`Stream::caller`]); never what the environment says.
+///
+/// # Errors
+///
+/// Where Windows does not say.
+#[cfg(feature = "node")]
+pub(crate) fn running_as() -> Result<String, String> {
+    net::pipe::running_as()
+}
+
 /// Wake a listener waiting at `path` for a connection; whether it connected.
 #[cfg(feature = "node")]
 pub(crate) fn wake(path: &Path) -> bool {

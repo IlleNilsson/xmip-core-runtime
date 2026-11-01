@@ -1,0 +1,59 @@
+//! The module's timing program (`doc/governance/rust-style.md` section
+//! 5c): the runtime held to how long Xmip takes — the millisecond rule
+//! (`CONTRIBUTING.md`, *Rust is here for one reason*). A plain `cargo test`
+//! leaves it out; the landing runs it after every other test of the
+//! module, alone, one test at a time (`cargo test --test measured
+//! --all-features -- --test-threads=1`), so what is measured is Xmip's work
+//! and not its neighbors':
+//!
+//! - `running.rs`: a node carries every Message from its Receive Location
+//!   to the far end, Xmip's own share of each under a millisecond, and
+//!   eight senders side by side;
+//! - `plane.rs`: a follower told as the publication advances, over
+//!   loopback TLS and on the local endpoint, a connection on the local
+//!   endpoint answered, and a node known unreachable said so at once;
+//! - `deadline.rs`: a node that does not answer within the wait is
+//!   unreachable at once after;
+//! - `due.rs`: a queue's retry woken for within a millisecond of its due
+//!   time;
+//! - `directory_watch.rs`: a dropped watch ends its thread at once;
+//! - `sequenced_cost.rs` and `work_turn.rs`: what a hop's sequence check
+//!   and a Work Process's turn cost, held in a release build.
+//!
+//! What it stands up is the other test programs' own, shared, not copied:
+//! `tests/running/node.rs`, `tests/plane/certified.rs` and `endpoint.rs`,
+//! and `tests/ledger/receive_cycle.rs`, `sending.rs`, `work_design.rs` and
+//! `said.rs`. Each is written for every test of its own program, so what
+//! this program does not use of it is allowed here as dead.
+
+#[allow(dead_code)]
+#[path = "../plane/certified.rs"]
+mod certified;
+#[allow(dead_code)]
+#[path = "../plane/endpoint.rs"]
+mod endpoint;
+#[allow(dead_code)]
+#[path = "../running/node.rs"]
+mod node;
+#[allow(dead_code)]
+#[path = "../ledger/receive_cycle.rs"]
+mod receive_cycle;
+#[allow(dead_code)]
+#[path = "../ledger/said.rs"]
+mod said;
+#[allow(dead_code)]
+#[path = "../ledger/sending.rs"]
+mod sending;
+#[allow(dead_code)]
+#[path = "../ledger/work_design.rs"]
+mod work_design;
+
+mod deadline;
+mod directory_watch;
+mod due;
+mod plane;
+mod running;
+mod sequenced_cost;
+mod work_turn;
+
+use said::say;

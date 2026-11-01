@@ -164,7 +164,14 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
 /// ends are held to (`transport::Configured::pinned_by`), the guard its
 /// receives terminate TLS with (`transport::Configured::guarded_by`), and
 /// the secret its Location names (`transport::Configured::secured_by`).
-pub(crate) fn open<T: Configured + Send + Sync + 'static>(
+/// Public so a test's [`Open`] can wrap it, as the running tests count
+/// what a node builds.
+///
+/// # Errors
+///
+/// What the technology refuses of the Location, its node, its guard or
+/// its secret.
+pub fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],

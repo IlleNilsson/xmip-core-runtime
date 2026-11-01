@@ -211,7 +211,7 @@ pub fn publish(
         claims: lined.claims.clone(),
         lease_nanos: u64::try_from(publisher.send.lease().as_nanos()).unwrap_or(u64::MAX),
     };
-    let (holds, durable) = publisher.storage.publish(&publication).map_err(|why| {
+    let (holds, durable) = publisher.storage.publish(publication).map_err(|why| {
         // Nothing it claimed is claimed: the places admitted are free.
         publisher.send.withdrawn(&lined);
         format!(
