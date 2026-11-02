@@ -316,6 +316,8 @@ mod tests {
             following: Mutex::new(None),
             asking: Mutex::new(None),
             line: Mutex::new(None),
+            #[cfg(feature = "node")]
+            fresh: Mutex::default(),
         });
         kept(&shared);
 

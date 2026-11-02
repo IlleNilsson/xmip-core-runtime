@@ -66,6 +66,7 @@ pub struct Proof {
     identity: AuthenticatedIdentity,
     leaf: Option<Vec<u8>>,
     vouched: Mutex<Vec<Vouch>>,
+    refusals: Mutex<Vec<(u64, String)>>,
 }
 
 impl Proof {
@@ -118,10 +119,24 @@ impl Proof {
         }
     }
 
-    /// The node at `at` knows the handle no longer: forgotten here, so the
-    /// next act vouches again.
-    pub fn forget(&self, at: u64) {
-        self.vouches().retain(|vouch| vouch.at != at);
+    /// The node at `at` refused to vouch for this caller, in `why`: what an
+    /// act for the caller there is told.
+    pub fn refused(&self, at: u64, why: String) {
+        self.refusals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((at, why));
+    }
+
+    /// Why the node at `at` refused to vouch for this caller, if it did.
+    #[must_use]
+    pub fn refusal(&self, at: u64) -> Option<String> {
+        self.refusals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(refused, _)| *refused == at)
+            .map(|(_, why)| why.clone())
     }
 
     fn vouches(&self) -> MutexGuard<'_, Vec<Vouch>> {
@@ -191,6 +206,7 @@ pub fn hold(
         identity,
         leaf,
         vouched: Mutex::default(),
+        refusals: Mutex::default(),
     });
     held_again(proof, until, by)
 }

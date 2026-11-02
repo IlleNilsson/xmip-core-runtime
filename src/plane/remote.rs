@@ -35,7 +35,9 @@ use crate::plane::local;
 use crate::plane::shared::Shared;
 
 mod asking;
-mod relayed;
+#[cfg(feature = "node")]
+pub(crate) mod fresh;
+pub(crate) mod relayed;
 mod secret;
 
 /// How long a drop waits for the follow to end once its read is
@@ -182,7 +184,7 @@ impl Remote {
         } else {
             retry
         };
-        Self {
+        let remote = Self {
             shared: Arc::new(Shared {
                 address,
                 reach,
@@ -199,9 +201,14 @@ impl Remote {
                 following: Mutex::new(None),
                 asking: Mutex::new(None),
                 line: Mutex::new(None),
+                #[cfg(feature = "node")]
+                fresh: Mutex::default(),
             }),
             follow: Mutex::new(None),
-        }
+        };
+        #[cfg(feature = "node")]
+        fresh::surfaced(&remote.shared);
+        remote
     }
 
     /// The node's operate address, or its local endpoint's path.

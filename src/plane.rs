@@ -31,12 +31,16 @@ pub mod call;
 pub mod caller;
 pub mod deadline;
 mod follow;
+#[cfg(feature = "node")]
+pub mod fresh;
 pub mod handle;
 pub mod held;
 mod line;
 #[cfg(feature = "node")]
 pub mod listener;
 pub mod local;
+#[cfg(feature = "node")]
+pub mod possessed;
 pub mod remote;
 pub mod role;
 #[cfg(feature = "node")]

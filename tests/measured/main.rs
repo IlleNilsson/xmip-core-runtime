@@ -14,6 +14,9 @@
 //!   endpoint answered, and a node known unreachable said so at once;
 //! - `deadline.rs`: a node that does not answer within the wait is
 //!   unreachable at once after;
+//! - `relayed.rs`: proving a browser's caller to one node, or three at once,
+//!   adds under a
+//!   millisecond to its session's start;
 //! - `due.rs`: a queue's retry woken for within a millisecond of its due
 //!   time;
 //! - `directory_watch.rs`: a dropped watch ends its thread at once;
@@ -21,11 +24,15 @@
 //!   and a Work Process's turn cost, held in a release build.
 //!
 //! What it stands up is the other test programs' own, shared, not copied:
-//! `tests/running/node.rs`, `tests/plane/certified.rs` and `endpoint.rs`,
+//! `tests/running/node.rs`, `tests/plane/certified.rs`, `endpoint.rs` and
+//! `browsing.rs`,
 //! and `tests/ledger/receive_cycle.rs`, `sending.rs`, `work_design.rs` and
 //! `said.rs`. Each is written for every test of its own program, so what
 //! this program does not use of it is allowed here as dead.
 
+#[allow(dead_code)]
+#[path = "../plane/browsing.rs"]
+mod browsing;
 #[allow(dead_code)]
 #[path = "../plane/certified.rs"]
 mod certified;
@@ -52,6 +59,7 @@ mod deadline;
 mod directory_watch;
 mod due;
 mod plane;
+mod relayed;
 mod running;
 mod sequenced_cost;
 mod work_turn;

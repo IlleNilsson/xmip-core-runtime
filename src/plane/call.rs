@@ -36,8 +36,13 @@ pub const SECRET: &str = "SetSecret";
 /// The secrets the node keeps, by name, never a value.
 pub const SECRETS: &str = "Secrets";
 
-/// A relay hands the node the certificate a caller presented to it, and is
-/// answered the node's handle for that caller (`plane::vouched`).
+/// A relay asks the node for fresh nonces to bind its browsers' handshakes
+/// to (`plane::fresh`).
+pub const NONCES: &str = "Nonces";
+
+/// A relay hands the node a browser's handshake, which proves the browser
+/// held its key (`plane::possessed`), and is answered the node's handle for
+/// that caller (`plane::vouched`).
 pub const VOUCH: &str = "Vouch";
 
 /// A relay lets a caller it was answered a handle for go.

@@ -69,6 +69,8 @@ pub mod pool;
 #[cfg(feature = "node")]
 pub mod presented;
 #[cfg(feature = "node")]
+mod protection;
+#[cfg(feature = "node")]
 #[cfg(feature = "node")]
 pub mod receive_certificate;
 #[cfg(feature = "node")]
@@ -83,6 +85,8 @@ pub mod running;
 pub mod secret;
 #[cfg(feature = "node")]
 pub mod secure_listener;
+#[cfg(feature = "node")]
+mod secured;
 #[cfg(feature = "node")]
 pub mod send_step;
 #[cfg(feature = "node")]

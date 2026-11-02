@@ -256,17 +256,12 @@ pub unsafe extern "C" fn xmip_caller_proven_v1(
     let Some(session) = (unsafe { session.as_ref() }) else {
         return status::INVALID;
     };
-    let (handle, name) = session.presented().map_or((0, String::new()), |leaf| {
-        let Ok(caller) = crate::plane::caller::certificate(leaf) else {
-            return (0, String::new());
-        };
-        let until = authenticate::x509::not_after_of(leaf).ok();
-        let name = caller.value.clone();
-        match held::hold(caller, until, session.prover(), Some(leaf.to_vec())) {
-            0 => (0, String::new()),
-            handle => (handle, name),
-        }
-    });
+    // The session holds the caller its handshake proved (`secured`); each
+    // call hands its caller a handle of its own.
+    let handle = held::again(session.caller());
+    let name = held::proven(handle)
+        .map(|caller| caller.value)
+        .unwrap_or_default();
     // SAFETY: `out_caller` is writable; `out` has room for `cap` bytes and
     // `out_len` is writable.
     unsafe {
