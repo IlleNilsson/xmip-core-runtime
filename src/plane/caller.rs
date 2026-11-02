@@ -2,7 +2,7 @@
 //! amendment 2026-10-30; ADR-0009, amendment 2026-11-01).
 //!
 //! The owner, 2026-10-29: *First you present your identity, then you get
-//! identified. Then we look to authentication, do your identification hold
+//! identified. Then we look to authentication, does your identification hold
 //! up. When authenticated we look for Authorization.* A caller of a node's
 //! operate listener, or of a web host's secure surface (`xmip_operate.h`
 //! section 21), presents what its connection proves — a client certificate

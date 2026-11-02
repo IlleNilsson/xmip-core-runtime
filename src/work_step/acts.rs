@@ -3,8 +3,8 @@
 //! published back through routing, each a new Message generation and
 //! nothing edited (`doc/terminology.md`, *Message and Section*).
 //!
-//! The owner, 2026-10-22: *Transformation and Assignment where ever they
-//! occur, creates a new message from a previous or created message.*
+//! The owner, 2026-10-22: *Transformation and Assignment wherever they
+//! occur, create a new message from a previous or created message.*
 
 use std::collections::HashMap;
 

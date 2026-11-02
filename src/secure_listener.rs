@@ -2,7 +2,7 @@
 //! `xmip_operate.h` section 21): the host — a .NET web server — hands the
 //! TLS to the runtime and keeps HTTP, so its browsers are served by
 //! `xmip-core-library-tls` and never by the platform's stack (the owner,
-//! 2026-09-26: *Xmip shall use its own tool chain, dog fooding as much as
+//! 2026-09-26: *Xmip shall use its own tool chain, dogfooding as much as
 //! possible*).
 //!
 //! A [`SecureListener`] listens on an address, presenting the host's
