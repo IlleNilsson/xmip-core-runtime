@@ -119,7 +119,7 @@ pub(crate) fn connect(path: &Path, patience: Duration) -> Result<Stream, String>
 ///
 /// Where Windows does not say.
 #[cfg(feature = "node")]
-pub(crate) fn running_as() -> Result<String, String> {
+pub fn running_as() -> Result<String, String> {
     net::pipe::running_as()
 }
 

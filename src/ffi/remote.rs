@@ -224,10 +224,12 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
 }
 
 /// `act` on the `noun` called `target` of the node at `node`, as the
-/// identity the certificate proves. `XMIP_OK` taken; `XMIP_E_AUTH` refused
-/// by role; `XMIP_E_NOT_FOUND` refused by the node; `XMIP_E_INVALID` no
-/// act the noun takes; `XMIP_E_IO` Xmip Storage did not answer;
-/// `XMIP_E_UNAVAILABLE` the node did not. The sentence in `said`.
+/// identity the certificate proves — or, for `caller` a handle this
+/// process holds a caller by (section 18), as that caller, the node
+/// vouching for it; 0 for this side itself. `XMIP_OK` taken; `XMIP_E_AUTH`
+/// refused by role, or no one; `XMIP_E_NOT_FOUND` refused by the node;
+/// `XMIP_E_INVALID` no act the noun takes; `XMIP_E_IO` Xmip Storage did not
+/// answer; `XMIP_E_UNAVAILABLE` the node did not. The sentence in `said`.
 ///
 /// # Safety
 /// `remote` is a live handle; the strings point at their stated lengths;
@@ -235,6 +237,7 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_act_v1(
     remote: *const RemoteHandle,
+    caller: u64,
     node: Str,
     noun: Str,
     target: Str,
@@ -251,7 +254,7 @@ pub unsafe extern "C" fn xmip_remote_act_v1(
     let Some([node, noun, target, act]) = (unsafe { texts([node, noun, target, act]) }) else {
         return status::MALFORMED;
     };
-    let (code, sentence) = match held.remote.act(node, noun, target, act) {
+    let (code, sentence) = match held.remote.act(caller, node, (noun, target, act)) {
         Ok((outcome, sentence)) => (status_of(outcome), sentence),
         Err(why) => (status::UNAVAILABLE, why),
     };
@@ -273,7 +276,9 @@ const fn status_of(outcome: Outcome) -> i32 {
 
 /// Set the secret `name` of `kind` to `value` through the node at `node`
 /// (section 24; ADR-0019, amendment 2026-10-29), as the identity the
-/// handle's connection proves; the node admits it by role and audits it
+/// handle's connection proves — or, for `caller` a handle this process
+/// holds a caller by (section 18), as that caller, the node vouching for
+/// it; 0 for this side itself; the node admits it by role and audits it
 /// with the name, never the value. The sentence in `said`.
 ///
 /// # Safety
@@ -282,6 +287,7 @@ const fn status_of(outcome: Outcome) -> i32 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_secret_v1(
     remote: *const RemoteHandle,
+    caller: u64,
     node: Str,
     name: Str,
     kind: Str,
@@ -298,7 +304,7 @@ pub unsafe extern "C" fn xmip_secret_v1(
     let Some([node, name, kind, value]) = (unsafe { texts([node, name, kind, value]) }) else {
         return status::MALFORMED;
     };
-    let (code, sentence) = match held.remote.set_secret(node, (name, kind, value)) {
+    let (code, sentence) = match held.remote.set_secret(caller, node, (name, kind, value)) {
         Ok((outcome, sentence)) => (status_of(outcome), sentence),
         Err(why) => (status::UNAVAILABLE, why),
     };
@@ -307,7 +313,8 @@ pub unsafe extern "C" fn xmip_secret_v1(
     code
 }
 
-/// The secrets the node at `node` keeps, JSON, never a value (section 24):
+/// The secrets the node at `node` keeps, JSON, never a value (section 24),
+/// asked as `xmip_secret_v1` asks, `caller` alike:
 /// written into `out`, its true length in `out_len` whether or not it fit.
 ///
 /// # Safety
@@ -316,6 +323,7 @@ pub unsafe extern "C" fn xmip_secret_v1(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_secrets_v1(
     remote: *const RemoteHandle,
+    caller: u64,
     node: Str,
     out: *mut u8,
     cap: usize,
@@ -329,7 +337,7 @@ pub unsafe extern "C" fn xmip_secrets_v1(
     let Some(node) = (unsafe { scope_text(node) }) else {
         return status::MALFORMED;
     };
-    let (code, text) = match held.remote.secrets(node) {
+    let (code, text) = match held.remote.secrets(caller, node) {
         Ok(listed) => {
             let text = listed.to_string();
             let code = if text.len() > cap {

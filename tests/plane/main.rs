@@ -9,6 +9,7 @@
 mod certified;
 mod endpoint;
 mod local;
+mod relayed;
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
     let surface = remote(&authority, &listener);
 
     let (outcome, said) = surface
-        .act(&absent_node(), "subscription", "orders", "pause")
+        .act(0, &absent_node(), ("subscription", "orders", "pause"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Denied);
     assert!(
@@ -44,7 +45,7 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
     );
 
     let (outcome, said) = surface
-        .act(&absent_node(), "subscription", "orders", "remove")
+        .act(0, &absent_node(), ("subscription", "orders", "remove"))
         .expect("it answers");
     // Who may ask is decided first: an Observer is told so, whatever it asks.
     assert_eq!(outcome, Outcome::Denied, "{said}");
@@ -58,7 +59,7 @@ fn an_operator_acts_as_the_certificate_and_the_node_answers() {
     let surface = remote(&authority, &listener);
 
     let (outcome, said) = surface
-        .act(&absent_node(), "message", "j1", "retry")
+        .act(0, &absent_node(), ("message", "j1", "retry"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
     assert_eq!(

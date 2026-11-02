@@ -65,7 +65,7 @@ fn held(shared: &Shared, mut line: Line) -> String {
             return String::new();
         }
         let asked = json!({ "after": revision, "within_ms": if reached { within } else { 0 } });
-        match line.call(WAIT, &asked) {
+        match line.call(WAIT, &asked, None) {
             Ok(answer) => {
                 let now = answer["revision"].as_u64().unwrap_or(revision);
                 // A call that waited too long said the node unreachable;

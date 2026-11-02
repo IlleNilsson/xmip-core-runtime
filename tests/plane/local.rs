@@ -28,7 +28,7 @@ fn an_act_on_this_machine_is_the_users_and_is_refused_to_an_observer() {
     let surface = surface(&called);
 
     let (outcome, said) = surface
-        .act(&absent_node(), "subscription", "orders", "pause")
+        .act(0, &absent_node(), ("subscription", "orders", "pause"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Denied);
     assert!(said.starts_with("REFUSED. "), "{said}");
@@ -48,7 +48,7 @@ fn an_operator_on_this_machine_acts_and_the_node_answers() {
     let surface = surface(&called);
 
     let (outcome, said) = surface
-        .act(&absent_node(), "message", "j1", "retry")
+        .act(0, &absent_node(), ("message", "j1", "retry"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
     assert_eq!(
@@ -65,7 +65,7 @@ fn a_secret_is_set_through_the_endpoint_as_an_act_and_never_said_back() {
     let drawn = format!("drawn-{}", std::process::id());
 
     let (outcome, said) = operator
-        .set_secret(&absent_node(), ("partner-x", "password", &drawn))
+        .set_secret(0, &absent_node(), ("partner-x", "password", &drawn))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
     assert_eq!(
@@ -73,12 +73,14 @@ fn a_secret_is_set_through_the_endpoint_as_an_act_and_never_said_back() {
         format!("REFUSED: no node at {} runs in this process", absent_node())
     );
     assert!(!said.contains(&drawn));
-    let listed = operator.secrets(&absent_node()).expect_err("no such node");
+    let listed = operator
+        .secrets(0, &absent_node())
+        .expect_err("no such node");
     assert!(listed.starts_with("REFUSED: no node at"), "{listed}");
 
     let (_watching, _, watched) = node(&board, Some(Role::Observer));
     let (outcome, said) = surface(&watched)
-        .set_secret(&absent_node(), ("partner-x", "password", &drawn))
+        .set_secret(0, &absent_node(), ("partner-x", "password", &drawn))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Denied, "{said}");
 }

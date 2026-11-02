@@ -152,7 +152,7 @@ pub unsafe extern "C" fn xmip_caller_process_v1(
     let (code, handle, text) = match proven {
         Ok(caller) => {
             let name = caller.value.clone();
-            match held::hold(caller, None, None) {
+            match held::hold(caller, None, None, None) {
                 0 => (status::AUTH, 0, format!("REFUSED. {name} is not held")),
                 handle => (status::OK, handle, name),
             }
@@ -212,7 +212,7 @@ mod tests {
             Established::Passed,
             Verified::Proven,
         );
-        let a = held::hold(identity, None, None);
+        let a = held::hold(identity, None, None, None);
         let (code, sentence) = asked(a, 0);
         assert_eq!(code, status::AUTH);
         assert!(sentence.starts_with("REFUSED. CN=a may not pause x: CN=a is Observer"));

@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn a_screens_act_is_admitted_by_the_same_rule_and_a_handle_held_by_no_one_is_no_one() {
         use crate::plane::held;
-        let a = held::hold(caller(Verified::Proven), None, None);
+        let a = held::hold(caller(Verified::Proven), None, None, None);
         assert!(act_admitted(a, Role::Operator, ("pause", "x")).is_ok());
         let observer = act_admitted(a, Role::Observer, ("pause", "x"));
         assert!(

@@ -30,11 +30,12 @@ use xcore::wake::Wake;
 use crate::plane::call::{ACT, PUBLICATION};
 use crate::plane::deadline::{self, Deadline};
 use crate::plane::follow;
-use crate::plane::line::{Line, Reach, host_of};
+use crate::plane::line::{Reach, host_of};
 use crate::plane::local;
 use crate::plane::shared::Shared;
 
 mod asking;
+mod relayed;
 mod secret;
 
 /// How long a drop waits for the follow to end once its read is
@@ -102,7 +103,6 @@ impl Outcome {
 /// A node reached at its operate listener.
 pub struct Remote {
     shared: Arc<Shared>,
-    asking: Mutex<Option<Line>>,
     follow: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -198,8 +198,8 @@ impl Remote {
                 connecting: AtomicBool::new(false),
                 following: Mutex::new(None),
                 asking: Mutex::new(None),
+                line: Mutex::new(None),
             }),
-            asking: Mutex::new(None),
             follow: Mutex::new(None),
         }
     }
@@ -227,21 +227,22 @@ impl Remote {
     }
 
     /// `act` on the `noun` called `target` of the node at `node`, as the
-    /// identity this side's certificate proves: what came of it, and the
-    /// node's sentence.
+    /// identity this side's certificate proves — or, for `caller` a handle
+    /// this process holds a caller by (`plane::held`), as that caller, the
+    /// node vouching for it (`relayed`); 0 for this side itself: what came
+    /// of it, and the node's sentence.
     ///
     /// # Errors
     ///
     /// Why the node did not answer.
     pub fn act(
         &self,
+        caller: u64,
         node: &str,
-        noun: &str,
-        target: &str,
-        act: &str,
+        (noun, target, act): (&str, &str, &str),
     ) -> Result<(Outcome, String), String> {
         let message = json!({ "node": node, "noun": noun, "target": target, "act": act });
-        let answer = self.asked(ACT, &message)?;
+        let answer = self.relayed(caller, ACT, &message)?;
         let said = answer["said"].as_str().unwrap_or_default().to_string();
         Ok((
             Outcome::of(answer["outcome"].as_str().unwrap_or_default()),
@@ -300,6 +301,17 @@ impl Remote {
         method: &str,
         message: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        self.asked_for(method, message, None)
+    }
+
+    /// The same, for the caller the node's handle `caller` names where this
+    /// side relays for one (`relayed`).
+    fn asked_for(
+        &self,
+        method: &str,
+        message: &serde_json::Value,
+        caller: Option<u64>,
+    ) -> Result<serde_json::Value, String> {
         let state = self.state();
         if !state.reachable && state.told > 0 {
             return Err(format!(
@@ -307,17 +319,19 @@ impl Remote {
                 self.shared.address, state.reason
             ));
         }
-        self.called(method, message).map_err(|(lost, why)| {
-            if !lost {
-                return why;
-            }
-            self.shared.tell(|state| {
-                state.reachable = false;
-                state.reason.clone_from(&why);
-            });
-            self.followed();
-            format!("{} unreachable: {why}", self.shared.address)
-        })
+        self.shared
+            .called(method, message, caller)
+            .map_err(|(lost, why)| {
+                if !lost {
+                    return why;
+                }
+                self.shared.tell(|state| {
+                    state.reachable = false;
+                    state.reason.clone_from(&why);
+                });
+                self.followed();
+                format!("{} unreachable: {why}", self.shared.address)
+            })
     }
 }
 

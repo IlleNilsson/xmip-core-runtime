@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,7 @@ use crate::plane::board::Published;
 use crate::plane::local::{self, Acceptor, Cancel};
 use crate::plane::role::Role;
 use crate::plane::served::{answer, answer_local};
+use crate::plane::vouched::Relaying;
 use crate::plane::workers::Workers;
 
 /// How long a stop waits on its own wake-up connection, and on a
@@ -46,6 +47,10 @@ pub(crate) struct Serve {
     pub(crate) config: Option<Arc<tls::ServerConfig>>,
     /// The role the node's configuration states for every proven caller.
     pub(crate) stated: Option<Role>,
+    /// Who may relay for a caller and what its certificate must reach
+    /// (`[operate] relay`, `plane::vouched`); none until set, so a call
+    /// before is relayed for no one.
+    pub(crate) relaying: OnceLock<Arc<Relaying>>,
     pub(crate) audit: ProgramAudit,
     pub(crate) stopping: AtomicBool,
 }
@@ -171,6 +176,14 @@ impl Listener {
         })
     }
 
+    /// Relay for a caller `relaying` says (`[operate] relay`): its accounts
+    /// may vouch for a caller's certificate and act for that caller, by the
+    /// caller's own role (`plane::vouched`). Set once, as the node starts;
+    /// until then no one is relayed.
+    pub fn relay(&self, relaying: Arc<Relaying>) {
+        let _ = self.serve.relaying.set(relaying);
+    }
+
     /// Where it listens: `host:port`, or the local endpoint's path.
     #[must_use]
     pub fn address(&self) -> String {
@@ -225,6 +238,7 @@ fn serving(
         config,
         stated,
         audit: audit.clone(),
+        relaying: OnceLock::new(),
         stopping: AtomicBool::new(false),
     })
 }

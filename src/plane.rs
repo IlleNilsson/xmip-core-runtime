@@ -31,6 +31,7 @@ pub mod call;
 pub mod caller;
 pub mod deadline;
 mod follow;
+pub mod handle;
 pub mod held;
 mod line;
 #[cfg(feature = "node")]
@@ -41,6 +42,8 @@ pub mod role;
 #[cfg(feature = "node")]
 pub mod served;
 mod shared;
+#[cfg(feature = "node")]
+pub mod vouched;
 #[cfg(feature = "node")]
 mod workers;
 
