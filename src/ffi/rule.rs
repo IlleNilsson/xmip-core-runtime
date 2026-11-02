@@ -2,7 +2,7 @@
 //! its own.
 //!
 //! The owner, 2026-09-24: *Code shall be uniquely placed, used by others,
-//! whom in turn has unique code used by others.* Scope containment, and the
+//! who in turn have unique code used by others.* Scope containment, and the
 //! node and stage a scope is on, are `observe::Scope`'s; a mood's word, its
 //! color name, the rollup and the worst-first order are `observe::Health`'s
 //! and `observe::Standing`'s; a
