@@ -5,7 +5,9 @@
 //! of a millisecond of processor time on Windows (measured 2026-10-21). A
 //! thread with nothing to answer waits for the next connection, at most
 //! [`IDLE`] of them at once; the rest end. Stopping lets every waiting
-//! thread go and joins every thread.
+//! thread go and joins every thread. A web host hands a browser's
+//! handshake to each node it follows on threads kept alike
+//! (`remote::relayed`), so a session's start waits on no thread's start.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -19,16 +21,34 @@ type Work = Box<dyn FnOnce() + Send>;
 /// How many threads wait for a connection at most.
 const IDLE: usize = 8;
 
-/// A listener's threads.
-#[derive(Default)]
+/// A listener's threads, or any work's kept alike.
 pub(crate) struct Workers {
+    /// What each thread is named.
+    name: &'static str,
     /// Each waiting thread, by what hands it its next connection.
     idle: Mutex<Vec<Sender<Work>>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     stopped: AtomicBool,
 }
 
+impl Default for Workers {
+    /// A listener's: each thread answers a connection.
+    fn default() -> Self {
+        Self::named("xmip-operate-connection")
+    }
+}
+
 impl Workers {
+    /// Threads named `name`.
+    pub(crate) fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            idle: Mutex::default(),
+            threads: Mutex::default(),
+            stopped: AtomicBool::new(false),
+        }
+    }
+
     /// Run `work` on a waiting thread, else on a new one; nothing once
     /// stopped. Whether it runs.
     pub(crate) fn run(self: &Arc<Self>, work: Work) -> bool {
@@ -50,7 +70,7 @@ impl Workers {
         };
         let workers = Arc::clone(self);
         let Ok(thread) = std::thread::Builder::new()
-            .name("xmip-operate-connection".to_string())
+            .name(self.name.to_string())
             .spawn(move || workers.answering(work))
         else {
             return false;

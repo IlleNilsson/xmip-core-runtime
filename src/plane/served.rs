@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use xcore::{ExecutionPhase, Severity};
 
 use crate::applied::{Applied, apply};
-use crate::plane::call::{self, ACT, PUBLICATION, SECRET, SECRETS, UNVOUCH, VOUCH, WAIT};
+use crate::plane::call::{self, ACT, NONCES, PUBLICATION, SECRET, SECRETS, UNVOUCH, VOUCH, WAIT};
 use crate::plane::call::{LONGEST_WAIT, WATCH};
 use crate::plane::caller;
 use crate::plane::listener::Serve;
@@ -151,13 +151,13 @@ fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> R
         .relaying
         .get()
         .filter(|relaying| caller.verified.is_proven() && relaying.relays(&caller.value));
-    if matches!(method, VOUCH | UNVOUCH) {
+    if matches!(method, NONCES | VOUCH | UNVOUCH) {
         return relayed(serve, relaying.map(AsRef::as_ref), caller, method, request);
     }
     let (acting, through) = match (call::caller_of(request), relaying) {
         (None, _) => (Some(caller.clone()), None),
         (Some(handle), Some(_)) => (
-            vouched::proven(handle, &caller.value),
+            relaying.and_then(|relaying| vouched::proven(relaying, handle, &caller.value)),
             Some(caller.value.as_str()),
         ),
         (Some(_), None) => {
@@ -217,7 +217,7 @@ fn answered_refused(method: &str, refused: &str) -> Response {
     }
 }
 
-/// A relay's `Vouch` or `Unvouch`, answered only for a connection
+/// A relay's `Nonces`, `Vouch` or `Unvouch`, answered only for a connection
 /// `[operate] relay` names (`relaying`); every other is refused before its
 /// call is read, and audited.
 fn relayed(
@@ -237,10 +237,10 @@ fn relayed(
         Ok(message) => message,
         Err(why) => return call::refusal("INVALID_ARGUMENT", &why),
     };
-    let answer = if method == VOUCH {
-        vouched::vouched_for(relaying, who, &message)
-    } else {
-        vouched::unvouched(who, &message)
+    let answer = match method {
+        NONCES => vouched::nonces(relaying, caller, &message),
+        VOUCH => vouched::vouched_for(relaying, who, &message),
+        _ => vouched::unvouched(relaying, who, &message),
     };
     if let Some(refused) = answer["refused"].as_str() {
         noted(serve, who, refused);
@@ -260,7 +260,16 @@ fn asked(method: &str) -> &'static str {
 }
 
 /// Every method the listener answers.
-const METHODS: [&str; 7] = [PUBLICATION, WAIT, ACT, SECRET, SECRETS, VOUCH, UNVOUCH];
+const METHODS: [&str; 8] = [
+    PUBLICATION,
+    WAIT,
+    ACT,
+    SECRET,
+    SECRETS,
+    NONCES,
+    VOUCH,
+    UNVOUCH,
+];
 
 /// An act, its caller admitted by role already: read, recorded, applied,
 /// and what came of it — `taken`, `refused` by the node, `invalid` for no

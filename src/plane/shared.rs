@@ -37,6 +37,10 @@ pub(crate) struct Shared {
     /// a caller a host lets go is told to the node on it (`remote::relayed`)
     /// without the surface.
     pub(crate) line: Mutex<Option<Line>>,
+    /// The node's nonces kept to bind a browser's handshake to
+    /// (`remote::fresh`).
+    #[cfg(feature = "node")]
+    pub(crate) fresh: Mutex<crate::plane::remote::fresh::Pool>,
 }
 
 impl Shared {

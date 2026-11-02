@@ -31,6 +31,8 @@ use tls::peer::Unanswered;
 
 use crate::plane::held::{self, Prover};
 
+pub use crate::protection::Protection;
+
 /// How long a client has to finish its handshake once it has connected; a
 /// wait on the socket, so one that never speaks costs its own thread this
 /// long and no one else anything.
@@ -57,12 +59,16 @@ pub enum Accepted {
     Stopped,
 }
 
-/// What the accepting thread and the handshakes share with the accepts.
-#[derive(Default)]
-struct Waiting {
+/// What the accepting thread and the handshakes share with the accepts: and
+/// the listener its sessions' callers are proven by, and the leaf
+/// certificate it presents, which every node it binds a handshake to is
+/// told (`secured`).
+pub(crate) struct Waiting {
     finished: Mutex<VecDeque<Result<SecureSession, Unanswered>>>,
     ready: Condvar,
     stopping: AtomicBool,
+    pub(crate) prover: Prover,
+    pub(crate) listener: Vec<u8>,
 }
 
 impl Waiting {
@@ -79,7 +85,7 @@ impl Waiting {
 /// A web host's HTTPS listener.
 pub struct SecureListener {
     local: SocketAddr,
-    prover: Prover,
+    pub(crate) prover: Prover,
     waiting: Arc<Waiting>,
     accepting: Mutex<Option<JoinHandle<()>>>,
 }
@@ -89,30 +95,6 @@ impl core::fmt::Debug for SecureListener {
         f.debug_struct("SecureListener")
             .field("local", &self.local)
             .finish_non_exhaustive()
-    }
-}
-
-/// How a listener's connections are protected: a parameter, never a name
-/// (the owner, 2026-10-21: *technology and security should not be in
-/// functions, parameters is ok*). TLS, `xmip-core-library-tls`, is the one
-/// built.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Protection {
-    /// TLS 1.3 and 1.2, hybrid key exchange first (ADR-0033).
-    Tls,
-}
-
-impl Protection {
-    /// `XMIP_PROTECTION_TLS`, as section 21 passes it.
-    pub const TLS: i32 = 1;
-
-    /// The protection `value` names, if it is one built.
-    #[must_use]
-    pub const fn of(value: i32) -> Option<Self> {
-        match value {
-            Self::TLS => Some(Self::Tls),
-            _ => None,
-        }
     }
 }
 
@@ -137,16 +119,25 @@ impl SecureListener {
         let identity =
             tls::Identity::from_pem(certificate.as_bytes(), key.as_bytes(), anchors.as_bytes())
                 .map_err(|failure| failure.message)?;
-        let asking = identity
-            .server_asking()
-            .map_err(|failure| failure.message)?;
-        let config = Arc::new(tls::alpn::selecting(asking, &[HTTP_1_1]));
+        let proving = tls::possession::proving(&identity).map_err(|failure| failure.message)?;
+        let config = Arc::new(tls::alpn::selecting(proving, &[HTTP_1_1]));
+        let listener = authenticate::x509::Chain::from_pem(certificate)
+            .map_err(|failure| failure.to_string())?
+            .leaf()
+            .to_vec();
         let bound = TcpListener::bind(address)
             .map_err(|failure| format!("binding {address}: {failure}"))?;
         let local = bound
             .local_addr()
             .map_err(|failure| format!("where {address} is bound: {failure}"))?;
-        let waiting = Arc::new(Waiting::default());
+        let prover = Prover::next();
+        let waiting = Arc::new(Waiting {
+            finished: Mutex::default(),
+            ready: Condvar::new(),
+            stopping: AtomicBool::new(false),
+            prover,
+            listener,
+        });
         let shared = Arc::clone(&waiting);
         let accepting = std::thread::Builder::new()
             .name("xmip-secure-accept".to_string())
@@ -154,7 +145,7 @@ impl SecureListener {
             .map_err(|failure| format!("starting the listener's thread: {failure}"))?;
         Ok(Self {
             local,
-            prover: Prover::next(),
+            prover,
             waiting,
             accepting: Mutex::new(Some(accepting)),
         })
@@ -177,10 +168,7 @@ impl SecureListener {
             }
             if let Some(handshake) = finished.pop_front() {
                 return match handshake {
-                    Ok(session) => Accepted::Session(SecureSession {
-                        prover: Some(self.prover),
-                        ..session
-                    }),
+                    Ok(session) => Accepted::Session(session),
                     Err(Unanswered::Refused(said)) => Accepted::Refused(said.message),
                     Err(Unanswered::Failed(said)) => Accepted::Failed(said.message),
                 };
@@ -241,7 +229,7 @@ fn accept_all(bound: &TcpListener, config: &Arc<tls::ServerConfig>, waiting: &Ar
         let shared = Arc::clone(waiting);
         let spawned = std::thread::Builder::new()
             .name("xmip-secure-handshake".to_string())
-            .spawn(move || shared.hand(SecureSession::handshaken(tcp, config)));
+            .spawn(move || shared.hand(SecureSession::handshaken(tcp, config, &shared)));
         if let Err(failure) = spawned {
             waiting.hand(Err(Unanswered::Failed(tls::TlsError::new(format!(
                 "starting a handshake's thread: {failure}"
@@ -258,7 +246,10 @@ pub struct SecureSession {
     presented: Option<Vec<u8>>,
     local: SocketAddr,
     remote: SocketAddr,
-    prover: Option<Prover>,
+    /// The caller its browser's certificate proved, held for the session
+    /// (`secured`); 0 for no one.
+    caller: u64,
+    own: Duration,
 }
 
 impl core::fmt::Debug for SecureSession {
@@ -270,36 +261,46 @@ impl core::fmt::Debug for SecureSession {
     }
 }
 
+impl Drop for SecureSession {
+    /// The session's own hold on its caller let go; a holder that took one
+    /// of its own keeps it.
+    fn drop(&mut self) {
+        held::release(self.caller);
+    }
+}
+
 impl SecureSession {
     /// The handshake on `tcp`, bounded by [`HANDSHAKE_WITHIN`], and the
-    /// session it finished.
-    fn handshaken(tcp: TcpStream, config: Arc<tls::ServerConfig>) -> Result<Self, Unanswered> {
+    /// session it finished, its caller proven (`secured`).
+    fn handshaken(
+        tcp: TcpStream,
+        config: Arc<tls::ServerConfig>,
+        waiting: &Waiting,
+    ) -> Result<Self, Unanswered> {
         let failed = |what: &str, failure: std::io::Error| {
             Unanswered::Failed(tls::TlsError::new(format!("{what}: {failure}")))
         };
-        let local = tcp
-            .local_addr()
-            .map_err(|f| failed("the local address", f))?;
-        let remote = tcp
-            .peer_addr()
-            .map_err(|f| failed("the client's address", f))?;
-        let bounded = Some(HANDSHAKE_WITHIN);
-        tcp.set_read_timeout(bounded)
-            .and_then(|()| tcp.set_write_timeout(bounded))
-            .and_then(|()| tcp.set_nodelay(true))
-            .map_err(|f| failed("bounding the handshake", f))?;
-        let guarded = tls::peer::handshaken(tcp, config)?;
-        let presented = tls::peer::presented(&guarded.conn);
+        let crate::secured::Proven {
+            guarded,
+            ends: (local, remote),
+            presented,
+            caller,
+            own,
+        } = crate::secured::proven(tcp, config, waiting, HANDSHAKE_WITHIN)?;
+        let released = |unanswered| {
+            held::release(caller);
+            unanswered
+        };
         guarded
             .sock
             .set_read_timeout(None)
             .and_then(|()| guarded.sock.set_write_timeout(None))
-            .map_err(|f| failed("unbounding the session", f))?;
+            .map_err(|f| released(failed("unbounding the session", f)))?;
         let socket = guarded
             .sock
             .try_clone()
-            .map_err(|f| failed("holding the socket", f))?;
-        let split = tls::duplex::split(guarded).map_err(Unanswered::Failed)?;
+            .map_err(|f| released(failed("holding the socket", f)))?;
+        let split = tls::duplex::split(guarded).map_err(|f| released(Unanswered::Failed(f)))?;
         Ok(Self {
             reading: Mutex::new(split.reading),
             writing: Mutex::new(split.writing),
@@ -307,7 +308,8 @@ impl SecureSession {
             presented,
             local,
             remote,
-            prover: None,
+            caller,
+            own,
         })
     }
 
@@ -317,11 +319,20 @@ impl SecureSession {
         self.presented.as_deref()
     }
 
-    /// The listener that accepted it, which revokes every caller it proved
-    /// when it stops; `None` before it was handed over.
+    /// The caller its browser's certificate proved, held for the session
+    /// until it is freed (`plane::held`): what each holder holds its own of
+    /// (`xmip_caller_proven_v1`); 0 for no one.
     #[must_use]
-    pub const fn prover(&self) -> Option<Prover> {
-        self.prover
+    pub const fn caller(&self) -> u64 {
+        self.caller
+    }
+
+    /// Xmip's own share of the session's start, the millisecond rule's
+    /// figure: the processor time spent proving its caller, to this process
+    /// and to every node it follows, beside TLS's handshake (`secured`).
+    #[must_use]
+    pub const fn own(&self) -> Duration {
+        self.own
     }
 
     /// Where the connection was accepted, and where the client is.
@@ -461,6 +472,11 @@ mod tests {
         let caller = crate::plane::caller::certificate(leaf).expect("proven");
         assert!(caller.verified.is_proven());
         assert!(caller.value.contains("alice"), "{}", caller.value);
+        assert_eq!(
+            crate::plane::held::proven(named.caller()).map(|held| held.value),
+            Some(caller.value.clone()),
+            "held for the session"
+        );
         answer(&named, 3);
         assert_eq!(
             browser.join().expect("the browser").expect("answered"),

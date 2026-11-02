@@ -6,6 +6,7 @@
 //! follower is told and a read is answered is the module's timing program's
 //! (`tests/measured`, `doc/governance/rust-style.md` section 5c).
 
+mod browsing;
 mod certified;
 mod endpoint;
 mod local;

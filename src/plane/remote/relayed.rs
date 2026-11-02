@@ -1,29 +1,42 @@
 //! A surface relaying for a caller its host's runtime holds (ADR-0009,
-//! amendment 2026-11-01: the node decides). A web host's caller is held in
-//! this process (`plane::held`); the node is handed the certificate that
-//! proved it (`Vouch`) and answers a handle of its own, which every call
-//! for that caller names (`call::CALLER_HEADER`) — kept on the caller's
-//! shared proof, one per node, and asked once. When the last holder lets
-//! the caller go, the node is told (`Unvouch`) on the surface's own
+//! amendments 2026-11-01 and 2026-11-02: the node decides). A web host's
+//! caller is held in this process (`plane::held`); as its browser's
+//! handshake finishes, every node it was bound to (`remote::fresh`) is
+//! handed that handshake (`Vouch`, [`vouched_everywhere`]) and, once it
+//! proves the browser held its key, answers a handle of its own, which
+//! every call for that caller names (`call::CALLER_HEADER`), kept on the
+//! caller's shared proof, one per node. A node the handshake was not proven
+//! to acts for that caller on nothing, and says why. When the last holder
+//! lets the caller go, the node is told (`Unvouch`) on the surface's own
 //! bounded line. A caller the operating system proved for this process —
 //! a desktop's — is this side's own connection, and is asked as it.
 
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+#[cfg(feature = "node")]
+use std::sync::{LazyLock, Weak, mpsc};
 
 use serde_json::{Value, json};
 
-use crate::plane::call::{REFUSED_CALL, SECRETS, UNKNOWN_CALLER, UNVOUCH, VOUCH};
-use crate::plane::held::{self, Proof};
+use crate::plane::call::SECRETS;
+#[cfg(feature = "node")]
+use crate::plane::call::UNVOUCH;
+use crate::plane::held;
+#[cfg(feature = "node")]
+use crate::plane::held::Proof;
 use crate::plane::remote::Remote;
 use crate::plane::role::{Role, admitted};
 use crate::plane::shared::Shared;
+#[cfg(feature = "node")]
+use crate::plane::workers::Workers;
+#[cfg(feature = "node")]
+use xcore::spent::Spent;
 
 impl Remote {
     /// `method` with `message`, for the caller the handle `held` holds in
     /// this process: as this side's own connection for 0 or a caller the
     /// operating system proved, for the caller the node vouched for
-    /// otherwise, vouching first where it has not; and no one — refused in
-    /// the method's own answer — for a handle that holds no one.
+    /// otherwise; and no one — refused in the method's own answer — for a
+    /// handle that holds no one, or a caller this node was not proven.
     ///
     /// # Errors
     ///
@@ -40,56 +53,101 @@ impl Remote {
         let Some(proof) = held::proof(held) else {
             return Ok(nobody(method, &no_one()));
         };
-        let Some(leaf) = proof.leaf() else {
+        if proof.leaf().is_none() {
             return self.asked(method, message);
-        };
-        let at = key(&self.shared);
-        for _ in 0..2 {
-            let node = match proof.vouched_at(at) {
-                Some(node) => node,
-                None => match self.vouch(&proof, leaf, at)? {
-                    Ok(node) => node,
-                    Err(refused) => return Ok(nobody(method, &refused)),
-                },
-            };
-            let answer = self.asked_for(method, message, Some(node))?;
-            if said(&answer) != UNKNOWN_CALLER {
-                return Ok(answer);
-            }
-            // The node holds the caller no longer — it started again —
-            // so it is vouched for once more.
-            proof.forget(at);
         }
-        Ok(nobody(method, UNKNOWN_CALLER))
+        let at = key(&self.shared);
+        let Some(node) = proof.vouched_at(at) else {
+            let why = proof.refusal(at).unwrap_or_else(|| {
+                format!(
+                    "REFUSED. This browser's session was not proven to {}: a session proves \
+                     itself to the nodes its host follows as it connects, and does again as \
+                     it reconnects (ADR-0009)",
+                    self.shared.address
+                )
+            });
+            return Ok(nobody(method, &why));
+        };
+        self.asked_for(method, message, Some(node))
     }
+}
 
-    /// The node's handle for the caller `leaf` (DER) proved, asked of the
-    /// node and kept on `proof` under `at`, the node told when the caller
-    /// is let go; or the node's refusal.
-    fn vouch(
-        &self,
-        proof: &Arc<Proof>,
-        leaf: &[u8],
-        at: u64,
-    ) -> Result<Result<u64, String>, String> {
-        let message = json!({ "certificate": codec::base64::encode(leaf) });
-        let answer = match self.asked(VOUCH, &message) {
-            Ok(answer) => answer,
-            Err(why) if why.starts_with(REFUSED_CALL) => return Ok(Err(why)),
-            Err(why) => return Err(why),
-        };
-        let Some(node) = answer["caller"].as_u64() else {
-            return Ok(Err(said(&answer).to_string()));
-        };
-        let shared = Arc::downgrade(&self.shared);
-        proof.vouched(at, node, Box::new(move |node| unvouch(&shared, node)));
-        Ok(Ok(node))
+/// Hand every node in `surfaces` the browser's `transcript`, bound to
+/// `nonces`, for the caller `proof` holds: each node's handle kept on it,
+/// the node told when the caller is let go; each refusal kept to say. The
+/// nodes are asked at once — the first on this thread, each other on a
+/// thread kept for it (`plane::workers`, since starting one cost more than
+/// a node's own check) — so a session's start waits one round trip and the
+/// slowest node's check, however many nodes its host follows, and never
+/// the sum of them. Each thread's processor time on it is `spent`'s, the
+/// session's own share.
+#[cfg(feature = "node")]
+pub(crate) fn vouched_everywhere(
+    proof: &Arc<Proof>,
+    surfaces: &[Weak<Shared>],
+    transcript: &[u8],
+    nonces: &[Vec<u8>],
+    spent: &Spent,
+) {
+    static VOUCHING: LazyLock<Arc<Workers>> =
+        LazyLock::new(|| Arc::new(Workers::named("xmip-operate-vouch")));
+    let message = Arc::new(json!({
+        "transcript": codec::base64::encode(transcript),
+        "nonces": nonces.iter().map(|nonce| codec::hex::encode(nonce)).collect::<Vec<_>>(),
+    }));
+    let mut live = surfaces.iter().filter_map(Weak::upgrade);
+    let Some(first) = live.next() else {
+        return;
+    };
+    let (done, finished) = mpsc::channel::<()>();
+    let mut asked = 0;
+    for shared in live {
+        let (kept, handed) = (Arc::clone(&shared), Arc::clone(&message));
+        let (proof_kept, done, spent) = (Arc::clone(proof), done.clone(), spent.clone());
+        if VOUCHING.run(Box::new(move || {
+            let own = spent.entered();
+            vouched_by(&proof_kept, &kept, &handed);
+            drop(own);
+            let _ = done.send(());
+        })) {
+            asked += 1;
+        } else {
+            // No thread to be had: this one asks that node itself.
+            vouched_by(proof, &shared, &message);
+        }
+    }
+    drop(done);
+    vouched_by(proof, &first, &message);
+    for _ in 0..asked {
+        // bounded: each node's call waits at most its surface's patience,
+        // and a thread that ends without saying drops its sender
+        if finished.recv().is_err() {
+            break;
+        }
+    }
+}
+
+/// One node handed the browser's handshake, `message`, for the caller
+/// `proof` holds: its handle kept, or its refusal.
+#[cfg(feature = "node")]
+fn vouched_by(proof: &Proof, shared: &Arc<Shared>, message: &Value) {
+    let at = key(shared);
+    match shared.called(crate::plane::call::VOUCH, message, None) {
+        Ok(answer) => match answer["caller"].as_u64() {
+            Some(node) => {
+                let weak = Arc::downgrade(shared);
+                proof.vouched(at, node, Box::new(move |node| unvouch(&weak, node)));
+            }
+            None => proof.refused(at, said(&answer).to_string()),
+        },
+        Err((_, why)) => proof.refused(at, why),
     }
 }
 
 /// Tell the node a caller it vouched for is let go, on a thread of its own
 /// so the holder letting go waits for no node, through the surface's own
 /// bounded line; nothing where the surface has ended.
+#[cfg(feature = "node")]
 fn unvouch(shared: &Weak<Shared>, node: u64) {
     let Some(shared) = shared.upgrade() else {
         return;
@@ -111,6 +169,7 @@ fn key(shared: &Arc<Shared>) -> u64 {
 }
 
 /// The sentence an answer says.
+#[cfg(feature = "node")]
 fn said(answer: &Value) -> &str {
     answer["said"]
         .as_str()
