@@ -4,7 +4,8 @@
 //! amendments 2026-10-13), and the network address a surface on another reaches it
 //! at, with the certificate it presents and its key, the anchors a
 //! surface's certificate must reach — and the role every proven caller
-//! holds, on either.
+//! holds, on either; and who may relay for a caller, `[operate] relay`
+//! (`plane::vouched`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use configure::operate::Network;
 use xaudit::program_audit::ProgramAudit;
 
 use crate::plane::local::Admitting;
+use crate::plane::vouched::Relaying;
 use crate::plane::{Listener, Published, Role};
 use crate::registration::node_service_name;
 use crate::running::Running;
@@ -53,6 +55,16 @@ impl Running {
                 stated,
                 audit,
             )?);
+        }
+        if let Some((relay, anchors)) = operate.relaying()? {
+            let anchors = crate::presented::file(&self.configuration, "operate", anchors)?;
+            let anchors = String::from_utf8_lossy(&anchors);
+            let relaying = Relaying::new(relay.to_vec(), &anchors)
+                .map_err(|why| format!("[operate] relay: {why}"))?;
+            let relaying = Arc::new(relaying);
+            for listener in &listeners {
+                listener.relay(Arc::clone(&relaying));
+            }
         }
         Ok(listeners)
     }

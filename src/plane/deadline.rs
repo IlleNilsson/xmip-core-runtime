@@ -315,6 +315,7 @@ mod tests {
             connecting: AtomicBool::new(false),
             following: Mutex::new(None),
             asking: Mutex::new(None),
+            line: Mutex::new(None),
         });
         kept(&shared);
 

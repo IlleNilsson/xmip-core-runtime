@@ -19,11 +19,19 @@ pub fn identity(
     section: &str,
     [certificate, key, anchors]: [&str; 3],
 ) -> Result<tls::Identity, String> {
-    let base = configuration.parent().unwrap_or_else(|| Path::new(""));
-    let read = |path: &str| {
-        let file = base.join(path);
-        std::fs::read(&file).map_err(|error| format!("[{section}] {}: {error}", file.display()))
-    };
+    let read = |path: &str| file(configuration, section, path);
     tls::Identity::from_pem(&read(certificate)?, &read(key)?, &read(anchors)?)
         .map_err(|failed| format!("[{section}] {}", failed.message))
+}
+
+/// The file `path` names, relative to the configuration file at
+/// `configuration`.
+///
+/// # Errors
+///
+/// A file that cannot be read, in words naming `section` and the file.
+pub fn file(configuration: &Path, section: &str, path: &str) -> Result<Vec<u8>, String> {
+    let base = configuration.parent().unwrap_or_else(|| Path::new(""));
+    let file = base.join(path);
+    std::fs::read(&file).map_err(|error| format!("[{section}] {}: {error}", file.display()))
 }

@@ -19,12 +19,13 @@ use serde_json::{Value, json};
 use xcore::{ExecutionPhase, Severity};
 
 use crate::applied::{Applied, apply};
-use crate::plane::call::{self, ACT, PUBLICATION, SECRET, SECRETS, WAIT};
+use crate::plane::call::{self, ACT, PUBLICATION, SECRET, SECRETS, UNVOUCH, VOUCH, WAIT};
 use crate::plane::call::{LONGEST_WAIT, WATCH};
 use crate::plane::caller;
 use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
 use crate::plane::role::{Role, admitted};
+use crate::plane::vouched::{self, Relaying};
 
 /// The most a handshake, or a write to a surface that does not read,
 /// waits.
@@ -125,8 +126,18 @@ fn proven(guarded: &tls::GuardedServer) -> Result<AuthenticatedIdentity, String>
     caller::certificate(leaf)
 }
 
+/// Who asks a call: the caller it is admitted and audited as, and the
+/// relay it came through where a relay called for that caller.
+#[derive(Clone, Copy)]
+struct Asker<'a> {
+    who: &'a str,
+    through: Option<&'a str>,
+}
+
 /// The answer to one call: decided from its method, the identity the
-/// connection proved and the role it holds before a byte of it is read
+/// connection proved — or, where a relay names the caller it calls for
+/// ([`call::CALLER_HEADER`]), that caller as the node holds it
+/// (`plane::vouched`) — and the role it holds before a byte of it is read
 /// (`role::admitted`), and only then read and answered.
 fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> Response {
     let Some(method) = call::method(&request.path).filter(|method| METHODS.contains(method)) else {
@@ -136,14 +147,35 @@ fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> R
         );
     };
     let role = serve.stated.unwrap_or_default();
-    let who = caller.value.as_str();
-    if let Err(refused) = admitted(Some(caller), role, method, (asked(method), "on this node")) {
-        record(serve, who, role, method, "", Some(&refused));
-        return match method {
-            ACT | SECRET => outcome("denied", &refused),
-            SECRETS => call::answer(&json!({ "refused": refused })),
-            _ => call::refusal("PERMISSION_DENIED", &refused),
-        };
+    let relaying = serve
+        .relaying
+        .get()
+        .filter(|relaying| caller.verified.is_proven() && relaying.relays(&caller.value));
+    if matches!(method, VOUCH | UNVOUCH) {
+        return relayed(serve, relaying.map(AsRef::as_ref), caller, method, request);
+    }
+    let (acting, through) = match (call::caller_of(request), relaying) {
+        (None, _) => (Some(caller.clone()), None),
+        (Some(handle), Some(_)) => (
+            vouched::proven(handle, &caller.value),
+            Some(caller.value.as_str()),
+        ),
+        (Some(_), None) => {
+            let refused = format!("REFUSED. {} {NOT_A_RELAY} (ADR-0009)", caller.value);
+            return answered_refused(method, &refused);
+        }
+    };
+    let Some(acting) = acting else {
+        return answered_refused(method, call::UNKNOWN_CALLER);
+    };
+    let asker = Asker {
+        who: acting.value.as_str(),
+        through,
+    };
+    let asking = (asked(method), "on this node");
+    if let Err(refused) = admitted(Some(&acting), role, method, asking) {
+        record(serve, asker, role, method, "", Some(&refused));
+        return answered_refused(method, &refused);
     }
     let message = match call::message(request) {
         Ok(message) => message,
@@ -164,13 +196,56 @@ fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> R
             let revision = serve.published.wait(after, within, &stopped);
             call::answer(&json!({ "revision": revision }))
         }
-        ACT => acted(serve, who, &message),
-        SECRET => secret_set(serve, who, &message),
+        ACT => acted(serve, asker, &message),
+        SECRET => secret_set(serve, asker, &message),
         _ => match crate::secret::listed(message["node"].as_str().unwrap_or_default()) {
             Ok(listed) => call::answer(&listed),
             Err(refused) => call::answer(&json!({ "refused": refused })),
         },
     }
+}
+
+/// What a connection that is no relay is told where it names a caller.
+const NOT_A_RELAY: &str = "relays for no one: [operate] relay does not name it";
+
+/// A refusal, as the call's method answers one.
+fn answered_refused(method: &str, refused: &str) -> Response {
+    match method {
+        ACT | SECRET => outcome("denied", refused),
+        SECRETS => call::answer(&json!({ "refused": refused })),
+        _ => call::refusal("PERMISSION_DENIED", refused),
+    }
+}
+
+/// A relay's `Vouch` or `Unvouch`, answered only for a connection
+/// `[operate] relay` names (`relaying`); every other is refused before its
+/// call is read, and audited.
+fn relayed(
+    serve: &Serve,
+    relaying: Option<&Relaying>,
+    caller: &AuthenticatedIdentity,
+    method: &str,
+    request: &Request,
+) -> Response {
+    let who = caller.value.as_str();
+    let Some(relaying) = relaying else {
+        let refused = format!("REFUSED. {who} {NOT_A_RELAY} (ADR-0009)");
+        noted(serve, who, &refused);
+        return call::refusal("PERMISSION_DENIED", &refused);
+    };
+    let message = match call::message(request) {
+        Ok(message) => message,
+        Err(why) => return call::refusal("INVALID_ARGUMENT", &why),
+    };
+    let answer = if method == VOUCH {
+        vouched::vouched_for(relaying, who, &message)
+    } else {
+        vouched::unvouched(who, &message)
+    };
+    if let Some(refused) = answer["refused"].as_str() {
+        noted(serve, who, refused);
+    }
+    call::answer(&answer)
 }
 
 /// What a call of `method` asks, in the words its refusal says.
@@ -185,12 +260,13 @@ fn asked(method: &str) -> &'static str {
 }
 
 /// Every method the listener answers.
-const METHODS: [&str; 5] = [PUBLICATION, WAIT, ACT, SECRET, SECRETS];
+const METHODS: [&str; 7] = [PUBLICATION, WAIT, ACT, SECRET, SECRETS, VOUCH, UNVOUCH];
 
 /// An act, its caller admitted by role already: read, recorded, applied,
 /// and what came of it — `taken`, `refused` by the node, `invalid` for no
 /// act the noun takes, or `failed`.
-fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
+fn acted(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
+    let who = asker.who;
     let text = |key: &str| message[key].as_str().unwrap_or_default().to_string();
     let (node, target) = (text("node"), text("target"));
     let Some(noun) = Noun::named(&text("noun")) else {
@@ -205,7 +281,7 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
     };
     let role = serve.stated.unwrap_or_default();
     let thing = format!("{} '{target}' at {node}", noun.called());
-    record(serve, who, role, act.word(), &thing, None);
+    record(serve, asker, role, act.word(), &thing, None);
     let order = Order {
         node,
         noun,
@@ -226,13 +302,13 @@ fn acted(serve: &Serve, who: &str, message: &Value) -> Response {
 /// A secret set, its caller admitted by role already as for any act:
 /// audited with its name and never its value, and written through the
 /// node.
-fn secret_set(serve: &Serve, who: &str, message: &Value) -> Response {
+fn secret_set(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
     let text = |key: &str| message[key].as_str().unwrap_or_default();
     let (node, name) = (text("node"), text("name"));
     let role = serve.stated.unwrap_or_default();
     let thing = format!("the secret '{name}' at {node}");
-    record(serve, who, role, "set", &thing, None);
-    match crate::secret::set(node, (name, text("kind"), text("value")), who) {
+    record(serve, asker, role, "set", &thing, None);
+    match crate::secret::set(node, (name, text("kind"), text("value")), asker.who) {
         Applied::Taken(said) => outcome("taken", &said),
         Applied::Refused(said) => outcome("refused", &said),
         Applied::Failed(said) => outcome("failed", &said),
@@ -244,9 +320,21 @@ fn outcome(word: &str, said: &str) -> Response {
 }
 
 /// The gate's record, as `GatedOperator` writes it: who, the act, its
-/// target and the role, taken or refused.
-fn record(serve: &Serve, who: &str, role: Role, act: &str, target: &str, refused: Option<&String>) {
-    let asked = format!("{who} asked to {act} {target}");
+/// target and the role, taken or refused — and, for a caller a relay
+/// called for, the relay it came through (`through`).
+fn record(
+    serve: &Serve,
+    asker: Asker<'_>,
+    role: Role,
+    act: &str,
+    target: &str,
+    refused: Option<&String>,
+) {
+    let who = asker.who;
+    let asked = match asker.through {
+        Some(through) => format!("{who} asked through {through} to {act} {target}"),
+        None => format!("{who} asked to {act} {target}"),
+    };
     let (phase, severity, message) = match refused {
         None => (
             ExecutionPhase::Execute,
@@ -255,12 +343,15 @@ fn record(serve: &Serve, who: &str, role: Role, act: &str, target: &str, refused
         ),
         Some(refused) => (ExecutionPhase::Failure, Severity::Warning, refused.as_str()),
     };
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         ("act".to_string(), act.to_string()),
         ("target".to_string(), target.to_string()),
         ("who".to_string(), who.to_string()),
         ("role".to_string(), role.word().to_string()),
     ]);
+    if let Some(through) = asker.through {
+        properties.insert("through".to_string(), through.to_string());
+    }
     let _ = serve
         .audit
         .record(AUDIT_ACTION, phase, severity, Some(message), properties);

@@ -36,6 +36,23 @@ pub const SECRET: &str = "SetSecret";
 /// The secrets the node keeps, by name, never a value.
 pub const SECRETS: &str = "Secrets";
 
+/// A relay hands the node the certificate a caller presented to it, and is
+/// answered the node's handle for that caller (`plane::vouched`).
+pub const VOUCH: &str = "Vouch";
+
+/// A relay lets a caller it was answered a handle for go.
+pub const UNVOUCH: &str = "Unvouch";
+
+/// The header a relay names the caller in, by the node's handle for it,
+/// so the node decides whose call it is before it reads the call.
+pub const CALLER_HEADER: &str = "xmip-caller";
+
+/// What a node answers a relay whose handle it does not hold for the
+/// account the call came through: no one, and a relay that holds the
+/// caller vouches for it again.
+pub const UNKNOWN_CALLER: &str =
+    "REFUSED. Nothing proved who asks: the node holds no caller by that handle for this relay";
+
 /// What every refusal of a call by the node opens with.
 pub const REFUSED_CALL: &str = "the node refused the call";
 
@@ -53,18 +70,38 @@ pub fn method(path: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_prefix('/'))
 }
 
-/// `method` called at `authority` with `message`.
+/// `method` called at `authority` with `message`, for the caller the
+/// node's handle `caller` names where a relay calls for one
+/// ([`CALLER_HEADER`]).
 ///
 /// # Errors
 ///
 /// A message no frame holds.
-pub fn request(authority: &str, method: &str, message: &Value) -> Result<Request, String> {
+pub fn request(
+    authority: &str,
+    method: &str,
+    message: &Value,
+    caller: Option<u64>,
+) -> Result<Request, String> {
     let body = grpc::frame(message.to_string().as_bytes()).map_err(|failed| failed.message)?;
-    Ok(Request::new("POST", path(method))
+    let request = Request::new("POST", path(method))
         .header("host", authority)
         .header("content-type", grpc::CONTENT_TYPE_JSON)
-        .header("te", "trailers")
-        .body(&body))
+        .header("te", "trailers");
+    let request = match caller {
+        Some(caller) => request.header(CALLER_HEADER, &caller.to_string()),
+        None => request,
+    };
+    Ok(request.body(&body))
+}
+
+/// The node's handle a call names its caller by, where it names one; 0 —
+/// no one — for a header that is no handle.
+#[must_use]
+pub fn caller_of(request: &Request) -> Option<u64> {
+    request
+        .header_value(CALLER_HEADER)
+        .map(|value| value.trim().parse().unwrap_or(0))
 }
 
 /// The message a request carries.
@@ -133,8 +170,11 @@ mod tests {
 
     #[test]
     fn a_call_round_trips_and_names_its_method() {
-        let sent = request("node:1", WAIT, &json!({ "after": 3 })).expect("a request");
+        let sent = request("node:1", WAIT, &json!({ "after": 3 }), None).expect("a request");
         assert_eq!(method(&sent.path), Some(WAIT));
+        assert_eq!(caller_of(&sent), None, "no caller named");
+        let relayed = request("node:1", ACT, &json!({}), Some(42)).expect("a request");
+        assert_eq!(caller_of(&relayed), Some(42));
         assert_eq!(message(&sent).expect("read")["after"], 3);
         let back = answered(&answer(&json!({ "revision": 4 }))).expect("answered");
         assert_eq!(back["revision"], 4);

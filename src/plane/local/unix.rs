@@ -257,7 +257,7 @@ fn named(uid: u32) -> String {
 /// None on Unix: the kernel always says.
 #[cfg(feature = "node")]
 #[allow(clippy::unnecessary_wraps)]
-pub(crate) fn running_as() -> Result<String, String> {
+pub fn running_as() -> Result<String, String> {
     Ok(named(nix::unistd::geteuid().as_raw()))
 }
 

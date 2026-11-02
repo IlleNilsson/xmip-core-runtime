@@ -155,13 +155,20 @@ impl Line {
         })
     }
 
-    /// Call `method` with `message` and read what it answered.
+    /// Call `method` with `message` — for the caller the node's handle
+    /// `caller` names, where this side relays for one — and read what it
+    /// answered.
     ///
     /// # Errors
     ///
     /// The connection broke, or the node refused the call, in words.
-    pub(crate) fn call(&mut self, method: &str, message: &Value) -> Result<Value, String> {
-        let request = call::request(&self.authority, method, message)?;
+    pub(crate) fn call(
+        &mut self,
+        method: &str,
+        message: &Value,
+        caller: Option<u64>,
+    ) -> Result<Value, String> {
+        let request = call::request(&self.authority, method, message, caller)?;
         // Silence is counted from the call, not from the last answer.
         self.called.store(true, Ordering::SeqCst);
         let response = self

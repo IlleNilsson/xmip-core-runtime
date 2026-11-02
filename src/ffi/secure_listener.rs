@@ -262,7 +262,7 @@ pub unsafe extern "C" fn xmip_caller_proven_v1(
         };
         let until = authenticate::x509::not_after_of(leaf).ok();
         let name = caller.value.clone();
-        match held::hold(caller, until, session.prover()) {
+        match held::hold(caller, until, session.prover(), Some(leaf.to_vec())) {
             0 => (0, String::new()),
             handle => (handle, name),
         }

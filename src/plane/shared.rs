@@ -10,7 +10,7 @@ use std::time::Duration;
 use xcore::wake::Wake;
 
 use crate::plane::deadline::Deadline;
-use crate::plane::line::{Ending, Reach};
+use crate::plane::line::{Ending, Line, Reach};
 use crate::plane::local::Cancel;
 use crate::plane::remote::State;
 
@@ -33,6 +33,10 @@ pub(crate) struct Shared {
     /// where the line has no timeout to look between.
     pub(crate) following: Mutex<Option<Cancel>>,
     pub(crate) asking: Mutex<Option<Cancel>>,
+    /// The asking line itself, held between calls: on what is shared, so
+    /// a caller a host lets go is told to the node on it (`remote::relayed`)
+    /// without the surface.
+    pub(crate) line: Mutex<Option<Line>>,
 }
 
 impl Shared {

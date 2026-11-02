@@ -390,6 +390,7 @@ mod tests {
         let code = unsafe {
             xmip_remote_act_v1(
                 remote,
+                0,
                 text(&crate::fixture::absent_node()),
                 text("subscription"),
                 text("orders"),
@@ -407,6 +408,7 @@ mod tests {
         let code = unsafe {
             crate::ffi::remote::xmip_secret_v1(
                 remote,
+                0,
                 text(&crate::fixture::absent_node()),
                 text("partner-x"),
                 text("password"),
@@ -427,6 +429,7 @@ mod tests {
         let code = unsafe {
             crate::ffi::remote::xmip_secrets_v1(
                 remote,
+                0,
                 text(&crate::fixture::absent_node()),
                 report.as_mut_ptr(),
                 report.len(),

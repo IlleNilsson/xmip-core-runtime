@@ -44,7 +44,9 @@ mod system;
 mod system;
 
 #[cfg(feature = "node")]
-pub(crate) use system::{Acceptor, running_as, wake};
+pub use system::running_as;
+#[cfg(feature = "node")]
+pub(crate) use system::{Acceptor, wake};
 pub(crate) use system::{Cancel, Stream, connect};
 
 /// Whom a local endpoint admits beside the node's account and the

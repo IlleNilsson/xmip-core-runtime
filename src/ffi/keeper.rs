@@ -196,6 +196,7 @@ mod tests {
                 assert_eq!(code, status::OK);
                 let code = xmip_remote_act_v1(
                     remote,
+                    0,
                     borrow(&crate::fixture::absent_node()),
                     borrow("subscription"),
                     borrow("orders"),
