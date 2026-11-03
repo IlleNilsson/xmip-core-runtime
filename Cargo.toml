@@ -40,7 +40,7 @@ serde_json = "1"
 # dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
 # nothing more — the flags specification section 3 requires are passed by
 # ffi/loaded_module.rs, which does not take the crate's defaults on Windows.
-libloading = { version = "0.8", optional = true }
+libloading = { version = "0.9", optional = true }
 abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main" }
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main", optional = true }
@@ -98,7 +98,7 @@ provision = { package = "xmip-core-provision", git = "https://github.com/IlleNil
 zeroize = "1"
 # A test authority and each end's certificate, for the operate plane's
 # tests (`fixture::authority`): only the test-support feature turns it on.
-rcgen = { version = "0.13", optional = true }
+rcgen = { version = "0.14", optional = true }
 # The one byte cursor a loaded contract reads the content through, and the
 # percent-encoding of a call's refusal.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
