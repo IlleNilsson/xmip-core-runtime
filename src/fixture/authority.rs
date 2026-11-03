@@ -9,8 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The authority, and what issues with it.
 pub struct Authority {
-    pem: String,
-    issuer: rcgen::CertifiedKey,
+    issuer: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
     pub directory: PathBuf,
 }
 
@@ -27,7 +26,7 @@ impl Authority {
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let key = rcgen::KeyPair::generate().expect("a key");
-        let cert = params.self_signed(&key).expect("self-signed");
+        let issuer = rcgen::CertifiedIssuer::self_signed(params, key).expect("self-signed");
         // Numbered within the process, never by the clock: two tests made
         // theirs in the same tick on Windows, and the first to end removed
         // the folder the other's audit was written in.
@@ -38,14 +37,7 @@ impl Authority {
             MADE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&directory).expect("a directory");
-        Self {
-            pem: cert.pem(),
-            issuer: rcgen::CertifiedKey {
-                cert,
-                key_pair: key,
-            },
-            directory,
-        }
+        Self { issuer, directory }
     }
 
     /// An identity named `CN=<name>`, issued by this authority and
@@ -73,10 +65,8 @@ impl Authority {
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, name);
-        let leaf = params
-            .signed_by(&key, &self.issuer.cert, &self.issuer.key_pair)
-            .expect("issued");
-        (leaf.pem(), key.serialize_pem(), self.pem.clone())
+        let leaf = params.signed_by(&key, &self.issuer).expect("issued");
+        (leaf.pem(), key.serialize_pem(), self.issuer.pem())
     }
 }
 
