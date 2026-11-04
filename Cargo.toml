@@ -139,6 +139,9 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # stops and starts a node over the same records without a machine's key store.
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }
 secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/xmip-core-secret", branch = "main", features = ["test-support"] }
+# Chains with an intermediate of their own validity, so a test proves a
+# relayed caller ends where any certificate of its path ends.
+authenticate = { package = "xmip-core-authenticate", git = "https://github.com/IlleNilsson/xmip-core-authenticate", branch = "main", features = ["x509", "mint"] }
 # One real route technology, so a test proves arrival reads a prefixed
 # property through what a node loads rather than through a stand-in.
 # A Work Process the tests run is drawn in BPMN 2.0 and compiled here.

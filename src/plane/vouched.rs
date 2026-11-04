@@ -13,7 +13,7 @@
 //! handle of its own. On a call that names that handle (`call::CALLER_HEADER`) the act is
 //! the browser caller's and admitted by the caller's own role — never the
 //! relay's — and only where the handle was issued to the very account the
-//! call comes through, before its certificate's `notAfter`, and not yet
+//! call comes through, before any certificate of its path ends, and not yet
 //! let go (`Unvouch`). A handle presented by any other account is no one.
 //! Relaying grants no act of its own: the relay's own calls are judged by
 //! its own role as any caller's.
@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use authenticate::x509::{Anchors, Chain, Usage, not_after_of, verify};
+use authenticate::x509::{Anchors, Chain, Usage, verify};
 use context::AuthenticatedIdentity;
 use serde_json::{Value, json};
 
@@ -58,7 +58,7 @@ pub struct Relaying {
     known: Mutex<HashMap<Vec<Vec<u8>>, Known>>,
 }
 
-/// A browser's verified caller and until when its leaf is valid.
+/// A browser's verified caller and until when its path is valid.
 type Known = (AuthenticatedIdentity, i64);
 
 impl Relaying {
@@ -96,7 +96,7 @@ impl Relaying {
     }
 
     /// A browser's `chain` verified for client authentication and run
-    /// through the gate ([`verified`]), once while its leaf is valid; at most
+    /// through the gate ([`verified`]), once while its path is valid; at most
     /// [`KNOWN`] chains are kept, and past that all are let go and verified
     /// again.
     fn verified_once(&self, chain: &[Vec<u8>]) -> Result<Known, String> {
@@ -126,7 +126,8 @@ struct Vouched {
 
 /// The caller `chain` (DER, leaf first) proves — verified against the
 /// anchors `relaying` holds for `usage` and run through the node's own gate
-/// — and until when its leaf is valid.
+/// — and until when its path is valid: the earliest end of its leaf, its
+/// intermediates and its anchor ([`authenticate::x509::Path::not_after`]).
 ///
 /// # Errors
 ///
@@ -135,13 +136,13 @@ pub fn verified(relaying: &Relaying, chain: &[Vec<u8>], usage: Usage) -> Result<
     let der: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
     let leaf = der.first().copied().ok_or("REFUSED. The chain is empty")?;
     let read = Chain::from_der(&der).map_err(|failed| failed.to_string())?;
-    verify(&read, &relaying.anchors, usage, None, now())
+    let path = verify(&read, &relaying.anchors, usage, None, now())
         .map_err(|failed| format!("REFUSED. The certificate: {failed}"))?;
     let identity = caller::certificate(leaf)?;
     if !identity.verified.is_proven() {
         return Err(format!("REFUSED. {} is not proven", identity.value));
     }
-    let until = not_after_of(leaf).map_err(|failed| failed.to_string())?;
+    let until = path.not_after().map_err(|failed| failed.to_string())?;
     Ok((identity, until))
 }
 
@@ -297,5 +298,24 @@ mod tests {
         let refused = vouch(&relaying, "HOST\\gui", &[leaf]).expect_err("not under the anchors");
         assert!(refused.starts_with("REFUSED. The certificate"), "{refused}");
         assert!(Relaying::new(Vec::new(), "").is_err());
+    }
+
+    #[test]
+    fn a_caller_is_held_no_longer_than_any_certificate_of_its_path() {
+        use authenticate::x509::mint;
+        const DAY: i64 = 86_400;
+        let at = now();
+        let root = mint::Authority::root("Vouch Root");
+        let issuing = root.intermediate_ending("Vouch Issuing", at + DAY);
+        let issued = issuing.issue("alice", at - DAY, at + 10 * DAY);
+        let chain = Chain::from_pem(&issued.pem).expect("a chain");
+        let der: Vec<Vec<u8>> = [chain.leaf()]
+            .into_iter()
+            .chain(chain.intermediates())
+            .map(|certificate| certificate.to_vec())
+            .collect();
+        let relaying = Relaying::new(vec!["HOST\\gui".to_string()], &root.pem()).expect("anchors");
+        let (_, until) = verified(&relaying, &der, Usage::ClientAuth).expect("verified");
+        assert_eq!(until, at + DAY, "the intermediate ends first");
     }
 }
