@@ -47,6 +47,26 @@ fn a_clients_messages_make_one_instance_and_its_batch_holds_them_in_the_order_re
 }
 
 #[test]
+fn a_scan_reads_its_queue_to_the_end_not_only_its_first_page() {
+    let storage = memory();
+    working(&storage, |runtime, pickup, gate| {
+        // One more client than a page of the queue holds: the last one's
+        // Message waits behind a page that may all have to wait.
+        let clients: Vec<String> = (0..65).map(|n| format!("C{n}")).collect();
+        for who in &clients {
+            carried(runtime, pickup, gate, who, 0);
+        }
+        let turned = turn_due(runtime, pickup);
+        assert_eq!(turned.len(), clients.len(), "{turned:?}");
+        assert!(
+            turned.iter().all(|turned| matches!(turned, Turned::Done)),
+            "{turned:?}"
+        );
+        assert!(turn_due(runtime, pickup).is_empty(), "nothing is left");
+    });
+}
+
+#[test]
 fn two_clients_carried_at_once_never_see_one_of_their_messages_overtake_another() {
     let storage = memory();
     working(&storage, |runtime, pickup, gate| {

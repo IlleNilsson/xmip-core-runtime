@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
-use persist::storage::{DuePart, Held};
+use persist::storage::{DuePart, DueQueue, Held};
 use xcore::JourneyId;
 
 use super::turning::{Turned, turn};
@@ -92,7 +92,7 @@ impl WorkStep {
     }
 }
 
-/// `running`'s queue read, what is due taken a turn of on `pool`, each
+/// `running`'s queue read to its end, what is due taken a turn of on `pool`, each
 /// Message claimed first; one this node holds in a turn already passed
 /// over.
 fn scan<'env>(
@@ -102,23 +102,13 @@ fn scan<'env>(
     running: &'env Running,
 ) {
     let step = runtime.work;
-    let Ok(due) = step
-        .storage
-        .read_due(running.queue, DuePart::Due, (0, 0), PAGE)
-    else {
-        return;
-    };
-    if let Some(next) = due.next_due_unix_nanos {
-        let after = u64::try_from(next - due.read_unix_nanos).unwrap_or(0);
-        step.noted(running.queue, Duration::from_nanos(after));
-    }
     // A Work Process naming a Correlation takes its turns here, in its
     // queue's order, so the place each takes once its Stream heads follows
     // the Ledger's order (`crate::sequence::heading`).
     let to = route::Subscriber::WorkProcess(running.name.clone());
     let sequenced = !crate::sequence::points_of(runtime.sends, &to).is_empty();
     let mut seen = HashSet::new();
-    for held in due.held {
+    for held in due(step, running.queue) {
         if held.failed || !seen.insert(held.hold.journey) || !step.own(held.hold.journey) {
             continue;
         }
@@ -137,17 +127,39 @@ pub fn turn_due(runtime: &Runtime<'_>, pickup: &Pickup) -> Vec<Turned> {
     let step = runtime.work;
     let mut turned = Vec::new();
     for running in &step.running {
-        let Ok(due) = step
-            .storage
-            .read_due(running.queue, DuePart::Due, (0, 0), PAGE)
-        else {
-            continue;
-        };
-        for held in due.held.into_iter().filter(|held| !held.failed) {
+        for held in due(step, running.queue)
+            .into_iter()
+            .filter(|held| !held.failed)
+        {
             turned.push(turn(runtime, pickup, running, &held));
         }
     }
     turned
+}
+
+/// What is due in `queue`, oldest first, read a page at a time to its end
+/// as the send step reads its own (`crate::send_step`): a page of Messages
+/// that wait on their Instances never hides one behind it that may go on.
+/// When the earliest retry not yet due is due noted; where Xmip Storage
+/// does not answer, what was read so far, the rest left for the next scan.
+fn due(step: &WorkStep, queue: u128) -> Vec<Held> {
+    let mut read = Vec::new();
+    let mut from = Some((0, 0));
+    while let Some(at) = from {
+        let Ok(page) = step.storage.read_due(queue, DuePart::Due, at, PAGE) else {
+            break;
+        };
+        if let Some(left) = page.next_due_in() {
+            step.noted(queue, left);
+        }
+        from = page
+            .held
+            .last()
+            .filter(|_| page.held.len() == PAGE as usize)
+            .map(DueQueue::after);
+        read.extend(page.held);
+    }
+    read
 }
 
 fn take<'env>(
