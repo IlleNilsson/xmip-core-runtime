@@ -28,8 +28,9 @@ pub enum Turned {
     /// Written: the Instance moved on.
     Done,
     /// Not now, its claim given back: another holds it, its Stream does not
-    /// head its sequence, no step of its Instance waits for it, or its
-    /// Instance moved on since it was read.
+    /// head its sequence, no step of its Instance waits for it, its
+    /// Instance moved on since it was read, or another Instance took a key
+    /// it starts by — taken again, it joins that one.
     Waits(String),
     /// Written Failed with why, kept in its queue for an operator.
     Failed(String),
@@ -98,7 +99,9 @@ pub(super) fn turn(
     match taking.take(work) {
         Ok(Some(turn)) => match step.storage.turn(&turn) {
             Ok(true) => Turned::Done,
-            Ok(false) => release("its Instance moved on since it was read".to_string()),
+            Ok(false) => release(
+                "its Instance moved on since it was read, or another took its key".to_string(),
+            ),
             Err(why) => Turned::Unwritten(why.to_string()),
         },
         Ok(None) => release("no step of its Instance waits for it".to_string()),
@@ -329,6 +332,13 @@ impl Taking<'_> {
             .map(|key| self.correlation(key))
             .collect();
         let finished = ended.is_some();
+        let owned: Vec<InstanceKey> = correlations
+            .iter()
+            .map(|key| InstanceKey {
+                key: *key,
+                instance: instance_id,
+            })
+            .collect();
         Turn {
             hand_on,
             instances: vec![InstanceWrite {
@@ -341,18 +351,8 @@ impl Taking<'_> {
                 },
                 over,
             }],
-            keys: if finished {
-                Vec::new()
-            } else {
-                correlations
-                    .iter()
-                    .map(|key| InstanceKey {
-                        key: *key,
-                        instance: instance_id,
-                    })
-                    .collect()
-            },
-            unkeyed: if finished { correlations } else { Vec::new() },
+            keys: if finished { Vec::new() } else { owned.clone() },
+            unkeyed: if finished { owned } else { Vec::new() },
         }
     }
 
