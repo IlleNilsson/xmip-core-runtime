@@ -1,6 +1,6 @@
 //! The technologies a program was built with, handed to the node it starts.
 //!
-//! The runtime names no technology: `architecture.toml` lets a platform
+//! The runtime names no technology: `architecture.xmip` lets a platform
 //! service depend on no technology repository. The program that starts a node
 //! does — `xmip-service` links the technologies a deployment needs by build
 //! feature (ADR-0018, amendment 2026-09-26), a test links the ones it

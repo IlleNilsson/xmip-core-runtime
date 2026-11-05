@@ -4,7 +4,7 @@
 //! 2026-09-30).
 //!
 //! A Subscription is configuration. It is added and removed by editing its
-//! Application's section of the cluster's `xmip.toml` and nowhere else, so
+//! Application's section of `cluster.xmip` and nowhere else, so
 //! this is read from what startup phase 1 read and never written back.
 
 use configure::XmipApplication;

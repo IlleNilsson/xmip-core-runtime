@@ -162,10 +162,10 @@ fn departures_at_their_far_ends_pace_share_one_read_of_each_chunk() {
     // Eight MiB, at a tenth of a millisecond a piece: what a far end across a
     // network makes of a send, the read never the slower.
     const LENGTH: u64 = 8 * 1024 * 1024;
-    let drains: Vec<Drain> = PORTS
-        .iter()
-        .map(|_| Drain::paced(Duration::from_micros(100)))
-        .collect();
+    // They depart together: under a landing's load a thread started late
+    // began two chunks behind and read on by itself (2026-11-05, 264 reads
+    // for 132), which is the rule for a late send, not what this measures.
+    let drains = Drain::paced_together(PORTS.len(), Duration::from_micros(100));
     let (_, read) = fan_out("send-streamed-paced", LENGTH, &drains, every_sent);
     let chunks = LENGTH.div_ceil(CHUNK as u64) + 1;
     eprintln!(

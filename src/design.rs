@@ -1,4 +1,4 @@
-//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read, edited and
+//! `xmip_operate.h` section 10: `cluster.xmip` read, edited and
 //! sliced for the designer and the Operation Desktop (ADR-0064, amendment
 //! 2026-10-03; ADR-0031, amendment 2026-10-05), what the exports do.
 //! The exports are `ffi/design.rs`'s; each reads its text, calls this, and
@@ -20,7 +20,7 @@ use crate::tuning::TUNING;
 
 /// Why a node's own document is not sliced: it is the slice.
 pub const NOT_A_CLUSTER: &str = "this is a node's configuration document, not a cluster's \
-                                 xmip.toml: it declares no [nodes]; only the cluster's file is \
+                                 cluster.xmip: it declares no [nodes]; only the cluster's file is \
                                  edited, and each node's is sliced from it";
 
 /// The cluster's file as one view per artifact kind, [`Views::of`], with

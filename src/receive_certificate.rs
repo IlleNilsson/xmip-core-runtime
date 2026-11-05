@@ -69,7 +69,7 @@ mod tests {
     /// A node's configuration in a folder of its own, with `provision`
     /// after its `[service]`.
     fn configured(authority: &Authority, provision: &str) -> (XmipConfigurationDocument, PathBuf) {
-        let place = authority.directory.join("node.toml");
+        let place = authority.directory.join("node.xmip");
         let text = format!(
             "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n\n{provision}"
         );

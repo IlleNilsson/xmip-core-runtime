@@ -26,7 +26,7 @@
 //!   nodes reaching it, over Xmip's mutual TLS with what `[storage]`
 //!   presents. Phase 3 refuses a table Xmip Storage does not read, a
 //!   database server, whose backend is not built yet, a program that was
-//!   not built with both engines — what `deploy/profile/role/storage.toml`
+//!   not built with both engines — what `deploy/profile/role/storage.xmip`
 //!   builds — and one of several that names nowhere to serve them; phase 9
 //!   one whose databases do not open or whose listener does not bind.
 //! - **The Storage nodes `[storage]` lists**, reached over Xmip's mutual
@@ -287,7 +287,7 @@ mod tests {
              node_name = \"{node}\"\n",
             cluster.name
         );
-        (head, format!("{node}.toml"))
+        (head, format!("{node}.xmip"))
     }
 
     /// What a node keeping Xmip Storage itself declares.
@@ -523,7 +523,7 @@ mod tests {
             cluster.name,
             nodes.join(", ")
         );
-        let path = directory.join(format!("{node}.toml"));
+        let path = directory.join(format!("{node}.xmip"));
         (document(&text), path.display().to_string())
     }
 

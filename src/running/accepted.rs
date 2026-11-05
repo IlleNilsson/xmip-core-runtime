@@ -122,7 +122,7 @@ fn written(authority: &Authority, receive: &str) -> PathBuf {
     }
     let provision = "[provision.receive]\ncertificate = \"receive.pem\"\nkey = \"receive.key\"\n\
                      anchors = \"parties.pem\"\n";
-    let path = authority.directory.join("node.toml");
+    let path = authority.directory.join("node.xmip");
     std::fs::write(&path, node(receive, provision)).expect("written");
     path
 }
@@ -198,7 +198,7 @@ fn a_named_party_is_received_over_tls_and_any_other_refused_at_authentication() 
 #[test]
 fn a_location_terminating_tls_on_a_node_with_no_receive_certificate_is_refused() {
     let authority = Authority::new();
-    let path = authority.directory.join("node.toml");
+    let path = authority.directory.join("node.xmip");
     std::fs::write(&path, node(&unheld().to_string(), "")).expect("written");
 
     let refused = Running::start(path.to_str().expect("UTF-8"), linked())

@@ -2,7 +2,7 @@
 //! by `observe::Curve` and handed to a surface as the header's measurements.
 //!
 //! The history file a publisher writes beside its publication had its shape
-//! written by the Playground and walked again by the estate's
+//! written by the Essentials and walked again by the estate's
 //! `Get-XmipHistory` until 2026-09-24 (open problem 25). This parses the text
 //! by [`Curve::read`] and lays each point out as an `XmipMeasurement`,
 //! borrowing every string from the curve it holds; the cmdlet reads it

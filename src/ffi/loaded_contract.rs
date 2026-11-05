@@ -358,15 +358,15 @@ mod tests {
         }
 
         let name = if cfg!(target_os = "windows") {
-            "xmip_core_contract_rust.dll"
+            "xmip_core_test_module.dll"
         } else if cfg!(target_os = "macos") {
-            "libxmip_core_contract_rust.dylib"
+            "libxmip_core_test_module.dylib"
         } else {
-            "libxmip_core_contract_rust.so"
+            "libxmip_core_test_module.so"
         };
 
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../core/capability/contract/rust/target/debug")
+            .join("../../../test/core/module/target/debug")
             .join(name)
     }
 
@@ -376,7 +376,7 @@ mod tests {
         assert!(
             library.exists(),
             "no module library at {}. Build one — cargo build in \
-             module/core/capability/contract/rust — or set XMIP_MODULE_LIBRARY to \
+             test/core/module — or set XMIP_MODULE_LIBRARY to \
              a conforming contract module.",
             library.display()
         );

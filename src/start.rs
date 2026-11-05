@@ -262,7 +262,7 @@ pub(crate) fn start_published(path: &str) -> bool {
 /// tree, its bindings with the Xmip Application sections they bind
 /// (ADR-0064, amendment 2026-10-03). Each Location
 /// is held to the declaration of every technology this runtime carries, and
-/// `[tuning]` to the runtime's own. A cluster's `xmip.toml` is checked node
+/// `[tuning]` to the runtime's own. A cluster's `cluster.xmip` is checked node
 /// by node, each as the slice `configure::slice` writes it, every problem
 /// opening with its node's location, `xmip:///<cluster>/node/<name>`
 /// (ADR-0027 clause 4; ADR-0031, amendment 2026-10-03).
@@ -318,19 +318,19 @@ mod tests {
 
     #[test]
     fn starting_from_a_missing_file_is_done_and_says_which_file() {
-        let snapshot = start("Z:/no/such/node.toml");
+        let snapshot = start("Z:/no/such/node.xmip");
 
         assert_eq!(snapshot.worst("xmip:///"), Some(Health::Done));
         assert!(
             snapshot.health("xmip:///")[0]
                 .evidence
-                .contains("no/such/node.toml")
+                .contains("no/such/node.xmip")
         );
     }
 
     #[test]
     fn starting_from_a_valid_file_plans_the_node_and_says_it_is_not_running() {
-        let path = std::env::temp_dir().join("xmip-operate-start-test.toml");
+        let path = std::env::temp_dir().join("xmip-operate-start-test.xmip");
         let (head, node) = service();
         std::fs::write(
             &path,
@@ -519,7 +519,7 @@ filter = "true"
     fn written(text: &str, what: &str) -> (std::path::PathBuf, String) {
         let directory = std::env::temp_dir().join(format!("xmip-{what}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("a directory");
-        let node = directory.join("node.toml");
+        let node = directory.join("node.xmip");
         std::fs::write(&node, text).expect("writes");
         let path = node.to_str().expect("utf-8 path").to_string();
         (directory, path)

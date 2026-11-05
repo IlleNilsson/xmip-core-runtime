@@ -125,10 +125,10 @@ mod tests {
         })
         .expect("watched");
 
-        let part = directory.join("order.toml.part");
+        let part = directory.join("order.xmip.part");
         std::fs::write(&part, "an order").expect("written");
         let left = Instant::now();
-        std::fs::rename(&part, directory.join("order.toml")).expect("renamed");
+        std::fs::rename(&part, directory.join("order.xmip")).expect("renamed");
         // Every change up to the rename tells; the last is the rename's.
         let mut last = tells.recv_timeout(Duration::from_secs(5)).expect("told");
         while let Ok(later) = tells.recv_timeout(Duration::from_millis(50)) {
