@@ -399,7 +399,7 @@ mod tests {
         ServiceDefinition::for_node(
             &node(),
             "/opt/xmip/bin/xmip-service",
-            "/opt/xmip/config/xmip-node.toml",
+            "/opt/xmip/config/node.xmip",
             "/opt/xmip",
         )
     }
@@ -414,7 +414,7 @@ mod tests {
         assert!(definition.description.contains(&format!("node {node}")));
         assert_eq!(
             definition.arguments,
-            ["--configuration", "/opt/xmip/config/xmip-node.toml"]
+            ["--configuration", "/opt/xmip/config/node.xmip"]
         );
     }
 
@@ -543,7 +543,7 @@ mod tests {
             .expect("binPath");
 
         assert!(bin.contains("/opt/xmip/bin/xmip-service"));
-        assert!(bin.contains("--configuration /opt/xmip/config/xmip-node.toml"));
+        assert!(bin.contains("--configuration /opt/xmip/config/node.xmip"));
     }
 
     #[test]
@@ -551,13 +551,13 @@ mod tests {
         let definition = ServiceDefinition::for_node(
             &node(),
             r"C:\Program Files\Xmip\bin\xmip-service.exe",
-            r"C:\ProgramData\Xmip\config\xmip-node.toml",
+            r"C:\ProgramData\Xmip\config\node.xmip",
             r"C:\ProgramData\Xmip",
         );
 
         assert_eq!(
             windows_service_arguments(&definition)[2],
-            r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\xmip-node.toml"#
+            r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\node.xmip"#
         );
         assert!(systemd_unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
     }

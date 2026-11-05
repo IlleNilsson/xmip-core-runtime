@@ -348,7 +348,7 @@ mod tests {
         let (first, second) = (&cluster.node(0).name, &cluster.node(1).name);
         format!(
             r#"
-source = "playground — {scope}"
+source = "essentials — {scope}"
 node = "{scope}"
 
 [[records]]

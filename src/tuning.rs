@@ -1,5 +1,5 @@
 //! `[tuning]`: every outward and hardware assumption a node runs by,
-//! configured per cluster and per node in the cluster's `xmip.toml`
+//! configured per cluster and per node in `cluster.xmip`
 //! (ADR-0031, amendment 2026-10-03: *All these outwards, hardware
 //! assumptions and calculations should be configurable per cluster and
 //! node*), read into the execution tree as the node starts.

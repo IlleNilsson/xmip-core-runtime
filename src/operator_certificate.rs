@@ -42,7 +42,7 @@ mod tests {
         let place =
             std::env::temp_dir().join(format!("xmip-runtime-operator-{}", std::process::id()));
         std::fs::create_dir_all(&place).expect("made");
-        let file = place.join("node.toml");
+        let file = place.join("node.xmip");
         std::fs::write(
             &file,
             "[service]\nname = \"n\"\ncluster_name = \"c\"\nnode_name = \"d\"\n",
@@ -50,8 +50,8 @@ mod tests {
         .expect("written");
         let refused = sign(&file, "").expect_err("no table");
         assert!(refused.contains("[provision.operator]"), "{refused}");
-        let refused = sign(&place.join("absent.toml"), "").expect_err("no file");
-        assert!(refused.contains("absent.toml"), "{refused}");
+        let refused = sign(&place.join("absent.xmip"), "").expect_err("no file");
+        assert!(refused.contains("absent.xmip"), "{refused}");
         let _ = std::fs::remove_dir_all(&place);
     }
 }

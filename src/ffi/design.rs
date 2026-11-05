@@ -1,4 +1,4 @@
-//! `xmip_operate.h` section 10: the cluster's `xmip.toml` read, edited and
+//! `xmip_operate.h` section 10: `cluster.xmip` read, edited and
 //! sliced (ADR-0064, amendment 2026-10-03; ADR-0031, amendment 2026-10-05).
 //! The exports only — what each does is `crate::design`'s, and the rules are
 //! `xmip-core-configure`'s.

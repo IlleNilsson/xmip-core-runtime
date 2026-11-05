@@ -201,9 +201,9 @@ fn what_an_earlier_process_of_the_same_id_left_is_gone() {
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
-const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"contract-rust\"\nstart = true\n\
+const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"test-module\"\nstart = true\n\
     [modules.manifest]\noffline = true\n\
-    [modules.manifest.identity]\nname = \"xmip-core-contract-rust\"\nversion = \"0.1.0\"\n\
+    [modules.manifest.identity]\nname = \"xmip-core-test-module\"\nversion = \"0.1.0\"\n\
     [[modules.manifest.capabilities]]\ncapability = \"contract\"\n\
     execution_host = \"c-abi\"\ntrusted_required = false\n\
     [modules.manifest.entrypoint]\n";
@@ -212,7 +212,7 @@ const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"contract-rust\"\nstart = t
 #[test]
 fn a_library_module_is_refused_where_the_runtime_opens_none() {
     let configuration = format!(
-        "{}{LIBRARY_MODULE}library_path = \"xmip_core_contract_rust.dll\"\n",
+        "{}{LIBRARY_MODULE}library_path = \"xmip_core_test_module.dll\"\n",
         node(&unheld().to_string(), &unheld().to_string())
     );
     let path = written("library", &configuration);
@@ -228,7 +228,7 @@ fn a_library_module_is_refused_where_the_runtime_opens_none() {
 
 /// ADR-0057: a Module the configuration starts is opened from its
 /// library once, through the C ABI, held while the node runs and let go
-/// when it stops. `module/core/capability/contract/rust` builds it, or
+/// when it stops. `test/core/module` builds it, or
 /// `XMIP_MODULE_LIBRARY` names one.
 #[cfg(feature = "dynamic-loading")]
 #[test]
@@ -236,13 +236,13 @@ fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
     let library = std::env::var("XMIP_MODULE_LIBRARY").map_or_else(
         |_| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../core/capability/contract/rust/target/debug")
+                .join("../../../test/core/module/target/debug")
                 .join(if cfg!(windows) {
-                    "xmip_core_contract_rust.dll"
+                    "xmip_core_test_module.dll"
                 } else if cfg!(target_os = "macos") {
-                    "libxmip_core_contract_rust.dylib"
+                    "libxmip_core_test_module.dylib"
                 } else {
-                    "libxmip_core_contract_rust.so"
+                    "libxmip_core_test_module.so"
                 })
         },
         PathBuf::from,
@@ -265,7 +265,7 @@ fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
         .capabilities()
         .get("contract")
         .expect("registered once");
-    assert_eq!(contract.module, "xmip-core-contract-rust");
+    assert_eq!(contract.module, "xmip-core-test-module");
     assert_eq!(
         contract.load,
         xmip_core_runtime::capability_registry::Load::Library(library.clone())
@@ -300,7 +300,7 @@ fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_
     let standing = &pickup.standing()[0];
     assert_eq!(standing.name, "onward");
     assert_eq!(standing.application, "Loopback");
-    assert!(standing.file.ends_with("node.toml"));
+    assert!(standing.file.ends_with("node.xmip"));
     assert!(
         standing
             .configuration

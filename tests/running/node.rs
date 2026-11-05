@@ -163,7 +163,7 @@ pub fn written(test: &str, configuration: &str) -> PathBuf {
         std::env::temp_dir().join(format!("xmip-running-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).expect("a directory");
-    let path = directory.join("node.toml");
+    let path = directory.join("node.xmip");
     std::fs::write(&path, configuration).expect("writes the node");
     path
 }

@@ -302,9 +302,9 @@ mod tests {
     fn a_sign_against_a_configuration_without_an_authority_is_refused_in_words() {
         // SAFETY: as above.
         let (code, text) = answer(|out, cap, len| unsafe {
-            xmip_operator_sign_v1(borrow("no-such-node.toml"), borrow(""), out, cap, len)
+            xmip_operator_sign_v1(borrow("no-such-node.xmip"), borrow(""), out, cap, len)
         });
         assert_eq!(code, status::INVALID);
-        assert!(text.contains("no-such-node.toml"), "{text}");
+        assert!(text.contains("no-such-node.xmip"), "{text}");
     }
 }

@@ -4,7 +4,7 @@
 //! machine's pace, or at a far end's — or one that stops taking until let go.
 
 use std::io::{self, Write};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Barrier, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// A far end that reads every body it is sent as it comes and keeps its
@@ -17,6 +17,10 @@ pub struct Drain {
     pace: Option<Duration>,
     /// Where it stops taking once it took a piece, until let go.
     stall: Option<Stopped>,
+    /// Where it takes its first piece only once every far end of its set
+    /// has one to take: sends that depart together, whenever the system
+    /// schedules their threads.
+    together: Option<Arc<Barrier>>,
 }
 
 /// Whether a stalled far end was let go, and the word it waits on.
@@ -73,6 +77,22 @@ impl Drain {
         }
     }
 
+    /// `count` far ends, each paced as [`Drain::paced`], that take their
+    /// first piece together: a fan-out whose sends depart at once, as a
+    /// test of what they share needs, and not when a loaded machine
+    /// happens to start each one's thread.
+    #[must_use]
+    pub fn paced_together(count: usize, pace: Duration) -> Vec<Self> {
+        let together = Arc::new(Barrier::new(count));
+        (0..count)
+            .map(|_| Self {
+                pace: Some(pace),
+                together: Some(Arc::clone(&together)),
+                ..Self::default()
+            })
+            .collect()
+    }
+
     /// Each body's length it took, with its key, in the order taken.
     #[must_use]
     pub fn taken(&self) -> Vec<(u64, String)> {
@@ -98,10 +118,14 @@ struct Counted {
     bytes: u64,
     pace: Option<Duration>,
     stall: Option<Stopped>,
+    together: Option<Arc<Barrier>>,
 }
 
 impl Write for Counted {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(together) = self.together.take() {
+            together.wait();
+        }
         if let Some(stopped) = self.stall.as_ref().filter(|_| self.bytes > 0) {
             stopped_until_released(stopped);
         }
@@ -152,6 +176,7 @@ impl transport::Transport for Drain {
             bytes: 0,
             pace: self.pace,
             stall: self.stall.clone(),
+            together: self.together.clone(),
         };
         let length = outgoing.write_to(&mut counted)?;
         let key = outgoing.key().unwrap_or_default().to_string();
