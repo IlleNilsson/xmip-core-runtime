@@ -17,7 +17,7 @@ use abi::operate::{HealthEntry, Measurement, Operate};
 use std::time::Duration;
 
 use crate::ffi::text::{borrow, scope_text};
-use crate::operator::{Operator, announce_change, change_clock};
+use crate::operator::{CHANGED, Operator};
 use crate::wire::{from_wire_counted, wire_health};
 
 impl Operator {
@@ -156,7 +156,7 @@ unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
     if paused == 0 {
         status::NOT_FOUND
     } else {
-        announce_change();
+        CHANGED.raise();
         status::OK
     }
 }
@@ -177,7 +177,7 @@ unsafe extern "C" fn resume_entry(ctx: *mut u8, scope: Str) -> i32 {
     if resumed == 0 {
         status::NOT_FOUND
     } else {
-        announce_change();
+        CHANGED.raise();
         status::OK
     }
 }
@@ -194,7 +194,7 @@ unsafe extern "C" fn destroy_entry(ctx: *mut u8) {
 /// Wait for the immutable operator snapshot to advance.
 ///
 /// A surface blocks its own background observer here; execution only replaces
-/// PUBLISHED and signals the condition variable. Timeout is a successful
+/// PUBLISHED and raises the revision. Timeout is a successful
 /// unchanged answer, which lets a caller notice cancellation without inventing
 /// a change.
 ///
@@ -210,19 +210,10 @@ pub unsafe extern "C" fn xmip_wait_change_v1(
         return status::INVALID;
     }
 
-    let (mutex, changed) = change_clock();
-    let revision = mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (revision, _) = changed.wait_timeout_while(
-        mutex,
-        revision,
-        Duration::from_millis(u64::from(timeout_ms)),
-        |current| *current <= after_revision,
-    );
+    let revision = CHANGED.wait(after_revision, Duration::from_millis(u64::from(timeout_ms)));
 
     // SAFETY: checked for null above; the caller promises writable storage.
-    unsafe { out_revision.write(*revision) };
+    unsafe { out_revision.write(revision) };
     status::OK
 }
 

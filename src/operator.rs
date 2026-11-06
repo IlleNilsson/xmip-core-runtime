@@ -7,7 +7,7 @@
 
 use observe::{Count, HealthRecord, Snapshot};
 use std::sync::{Arc, Mutex};
-use xcore::wake::Wake;
+use xcore::wake::Revision;
 
 use crate::start::unconfigured;
 
@@ -97,28 +97,15 @@ impl Operator {
 /// clause 6 in one line.
 static PUBLISHED: Mutex<Option<Arc<Snapshot>>> = Mutex::new(None);
 
-/// The monotonic publication revision and the wake-up primitive shared by all
-/// operator surfaces in this process. It is separate from PUBLISHED so a
-/// sleeping observer never holds the snapshot lock a publisher needs.
-static CHANGE: (Mutex<u64>, Wake) = (Mutex::new(0), Wake::new());
-
-pub(crate) fn change_clock() -> &'static (Mutex<u64>, Wake) {
-    &CHANGE
-}
-
-pub(crate) fn announce_change() {
-    let (revision, changed) = change_clock();
-    let mut revision = revision
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *revision = revision.wrapping_add(1).max(1);
-    changed.notify_all();
-}
+/// The publication revision every operator surface in this process waits
+/// on. It is separate from PUBLISHED so a sleeping observer never holds the
+/// snapshot lock a publisher needs.
+pub(crate) static CHANGED: Revision = Revision::new();
 
 /// Publish the node's current snapshot for surfaces to read.
 pub fn publish(snapshot: Snapshot) {
     *PUBLISHED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(snapshot));
-    announce_change();
+    CHANGED.raise();
 }
