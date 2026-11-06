@@ -67,7 +67,23 @@ pub fn signed_beside(
     slice: &str,
 ) -> Result<String, String> {
     let base = configuration.parent().unwrap_or_else(|| Path::new("."));
-    let authority = provision::host::authority(&base.join(AUTHORITY), name, provision::now())
+    signed_by_kept(&base.join(AUTHORITY), name, cluster, slice)
+}
+
+/// `slice`, sliced from the cluster's file `cluster`, signed by the
+/// cluster's authority kept in `place`, made there named `name` where none
+/// is kept yet: the machine deploying an environment signs every node's
+/// slice with its own (ADR-0031, amendment 2026-11-06).
+///
+/// # Errors
+/// The authority cannot be read or made, or signing fails; in words.
+pub fn signed_by_kept(
+    place: &Path,
+    name: &str,
+    cluster: &str,
+    slice: &str,
+) -> Result<String, String> {
+    let authority = provision::host::authority(place, name, provision::now())
         .map_err(|error| error.to_string())?;
     sign(&authority, cluster, slice)
 }
