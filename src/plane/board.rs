@@ -9,10 +9,10 @@
 //! publication to as it writes it — `xmip-service`, or a program hosting a
 //! node through the C ABI (`xmip_operate_post_v1`).
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use xcore::wake::Wake;
+use xcore::wake::Revision;
 
 /// What an operate listener answers from.
 pub trait Published: Send + Sync {
@@ -37,45 +37,41 @@ pub trait Published: Send + Sync {
 /// A publication posted by the program running the node.
 #[derive(Default)]
 pub struct Board {
-    held: Mutex<(u64, String)>,
-    changed: Wake,
+    /// The text, held while its revision is raised, so a read sees the two
+    /// together.
+    text: Mutex<String>,
+    revision: Revision,
 }
 
 impl Board {
+    fn text(&self) -> MutexGuard<'_, String> {
+        self.text.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Post the node's publication as `text`: a new revision where it
     /// differs from the last, and every wait told.
     pub fn post(&self, text: String) {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.0 != 0 && held.1 == text {
+        let mut held = self.text();
+        if self.revision.now() != 0 && *held == text {
             return;
         }
-        held.0 += 1;
-        held.1 = text;
-        self.changed.notify_all();
+        *held = text;
+        self.revision.raise();
     }
 }
 
 impl Published for Board {
     fn read(&self) -> (u64, String) {
-        self.held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        let text = self.text();
+        (self.revision.now(), text.clone())
     }
 
     fn wait(&self, after: u64, within: Duration, stopped: &dyn Fn() -> bool) -> u64 {
-        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        let (held, _) = self
-            .changed
-            .wait_timeout_while(&self.held, held, within, |held| {
-                held.0 <= after && !stopped()
-            });
-        held.0
+        self.revision.wait_unless(after, within, stopped)
     }
 
     fn wake(&self) {
-        let _held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        self.changed.notify_all();
+        self.revision.wake();
     }
 }
 
