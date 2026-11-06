@@ -19,9 +19,10 @@
 //! on a second try.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use serde_json::json;
 
@@ -263,11 +264,7 @@ impl Remote {
     #[must_use]
     pub fn wait(&self, seen: u64, within: Duration) -> State {
         self.followed();
-        let state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let state = self.shared.state.locked();
         self.shared
             .told
             .wait_timeout_while(&self.shared.state, state, within, |state| {
@@ -280,15 +277,11 @@ impl Remote {
     /// The state now.
     #[must_use]
     pub fn state(&self) -> State {
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.shared.state.locked().clone()
     }
 
     fn followed(&self) {
-        let mut follow = self.follow.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut follow = self.follow.locked();
         if follow.is_none() {
             let shared = Arc::clone(&self.shared);
             *follow = std::thread::Builder::new()
@@ -351,11 +344,7 @@ impl Remote {
         // a WATCH; every wait is woken now.
         self.shared.ending.store(true, Ordering::SeqCst);
         {
-            let _state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _state = self.shared.state.locked();
             self.shared.told.notify_all();
         }
         // A line on a pipe has no timeout to look between: its read ends.
@@ -366,11 +355,7 @@ impl Remote {
 impl Drop for Remote {
     fn drop(&mut self) {
         self.end();
-        let follow = self
-            .follow
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let follow = self.follow.locked().take();
         // A follow in a connect is not waited for: it ends when the connect
         // does, holding nothing of this side's but what it shares.
         let Some(follow) = follow else {

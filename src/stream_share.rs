@@ -42,8 +42,9 @@ mod one_read;
 use std::collections::HashMap;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use persist::storage::{ChunkReader, XmipStorage};
 use xcore::StreamId;
@@ -98,7 +99,7 @@ impl StreamShare {
     #[must_use]
     pub fn reader(&self, stream: StreamId, length: u64) -> Lent {
         let shared = {
-            let mut streams = lock(&self.streams);
+            let mut streams = self.streams.locked();
             streams.retain(|_, shared| shared.strong_count() > 0);
             streams
                 .get(&stream)
@@ -132,7 +133,8 @@ impl StreamShare {
     /// How many Streams are being read now.
     #[must_use]
     pub fn reading(&self) -> usize {
-        lock(&self.streams)
+        self.streams
+            .locked()
             .values()
             .filter(|shared| shared.strong_count() > 0)
             .count()
@@ -150,13 +152,13 @@ impl Shared {
         number: u64,
         (place, taken): (u64, u64),
     ) -> Arc<OneRead> {
-        let mut reads = lock(&self.reads);
+        let mut reads = self.reads.locked();
         if let Some(left) = left {
             leave(&mut reads, left, number);
         }
         let mut best: Option<(usize, Arc<OneRead>)> = None;
         for read in reads.iter() {
-            let source = lock(&read.source);
+            let source = read.source.locked();
             let readers = source.readers.len();
             if source.reaches(place) && best.as_ref().is_none_or(|(most, _)| readers > *most) {
                 best = Some((readers, Arc::clone(read)));
@@ -174,7 +176,7 @@ impl Shared {
             },
             |(_, read)| read,
         );
-        lock(&read.source).join(number, place);
+        read.source.locked().join(number, place);
         read
     }
 
@@ -182,12 +184,12 @@ impl Shared {
     /// next chunk: one that reaches it and that more departures read than
     /// `on` would without it, or as many and opened before it.
     fn moved(&self, on: &Arc<OneRead>, number: u64, place: u64) -> Option<Arc<OneRead>> {
-        let mut reads = lock(&self.reads);
+        let mut reads = self.reads.locked();
         if reads.len() < 2 {
             return None;
         }
         let mine = reads.iter().position(|read| Arc::ptr_eq(read, on))?;
-        let others = lock(&on.source).readers.len().saturating_sub(1);
+        let others = on.source.locked().readers.len().saturating_sub(1);
         let to = reads.iter().enumerate().find_map(|(at, read)| {
             if at == mine {
                 return None;
@@ -271,12 +273,8 @@ impl Read for Lent {
 
 impl Drop for Lent {
     fn drop(&mut self) {
-        leave(&mut lock(&self.shared.reads), &self.read, self.number);
+        leave(&mut self.shared.reads.locked(), &self.read, self.number);
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -321,12 +319,12 @@ mod tests {
 
     /// How many reads of its Stream there are now.
     fn reads(lent: &Lent) -> usize {
-        lock(&lent.shared.reads).len()
+        lent.shared.reads.locked().len()
     }
 
     /// Whether it takes from the first opened of its Stream's reads now.
     fn on_first(lent: &Lent) -> bool {
-        Arc::ptr_eq(&lock(&lent.shared.reads)[0], &lent.read)
+        Arc::ptr_eq(&lent.shared.reads.locked()[0], &lent.read)
     }
 
     #[test]
@@ -361,7 +359,7 @@ mod tests {
         let (share, _, length) = counted(stream, 6, 1000);
         let mut alone = share.reader(stream, length);
         alone.read_exact(&mut [0u8; 3000]).expect("three chunks");
-        assert_eq!(lock(&alone.read.source).window.len(), 1);
+        assert_eq!(alone.read.source.locked().window.len(), 1);
     }
 
     #[test]
@@ -548,7 +546,7 @@ mod tests {
             "never held for good"
         );
         assert_eq!(
-            lock(&stopped.read.source).readers.len(),
+            stopped.read.source.locked().readers.len(),
             2,
             "the one stopped still on the read, left behind"
         );

@@ -17,6 +17,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use journey::JourneyState;
 use observe::Act;
@@ -37,14 +38,14 @@ struct Gate(Mutex<bool>, Condvar);
 
 impl Gate {
     fn wait(&self) {
-        let mut open = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut open = self.0.locked();
         while !*open {
             open = self.1.wait(open).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
     fn open(&self) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        *self.0.locked() = true;
         self.1.notify_all();
     }
 }

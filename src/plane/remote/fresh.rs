@@ -13,8 +13,9 @@
 //! node that does not answer.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use serde_json::json;
 use tls::possession::{BINDING, binding};
@@ -51,7 +52,7 @@ pub(crate) struct Bound {
 
 fn surfaces() -> std::sync::MutexGuard<'static, Vec<Weak<Shared>>> {
     static SURFACES: Mutex<Vec<Weak<Shared>>> = Mutex::new(Vec::new());
-    SURFACES.lock().unwrap_or_else(PoisonError::into_inner)
+    SURFACES.locked()
 }
 
 /// A surface this process follows a node through, its node a relay's to
@@ -87,13 +88,9 @@ pub(crate) fn bound(listener: &[u8]) -> Bound {
 /// knows the node answers, and in the background otherwise.
 fn taken(shared: &Arc<Shared>, listener: &[u8]) -> Option<Vec<u8>> {
     let now = Instant::now();
-    let reached = shared
-        .state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .reachable;
+    let reached = shared.state.locked().reachable;
     let (nonce, low) = {
-        let mut pool = shared.fresh.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pool = shared.fresh.locked();
         if pool
             .refused_until
             .get(listener)
@@ -115,7 +112,7 @@ fn taken(shared: &Arc<Shared>, listener: &[u8]) -> Option<Vec<u8>> {
         }
         None if reached => {
             refill(shared, listener);
-            let mut pool = shared.fresh.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pool = shared.fresh.locked();
             let kept = pool.nonces.entry(listener.to_vec()).or_default();
             kept.pop_front().map(|(nonce, _)| nonce)
         }
@@ -130,7 +127,7 @@ fn taken(shared: &Arc<Shared>, listener: &[u8]) -> Option<Vec<u8>> {
 /// time.
 fn refill_behind(shared: &Arc<Shared>, listener: &[u8]) {
     {
-        let mut pool = shared.fresh.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pool = shared.fresh.locked();
         if pool.refilling {
             return;
         }
@@ -145,11 +142,7 @@ fn refill_behind(shared: &Arc<Shared>, listener: &[u8]) {
             }
         });
     if spawned.is_err() {
-        shared
-            .fresh
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .refilling = false;
+        shared.fresh.locked().refilling = false;
     }
 }
 
@@ -169,7 +162,7 @@ fn refill(shared: &Shared, listener: &[u8]) {
         })
         .unwrap_or_default();
     let now = Instant::now();
-    let mut pool = shared.fresh.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut pool = shared.fresh.locked();
     pool.refilling = false;
     if given.is_empty() {
         pool.refused_until

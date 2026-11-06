@@ -77,8 +77,9 @@
 //! ([`figures`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use context::IdentityFacts;
 use journey::Journey;
@@ -418,7 +419,7 @@ impl SendStep {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     /// The Send Ports it sends, by name.

@@ -39,8 +39,9 @@
 //! runtime's library lists and acts on it (`xmip_operate.h` section 14).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use observe::{Act, Noun, Subscription as Published, now_unix_nanos};
 use persist::storage::{AdministrationKind, AdministrationRecord, XmipStorage, named};
@@ -137,7 +138,7 @@ impl Pickup {
             state: Mutex::new(State { entries }),
             wake: Wake::new(),
         });
-        let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut registered = REGISTERED.locked();
         registered.retain(|held| held.strong_count() > 0);
         registered.push(Arc::downgrade(&pickup));
         Ok(pickup)
@@ -147,8 +148,7 @@ impl Pickup {
     #[must_use]
     pub fn registered() -> Vec<Arc<Self>> {
         REGISTERED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .iter()
             .filter_map(Weak::upgrade)
             .collect()
@@ -266,7 +266,7 @@ impl Pickup {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     fn audited(&self, action: &str, name: &str, who: &str, held: u64, said: &str) {

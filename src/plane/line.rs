@@ -8,8 +8,9 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use net::http2::BoxedClient;
 use net::watched::Watched;
@@ -137,7 +138,7 @@ impl Line {
                 )
             }
         };
-        *cancel.lock().unwrap_or_else(PoisonError::into_inner) = ends;
+        *cancel.locked() = ends;
         let mut watched = Watched::new(link, ending);
         watched.silence = Some(silence);
         let called = Arc::new(AtomicBool::new(false));

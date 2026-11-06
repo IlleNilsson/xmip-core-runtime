@@ -4,8 +4,9 @@
 //! `send_killed.rs` run their nodes with.
 
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use configure::{DesignedSendPort, OnFailure, SendPortGroup};
 use journey::{Journey, JourneyEntry, JourneyState};
@@ -54,13 +55,13 @@ pub struct Pinned(Mutex<i128>);
 impl Pinned {
     pub fn pass(&self, by: Duration) {
         let nanos = i128::try_from(by.as_nanos()).expect("a span");
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) += nanos;
+        *self.0.locked() += nanos;
     }
 }
 
 impl Clock for Pinned {
     fn unix_timestamp_nanos(&self) -> i128 {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.0.locked()
     }
 }
 
@@ -244,17 +245,11 @@ impl Told {
             Ended::Behind => "behind",
         };
         let id = departure.work.journey.journey_id();
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, said));
+        self.0.locked().push((id, said));
     }
 
     fn has(&self, id: JourneyId, said: &'static str) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&(id, said))
+        self.0.locked().contains(&(id, said))
     }
 
     /// Wait, bounded, until `id`'s send ended as `said`.
@@ -323,8 +318,7 @@ pub fn waiting_in(runtime: &Runtime<'_>, port: &str) -> Vec<JourneyId> {
 /// What the far end took, as text.
 pub fn took(taken: &Mutex<Vec<Vec<u8>>>) -> Vec<String> {
     taken
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .locked()
         .iter()
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
         .collect()

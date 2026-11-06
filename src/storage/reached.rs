@@ -2,7 +2,8 @@
 //! which Storage it uses and whether it is reached (`<node>/storage`), and
 //! the schema version of each database it keeps (`<node>/storage/<domain>`).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 
 use observe::Health;
 use persist::storage::schema::DatabaseVersion;
@@ -48,7 +49,7 @@ impl Reached {
     /// Where it serves Xmip Storage to the others, where it does.
     #[must_use]
     pub fn serving(&self) -> Option<std::net::SocketAddr> {
-        let serving = self.serving.lock().unwrap_or_else(PoisonError::into_inner);
+        let serving = self.serving.locked();
         serving.as_ref().map(StorageServer::address)
     }
 
@@ -128,11 +129,7 @@ impl Reached {
         if let Behind::Several(node) = &self.behind {
             node.stop();
         }
-        let serving = self
-            .serving
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let serving = self.serving.locked().take();
         if let Some(serving) = serving {
             serving.stop();
         }

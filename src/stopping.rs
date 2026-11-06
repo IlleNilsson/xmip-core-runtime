@@ -8,8 +8,9 @@
 //! [`Nudge`] wakes it from the thread that hears it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use xcore::wake::Wake;
 
@@ -39,7 +40,7 @@ impl Nudge {
     pub fn tell(&self) {
         let inner = &self.stopping.0;
         // Under the lock a resting Location checks it under, as a raise.
-        let _held = inner.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _held = inner.lock.locked();
         self.told.store(true, Ordering::Release);
         inner.wake.notify_all();
     }
@@ -51,7 +52,7 @@ impl Stopping {
         // Stored and announced under the lock a waiter checks it under, so
         // a waiter about to wait cannot miss the wake.
         let inner = &self.0;
-        let _held = inner.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _held = inner.lock.locked();
         inner.raised.store(true, Ordering::Release);
         inner.wake.notify_all();
     }
@@ -88,7 +89,7 @@ impl Stopping {
             return self.raised();
         }
         let inner = &self.0;
-        let held = inner.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = inner.lock.locked();
         let _ = inner
             .wake
             .wait_timeout_while(&inner.lock, held, rest, |()| !self.raised() && !told());

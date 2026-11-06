@@ -29,6 +29,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use xcore::lock::Locked;
 
 use context::AuthenticatedIdentity;
 
@@ -122,25 +123,21 @@ impl Proof {
     /// The node at `at` refused to vouch for this caller, in `why`: what an
     /// act for the caller there is told.
     pub fn refused(&self, at: u64, why: String) {
-        self.refusals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((at, why));
+        self.refusals.locked().push((at, why));
     }
 
     /// Why the node at `at` refused to vouch for this caller, if it did.
     #[must_use]
     pub fn refusal(&self, at: u64) -> Option<String> {
         self.refusals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .iter()
             .find(|(refused, _)| *refused == at)
             .map(|(_, why)| why.clone())
     }
 
     fn vouches(&self) -> MutexGuard<'_, Vec<Vouch>> {
-        self.vouched.lock().unwrap_or_else(PoisonError::into_inner)
+        self.vouched.locked()
     }
 }
 
@@ -182,9 +179,7 @@ struct Holding {
 
 fn held() -> MutexGuard<'static, Holding> {
     static HELD: OnceLock<Mutex<Holding>> = OnceLock::new();
-    HELD.get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    HELD.get_or_init(Mutex::default).locked()
 }
 
 /// Hold `identity` — what the authentication gate answered — until `until`

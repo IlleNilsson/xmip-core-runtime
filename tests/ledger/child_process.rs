@@ -9,9 +9,10 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use super::{CHILD, PLACE, STARTED, directory};
 
@@ -138,7 +139,7 @@ impl Drop for ChildProcess {
 }
 
 fn live() -> std::sync::MutexGuard<'static, BTreeSet<u32>> {
-    LIVE.lock().unwrap_or_else(PoisonError::into_inner)
+    LIVE.locked()
 }
 
 /// In a child: the process ended when the test that started it closes its

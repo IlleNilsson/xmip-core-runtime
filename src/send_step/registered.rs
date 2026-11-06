@@ -2,7 +2,8 @@
 //! library finds one by its node and acts on its Messages (`xmip_operate.h`
 //! section 16).
 
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
+use xcore::lock::Locked;
 
 use super::SendStep;
 
@@ -13,7 +14,7 @@ impl SendStep {
     /// `step` registered, so the runtime's library finds it by its node
     /// and acts on its Messages (`xmip_operate.h` section 16).
     pub fn register(step: &Arc<Self>) {
-        let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut registered = REGISTERED.locked();
         registered.retain(|held| held.strong_count() > 0);
         registered.push(Arc::downgrade(step));
     }
@@ -22,8 +23,7 @@ impl SendStep {
     #[must_use]
     pub fn registered() -> Vec<Arc<Self>> {
         REGISTERED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .iter()
             .filter_map(Weak::upgrade)
             .collect()

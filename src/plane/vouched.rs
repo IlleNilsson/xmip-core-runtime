@@ -26,7 +26,8 @@
 //! replay a certificate it once saw.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
+use xcore::lock::Locked;
 
 use authenticate::x509::{Anchors, Chain, Usage, verify};
 use context::AuthenticatedIdentity;
@@ -92,7 +93,7 @@ impl Relaying {
     }
 
     fn held(&self) -> MutexGuard<'_, HashMap<u64, Vouched>> {
-        self.vouched.lock().unwrap_or_else(PoisonError::into_inner)
+        self.vouched.locked()
     }
 
     /// A browser's `chain` verified for client authentication and run
@@ -101,14 +102,14 @@ impl Relaying {
     /// again.
     fn verified_once(&self, chain: &[Vec<u8>]) -> Result<Known, String> {
         let at = now();
-        let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut known = self.known.locked();
         known.retain(|_, (_, until)| *until > at);
         if let Some(kept) = known.get(chain) {
             return Ok(kept.clone());
         }
         drop(known);
         let verified = verified(self, chain, Usage::ClientAuth)?;
-        let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut known = self.known.locked();
         if known.len() >= KNOWN {
             known.clear();
         }

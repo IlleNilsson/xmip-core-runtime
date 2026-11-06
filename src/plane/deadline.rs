@@ -12,8 +12,9 @@
 //! processor time than the rest of it (open problem 35).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use xcore::wake::Wake;
 
@@ -37,7 +38,7 @@ impl Deadline {
     pub(crate) fn arm(&self, within: Duration) {
         let until = Instant::now() + within;
         {
-            let mut armed = self.armed.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut armed = self.armed.locked();
             armed.until = Some(until);
             armed.fired = false;
         }
@@ -46,17 +47,14 @@ impl Deadline {
 
     /// The call ended: whether its deadline passed first.
     pub(crate) fn disarm(&self) -> bool {
-        let mut armed = self.armed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut armed = self.armed.locked();
         armed.until = None;
         std::mem::take(&mut armed.fired)
     }
 
     /// Whether the deadline of the call in flight has passed.
     pub(crate) fn passed(&self) -> bool {
-        self.armed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .fired
+        self.armed.locked().fired
     }
 }
 
@@ -129,12 +127,7 @@ pub(crate) fn kept(shared: &Arc<Shared>) {
         first = true;
         Watcher::default()
     });
-    watcher
-        .kept
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .surfaces
-        .push(Arc::downgrade(shared));
+    watcher.kept.locked().surfaces.push(Arc::downgrade(shared));
     if first {
         // Detached: it keeps every local surface the process opens.
         let _ = std::thread::Builder::new()
@@ -149,7 +142,7 @@ pub(crate) fn kept(shared: &Arc<Shared>) {
 /// is never lost before it waits.
 fn sooner(until: Instant) {
     if let Some(watcher) = WATCHER.get() {
-        let kept = watcher.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = watcher.kept.locked();
         if kept.looks.is_none_or(|looks| until < looks) {
             watcher.changed.notify_all();
         }
@@ -169,7 +162,7 @@ const AGAIN: Duration = Duration::from_millis(1);
 /// processor-bound jobs (2026-10-21). Until then a passed deadline
 /// cancelled once.
 fn watch(watcher: &Watcher) {
-    let mut kept = watcher.kept.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut kept = watcher.kept.locked();
     loop {
         let now = Instant::now();
         let mut next: Option<Instant> = None;
@@ -177,11 +170,7 @@ fn watch(watcher: &Watcher) {
             let Some(shared) = weak.upgrade().filter(|shared| !shared.ending()) else {
                 return false;
             };
-            let mut armed = shared
-                .deadline
-                .armed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut armed = shared.deadline.armed.locked();
             let due = match (armed.fired, armed.until) {
                 // Its call has not ended: `disarm` takes `fired`.
                 (true, _) => {

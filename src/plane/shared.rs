@@ -4,8 +4,9 @@
 //! what ends a read either of its lines waits in.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use xcore::wake::Wake;
 
@@ -46,7 +47,7 @@ pub(crate) struct Shared {
 impl Shared {
     /// Tell every follower `change`.
     pub(crate) fn tell(&self, change: impl FnOnce(&mut State)) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.locked();
         change(&mut state);
         state.told += 1;
         self.told.notify_all();
@@ -64,7 +65,7 @@ impl Shared {
 
     /// Cancel a read the asking line waits in.
     pub(crate) fn cancel_asking(&self) {
-        if let Some(cancel) = &*self.asking.lock().unwrap_or_else(PoisonError::into_inner) {
+        if let Some(cancel) = &*self.asking.locked() {
             cancel.cancel();
         }
     }
@@ -72,7 +73,7 @@ impl Shared {
     /// Cancel a read either line waits in.
     pub(crate) fn cancel(&self) {
         for slot in [&self.following, &self.asking] {
-            if let Some(cancel) = &*slot.lock().unwrap_or_else(PoisonError::into_inner) {
+            if let Some(cancel) = &*slot.locked() {
                 cancel.cancel();
             }
         }

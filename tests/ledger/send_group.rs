@@ -9,8 +9,9 @@
 //! - every send of a Journey carries its identifier as its deduplication
 //!   key, the same on every try of it and another for every other Journey.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, PoisonError};
+use xcore::lock::Locked;
 
 use configure::{Retry, SendPortGroup};
 use journey::JourneyState;
@@ -125,7 +126,7 @@ fn every_send_carries_its_journey_as_its_key_the_same_on_every_try() {
                 told.wait_for(first, "completed");
                 let second = carry(runtime, pickup, gate, order(2)).journeys[0].journey_id();
                 told.wait_for(second, "completed");
-                let keys = keys.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let keys = keys.locked().clone();
                 let (first, second) = (first.to_string(), second.to_string());
                 assert_eq!(
                     keys,
