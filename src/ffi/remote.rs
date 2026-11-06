@@ -7,8 +7,9 @@
 //! them out as the header's values and decides nothing.
 #![allow(unsafe_code)]
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use abi::ffi::{Str, status};
 use abi::operate::remote::Remote as RemoteHandle;
@@ -163,7 +164,7 @@ pub unsafe extern "C" fn xmip_remote_publication_v1(
     let Some(held) = (unsafe { held(remote) }) else {
         return status::INVALID;
     };
-    let mut pending = held.pending.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut pending = held.pending.locked();
     let (revision, text) = match pending.take() {
         Some(kept) => kept,
         None => match held.remote.publication() {

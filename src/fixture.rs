@@ -4,7 +4,8 @@
 //! `test-support` feature, which only a dev-dependency enables, so they are
 //! never in a production build.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 
 use authenticate::{AuthenticateError, Authenticator};
 use authorize::{Attempt, Authorizer, Decision};
@@ -168,19 +169,12 @@ impl transport::Transport for FarEnd {
 
     fn send_from(&self, _target: &str, outgoing: transport::Outgoing<'_>) -> transport::Result<()> {
         self.keys
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .push(outgoing.key().unwrap_or_default().to_string());
-        self.fences
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(outgoing.fence());
+        self.fences.locked().push(outgoing.fence());
         let bytes: &[u8] = &outgoing.gather()?;
         (self.answer)(bytes)?;
-        self.taken
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(bytes.to_vec());
+        self.taken.locked().push(bytes.to_vec());
         Ok(())
     }
 }

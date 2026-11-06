@@ -3,8 +3,9 @@
 //! Storage with, by the test's order rather than its luck.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use persist::PersistError;
 use persist::storage::{
@@ -76,26 +77,20 @@ impl Failing {
     /// the next Storage node when one does not answer, and that answer is
     /// the one given.
     pub fn lose_answer(&self, meanwhile: Interleaved) {
-        *self.lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(meanwhile);
+        *self.lost.locked() = Some(meanwhile);
     }
 
     /// Run `first` once, the next time `operation` is asked, before it is
     /// answered.
     pub fn before(&self, operation: Operation, first: Interleaved) {
-        self.before
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(operation, first);
+        self.before.locked().insert(operation, first);
     }
 
     /// Run `then` once, the next time `operation` is answered by the Storage
     /// beneath, before the caller has the answer: another writer's step,
     /// landed between the caller's read and what it does with it.
     pub fn after(&self, operation: Operation, then: Interleaved) {
-        self.after
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(operation, then);
+        self.after.locked().insert(operation, then);
     }
 
     /// Fail `operation` the next `times` it is asked; `u32::MAX` until
@@ -108,12 +103,7 @@ impl Failing {
     /// by, a Stream's chunks read once for several readers among them.
     #[must_use]
     pub fn asked_times(&self, operation: Operation) -> u64 {
-        self.counted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&operation)
-            .copied()
-            .unwrap_or(0)
+        self.counted.locked().get(&operation).copied().unwrap_or(0)
     }
 
     /// Fail nothing any more.
@@ -122,21 +112,12 @@ impl Failing {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<Operation, u32>> {
-        self.failing.lock().unwrap_or_else(PoisonError::into_inner)
+        self.failing.locked()
     }
 
     fn asked(&self, operation: Operation) -> Result<(), PersistError> {
-        *self
-            .counted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(operation)
-            .or_default() += 1;
-        let first = self
-            .before
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&operation);
+        *self.counted.locked().entry(operation).or_default() += 1;
+        let first = self.before.locked().remove(&operation);
         if let Some(first) = first {
             first();
         }
@@ -158,11 +139,7 @@ impl Failing {
     /// `answer`, what the Storage beneath answered `operation`, given once
     /// whatever was told to run after it ran.
     fn answered<T>(&self, operation: Operation, answer: T) -> T {
-        let then = self
-            .after
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&operation);
+        let then = self.after.locked().remove(&operation);
         if let Some(then) = then {
             then();
         }
@@ -217,11 +194,7 @@ impl XmipStorage for Failing {
 
     fn publish(&self, publication: Publication) -> Result<(Vec<Claim>, Durable), PersistError> {
         self.asked(Operation::Publish)?;
-        let lost = self
-            .lost
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let lost = self.lost.locked().take();
         if let Some(meanwhile) = lost {
             self.beneath.publish(publication.clone())?.1.wait()?;
             meanwhile();

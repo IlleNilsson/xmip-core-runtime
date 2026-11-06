@@ -16,7 +16,8 @@
 //! per hardware thread, as the pools are, and in chunks, as the Ledger
 //! writes and reads a Stream.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
+use xcore::lock::Locked;
 
 use xcore::wake::Wake;
 
@@ -124,7 +125,7 @@ impl Budget {
     }
 
     fn lock(&self) -> MutexGuard<'_, u64> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+        self.held.locked()
     }
 
     fn release(&self, charge: u64) {

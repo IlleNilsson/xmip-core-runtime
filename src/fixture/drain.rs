@@ -6,6 +6,7 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Barrier, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 /// A far end that reads every body it is sent as it comes and keeps its
 /// length, in the order taken, and the deduplication key it came under.
@@ -34,7 +35,7 @@ impl Stall {
     /// The far end takes again.
     pub fn release(&self) {
         let (released, word) = &*self.0;
-        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        *released.locked() = true;
         word.notify_all();
     }
 }
@@ -48,7 +49,7 @@ impl Drop for Stall {
 /// Waits until the far end stopped by `stopped` is let go.
 fn stopped_until_released(stopped: &Stopped) {
     let (released, word) = &**stopped;
-    let mut held = released.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut held = released.locked();
     while !*held {
         held = word.wait(held).unwrap_or_else(PoisonError::into_inner);
     }
@@ -96,10 +97,7 @@ impl Drain {
     /// Each body's length it took, with its key, in the order taken.
     #[must_use]
     pub fn taken(&self) -> Vec<(u64, String)> {
-        self.taken
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.taken.locked().clone()
     }
 
     /// The Send Location `name` sending to it.
@@ -180,10 +178,7 @@ impl transport::Transport for Drain {
         };
         let length = outgoing.write_to(&mut counted)?;
         let key = outgoing.key().unwrap_or_default().to_string();
-        self.taken
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((length.min(counted.bytes), key));
+        self.taken.locked().push((length.min(counted.bytes), key));
         Ok(())
     }
 }

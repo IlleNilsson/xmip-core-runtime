@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use tls::duplex::{ServedReading, ServedWriting};
 use tls::peer::Unanswered;
@@ -73,7 +74,7 @@ pub(crate) struct Waiting {
 
 impl Waiting {
     fn finished(&self) -> MutexGuard<'_, VecDeque<Result<SecureSession, Unanswered>>> {
-        self.finished.lock().unwrap_or_else(PoisonError::into_inner)
+        self.finished.locked()
     }
 
     fn hand(&self, handshake: Result<SecureSession, Unanswered>) {
@@ -192,11 +193,7 @@ impl SecureListener {
             let _finished = self.waiting.finished();
             self.waiting.ready.notify_all();
         }
-        let accepting = self
-            .accepting
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let accepting = self.accepting.locked().take();
         if let Some(accepting) = accepting {
             let local = self.local;
             let _ = net::accepting::woken(accepting, WAKE, || net::accepting::knock(local, WAKE));
@@ -348,11 +345,7 @@ impl SecureSession {
     ///
     /// Where the record could not be read.
     pub fn read(&self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let read = self
-            .reading
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .read(buffer);
+        let read = self.reading.locked().read(buffer);
         match read {
             Err(ended) if ended_by(&ended) => Ok(0),
             read => read,
@@ -365,7 +358,7 @@ impl SecureSession {
     ///
     /// Where the connection has ended or the socket refused them.
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
-        let mut writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut writing = self.writing.locked();
         writing.write_all(bytes)?;
         writing.flush()
     }

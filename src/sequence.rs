@@ -42,6 +42,7 @@ pub use configured::{destinations, names, point, received_at};
 pub use group::{delivered, group_heads, group_placed, grouped, waits_for_group};
 use journey::{Journey, Received, Sequenced};
 pub use late::{Placing, heading, take_late, waits_for_places};
+use xcore::lock::Locked;
 
 use crate::ledger::Opened;
 use message::Message;
@@ -310,9 +311,7 @@ impl Headed {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<(u128, u128)>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.locked()
     }
 }
 

@@ -8,8 +8,9 @@
 //! [`WITHIN`] is no proof.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use context::AuthenticatedIdentity;
 use serde_json::{Value, json};
@@ -44,7 +45,7 @@ pub struct Fresh {
 
 impl Fresh {
     fn issued(&self) -> MutexGuard<'_, HashMap<[u8; LENGTH], Issued>> {
-        self.issued.lock().unwrap_or_else(PoisonError::into_inner)
+        self.issued.locked()
     }
 
     /// `count` fresh nonces — at most [`AT_ONCE`] — issued to `through` for the

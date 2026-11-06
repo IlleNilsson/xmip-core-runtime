@@ -11,9 +11,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 /// What a connection's thread runs.
 type Work = Box<dyn FnOnce() + Send>;
@@ -55,11 +56,7 @@ impl Workers {
         if self.stopped.load(Ordering::SeqCst) {
             return false;
         }
-        let waiting = self
-            .idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop();
+        let waiting = self.idle.locked().pop();
         let work = match waiting {
             Some(next) => match next.send(work) {
                 Ok(()) => return true,
@@ -75,7 +72,7 @@ impl Workers {
         else {
             return false;
         };
-        let mut threads = self.threads.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut threads = self.threads.locked();
         threads.retain(|thread| !thread.is_finished());
         threads.push(thread);
         true
@@ -88,7 +85,7 @@ impl Workers {
             work();
             let (next, handed) = mpsc::channel();
             {
-                let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut idle = self.idle.locked();
                 if self.stopped.load(Ordering::SeqCst) || idle.len() >= IDLE {
                     return;
                 }
@@ -107,12 +104,8 @@ impl Workers {
     /// left to end alone.
     pub(crate) fn stop(&self, within: Duration) {
         self.stopped.store(true, Ordering::SeqCst);
-        self.idle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        let threads =
-            std::mem::take(&mut *self.threads.lock().unwrap_or_else(PoisonError::into_inner));
+        self.idle.locked().clear();
+        let threads = std::mem::take(&mut *self.threads.locked());
         let until = Instant::now() + within;
         for thread in threads {
             while !thread.is_finished() && Instant::now() < until {

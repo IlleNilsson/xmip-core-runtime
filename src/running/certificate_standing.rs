@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
+use xcore::lock::Locked;
 
 use configure::XmipConfigurationDocument;
 use observe::Health;
@@ -107,10 +108,7 @@ impl Held {
         let modified = std::fs::metadata(&self.path)
             .and_then(|metadata| metadata.modified())
             .ok();
-        let mut read = self
-            .read
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut read = self.read.locked();
         if let Some((when, what)) = read.as_ref()
             && *when == modified
             && modified.is_some()

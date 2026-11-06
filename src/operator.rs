@@ -7,6 +7,7 @@
 
 use observe::{Count, HealthRecord, Snapshot};
 use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 use xcore::wake::Revision;
 
 use crate::start::unconfigured;
@@ -43,9 +44,7 @@ impl Source {
         match self {
             Source::Fixed(snapshot) => change(Arc::make_mut(snapshot)),
             Source::Published => {
-                let mut guard = PUBLISHED
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut guard = PUBLISHED.locked();
                 let snapshot = guard.get_or_insert_with(|| Arc::new(unconfigured()));
                 change(Arc::make_mut(snapshot))
             }
@@ -83,8 +82,7 @@ impl Operator {
         match &self.source {
             Source::Fixed(snapshot) => Arc::clone(snapshot),
             Source::Published => PUBLISHED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .locked()
                 .clone()
                 .unwrap_or_else(|| Arc::new(unconfigured())),
         }
@@ -104,8 +102,6 @@ pub(crate) static CHANGED: Revision = Revision::new();
 
 /// Publish the node's current snapshot for surfaces to read.
 pub fn publish(snapshot: Snapshot) {
-    *PUBLISHED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(snapshot));
+    *PUBLISHED.locked() = Some(Arc::new(snapshot));
     CHANGED.raise();
 }

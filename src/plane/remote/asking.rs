@@ -4,9 +4,8 @@
 //! (`deadline::not_answered`). The line is held on what the surface shares
 //! (`Shared::line`), so a call made without the surface — a caller let go,
 //! told to the node (`remote::relayed`) — is bounded alike.
-
-use std::sync::PoisonError;
 use std::time::Instant;
+use xcore::lock::Locked;
 
 use crate::plane::call::REFUSED_CALL;
 use crate::plane::deadline;
@@ -46,7 +45,7 @@ impl Shared {
         began: Instant,
     ) -> Result<serde_json::Value, (bool, String)> {
         let patience = self.patience;
-        let mut asking = self.line.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut asking = self.line.locked();
         if let Some(line) = asking.as_mut() {
             match line.call(method, message, caller) {
                 Ok(answer) => return Ok(answer),

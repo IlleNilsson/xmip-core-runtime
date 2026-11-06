@@ -13,7 +13,8 @@
 //! (`xmip_operate.h` section 12) hands the same declarations to the language
 //! server and the desktop editor, which build a Location's form from them.
 
-use std::sync::{PoisonError, RwLock};
+use std::sync::RwLock;
+use xcore::lock::ReadWriteLocked;
 
 use configure::Declarations;
 use serde::Serialize;
@@ -58,7 +59,7 @@ pub fn carry(
     settings: &'static Settings,
     schemes: &'static [&'static str],
 ) {
-    let mut carried = CARRIED.write().unwrap_or_else(PoisonError::into_inner);
+    let mut carried = CARRIED.write_locked();
     if carried
         .iter()
         .all(|held| held.settings.technology != settings.technology)
@@ -75,10 +76,7 @@ pub fn carry(
 /// Every technology carried, by module name.
 #[must_use]
 pub fn carried() -> Vec<Carried> {
-    CARRIED
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    CARRIED.read_locked().clone()
 }
 
 /// The declarations carried, as `configure` holds a Location to them: a

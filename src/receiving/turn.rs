@@ -1,7 +1,8 @@
 //! The turn a receive's ordered arrivals tell their far ends in: one
 //! after another, in the order they came, however their carries end.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 
 use xcore::wake::Wake;
 
@@ -33,11 +34,7 @@ impl Ticket {
     }
 
     fn wait(&self) {
-        let next = self
-            .turn
-            .next
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let next = self.turn.next.locked();
         drop(
             self.turn
                 .moved
@@ -47,11 +44,7 @@ impl Ticket {
 
     fn pass(&mut self) {
         self.passed = true;
-        *self
-            .turn
-            .next
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = self.place + 1;
+        *self.turn.next.locked() = self.place + 1;
         self.turn.moved.notify_all();
     }
 }

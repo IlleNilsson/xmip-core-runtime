@@ -3,9 +3,10 @@
 //! follower told at once — and, when the node cannot be reached, the
 //! recovery loop of ADR-0052's note of 2026-10-05, on its own thread.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, PoisonError};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use serde_json::json;
 
@@ -40,7 +41,7 @@ pub(crate) fn run(shared: &Arc<Shared>) {
         }
         // Told once a node is lost or a try fails anew, not at every try.
         let anew = {
-            let state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let state = shared.state.locked();
             state.told == 0 || state.reachable || state.reason != why
         };
         if anew {
@@ -70,11 +71,7 @@ fn held(shared: &Shared, mut line: Line) -> String {
                 let now = answer["revision"].as_u64().unwrap_or(revision);
                 // A call that waited too long said the node unreachable;
                 // its next answer here says it is back.
-                let said_lost = !shared
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .reachable;
+                let said_lost = !shared.state.locked().reachable;
                 if !reached || now != revision || said_lost {
                     revision = now;
                     shared.tell(|state| {
@@ -95,7 +92,7 @@ fn pause(shared: &Shared, delay: Duration) {
     if delay.is_zero() {
         return;
     }
-    let state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let state = shared.state.locked();
     let _ = shared
         .told
         .wait_timeout_while(&shared.state, state, delay, |_| !shared.ending());

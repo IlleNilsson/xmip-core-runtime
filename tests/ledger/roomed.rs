@@ -10,8 +10,9 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use transport::{Acknowledgement, Arrivals, Arrived, Directions, Transport, Verdict, Waiting};
 use xmip_core_runtime::budget::NodeBudget;
@@ -79,12 +80,8 @@ impl Transport for Backlog {
     }
 
     fn receive_up_to(&self, most: usize) -> transport::Result<Vec<Arrived>> {
-        self.counts
-            .asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(most);
-        let mut left = self.left.lock().unwrap_or_else(PoisonError::into_inner);
+        self.counts.asked.locked().push(most);
+        let mut left = self.left.locked();
         let taken: Vec<u64> = (0..most).map_while(|_| left.pop_front()).collect();
         drop(left);
         Ok(taken
@@ -95,9 +92,7 @@ impl Transport for Backlog {
                 let (counts, left) = (Arc::clone(&self.counts), Arc::clone(&self.left));
                 let told = Acknowledgement::deferred(move |verdict| {
                     if verdict != Verdict::Accepted {
-                        left.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push_back(item);
+                        left.locked().push_back(item);
                     }
                     counts.untold.fetch_sub(1, Ordering::AcqRel);
                     Ok(())
@@ -176,11 +171,8 @@ fn serve_two(test: &str, tuning: Tuning, (items, length): (usize, u64), most: us
                 location("West", west, gate, most),
             ];
             served(runtime, pickup, &locations, || {
-                lefts.iter().all(|left| {
-                    left.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .is_empty()
-                }) && counts.untold.load(Ordering::Acquire) == 0
+                lefts.iter().all(|left| left.locked().is_empty())
+                    && counts.untold.load(Ordering::Acquire) == 0
             });
         },
     );
@@ -225,7 +217,7 @@ fn receives_take_no_more_than_their_pool_and_the_node_have_room_for() {
     };
     let pool_most = 2 * node_most;
     let counts = serve_two("roomed-places", tuning, (4 * node_most, 16), pool_most);
-    let asked = counts.asked.lock().unwrap_or_else(PoisonError::into_inner);
+    let asked = counts.asked.locked();
     assert!(
         asked.iter().all(|most| (1..=pool_most).contains(most)),
         "each receive asked within its pool: {asked:?}"

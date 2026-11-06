@@ -19,9 +19,10 @@
 //! already composes the three, which is ADR-0044's rule read upward.
 
 use std::fmt;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use xcore::fastest::FastestOfFive;
 
@@ -199,7 +200,7 @@ impl Tally {
     pub(crate) fn sent(&self, own: Option<Duration>) {
         self.sent.fetch_add(1, Ordering::Relaxed);
         if let Some(own) = own {
-            let mut kept = self.own.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut kept = self.own.locked();
             kept.get_or_insert_with(|| FastestOfFive::keeping(OWN_SHARE_FIVES))
                 .push(own);
         }
@@ -212,18 +213,12 @@ impl Tally {
 
     /// `location` stopped serving, and why.
     pub(crate) fn fail(&self, location: &str, why: String) {
-        self.failures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((location.to_string(), why));
+        self.failures.locked().push((location.to_string(), why));
     }
 
     /// Every Location that stopped, with its reason.
     pub(crate) fn failures(&self) -> Vec<(String, String)> {
-        self.failures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.failures.locked().clone()
     }
 
     pub(crate) fn outcomes(&self) -> Outcomes {
@@ -237,12 +232,7 @@ impl Tally {
             failed: read(&self.failed),
             sent: read(&self.sent),
             not_sent: read(&self.not_sent),
-            own_share: self
-                .own
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .and_then(FastestOfFive::read),
+            own_share: self.own.locked().as_ref().and_then(FastestOfFive::read),
         }
     }
 }

@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use persist::storage::ChunkReader;
 use xcore::wake::Wake;
 
-use super::{KEPT_PER_READER, lock};
+use xcore::lock::Locked;
+
+use super::KEPT_PER_READER;
 
 /// One read of Xmip Storage and the last chunks it took, the word a
 /// departure held back waits on, and how long one taking nothing is
@@ -123,7 +125,7 @@ impl OneRead {
     /// while one of them is to take the first kept and is still taking
     /// ([`Source::waits`]).
     pub(super) fn chunk(&self, number: u64, place: u64) -> io::Result<Next> {
-        let mut source = lock(&self.source);
+        let mut source = self.source.locked();
         loop {
             if let Some((kind, why)) = &source.failed {
                 return Err(io::Error::new(*kind, why.clone()));
@@ -169,7 +171,7 @@ impl OneRead {
 /// Departure `number` gone from `read`, which is let go from `reads` once
 /// none takes from it; one held back for it goes on.
 pub(super) fn leave(reads: &mut Vec<Arc<OneRead>>, read: &Arc<OneRead>, number: u64) {
-    let mut source = lock(&read.source);
+    let mut source = read.source.locked();
     source.readers.retain(|reader| reader.number != number);
     let none = source.readers.is_empty();
     drop(source);

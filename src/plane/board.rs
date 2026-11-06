@@ -9,8 +9,9 @@
 //! publication to as it writes it — `xmip-service`, or a program hosting a
 //! node through the C ABI (`xmip_operate_post_v1`).
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+use xcore::lock::Locked;
 
 use xcore::wake::Revision;
 
@@ -45,7 +46,7 @@ pub struct Board {
 
 impl Board {
     fn text(&self) -> MutexGuard<'_, String> {
-        self.text.lock().unwrap_or_else(PoisonError::into_inner)
+        self.text.locked()
     }
 
     /// Post the node's publication as `text`: a new revision where it

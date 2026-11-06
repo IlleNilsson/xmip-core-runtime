@@ -9,7 +9,8 @@
 //!   it acknowledged, those it was sending among them — at least once,
 //!   never lost.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 
 use persist::storage::XmipStorage;
 use xcore::JourneyId;
@@ -130,15 +131,11 @@ pub(super) fn sent_through(
     drop(storage);
     let taken: &Mutex<Vec<Vec<u8>>> = &taken;
     let taken = taken
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .locked()
         .iter()
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
         .collect();
-    let fences = fences
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let fences = fences.locked().clone();
     (taken, fences)
 }
 

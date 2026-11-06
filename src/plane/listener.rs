@@ -21,9 +21,10 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use xaudit::program_audit::ProgramAudit;
 use xcore::{ExecutionPhase, Severity};
@@ -207,13 +208,7 @@ impl Listener {
                 Place::Local(path) => local::wake(path),
             });
         }
-        let connections = std::mem::take(
-            &mut *self
-                .served
-                .connections
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let connections = std::mem::take(&mut *self.served.connections.locked());
         for connection in &connections {
             ended(connection);
         }
@@ -291,10 +286,7 @@ fn accept_local(acceptor: &Acceptor, serve: &Arc<Serve>, served: &Connections) {
 fn answered(served: &Connections, cancel: Option<Cancel>, work: impl FnOnce() + Send + 'static) {
     let done = Arc::new(AtomicBool::new(false));
     let ending = Arc::clone(&done);
-    let mut connections = served
-        .connections
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut connections = served.connections.locked();
     connections.retain(|connection| !connection.done.load(Ordering::SeqCst));
     let running = served.workers.run(Box::new(move || {
         work();

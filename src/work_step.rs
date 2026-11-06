@@ -36,8 +36,9 @@ mod running;
 mod turning;
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use xcore::lock::Locked;
 
 use persist::storage::XmipStorage;
 use xaudit::program_audit::ProgramAudit;
@@ -156,7 +157,7 @@ impl WorkStep {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     /// Whether this node holds `journey` in a turn now; `take` it where it

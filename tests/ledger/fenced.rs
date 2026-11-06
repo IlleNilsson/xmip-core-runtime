@@ -6,7 +6,8 @@
 //! the order the Ledger wrote them — the key passed on with the Message,
 //! never lost and never overtaken.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use xcore::lock::Locked;
 
 use configure::OnFailure;
 use persist::storage::XmipStorage;
@@ -27,12 +28,7 @@ pub fn send_in_order_until_killed(storage: &Arc<dyn XmipStorage>) {
     let fences: Arc<Mutex<Vec<u64>>> = Arc::default();
     let seen = Arc::clone(&fences);
     let (far, _) = FarEnd::answering(Box::new(move |bytes| {
-        let fence = seen
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .last()
-            .copied()
-            .unwrap_or_default();
+        let fence = seen.locked().last().copied().unwrap_or_default();
         say(&format!(
             "sending {} fence {fence}",
             String::from_utf8_lossy(bytes)
