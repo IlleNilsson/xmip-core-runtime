@@ -43,7 +43,6 @@ use crate::host::{self, HostService};
 use crate::linked::Linked;
 use crate::outcome::{Outcomes, Tally};
 use crate::pickup::Pickup;
-use crate::recognized::Recognized;
 use crate::send_step::SendStep;
 use crate::service::StartupPhase;
 use crate::start::read;
@@ -146,7 +145,11 @@ impl Running {
         }
         let (tree, _) = build_execution_tree(document, &applications, &declared)
             .map_err(|report| Refusal::at(StartupPhase::ValidateStartup, report.errors))?;
-        let Checked { gates, gathering } = check(&tree, &linked)
+        let Checked {
+            gates,
+            gathering,
+            parties,
+        } = check(&tree, &linked)
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
         // Set up from the Locations the node starts, before the
         // capabilities are registered, so each is registered as the rest.
@@ -264,7 +267,7 @@ impl Running {
                 linked,
                 gathering,
                 subscriptions: tree.subscriptions,
-                parties: Recognized(tree.parties),
+                parties,
                 pickup: Arc::clone(&pickup),
                 sends,
                 send: Arc::clone(&send),

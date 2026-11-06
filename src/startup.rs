@@ -18,6 +18,7 @@ use crate::catalogue::{self, Capability};
 use crate::execution_tree::ExecutionTree;
 use crate::host::HostService;
 use crate::linked::{Linked, LinkedTransport};
+use crate::parties::Parties;
 use crate::receiving::{ReceiveGate, Receiving};
 use crate::running::publication::location;
 use crate::sending::{Sending, Sends};
@@ -26,12 +27,14 @@ use crate::sending::{Sending, Sends};
 pub(crate) struct Checked {
     pub(crate) gates: Vec<ReceiveGate>,
     pub(crate) gathering: Gathering,
+    /// The Parties `[[parties]]` declares, each mechanism a declared one.
+    pub(crate) parties: Parties,
 }
 
 /// Startup phase 3's checks of what only the program can answer: that every
-/// started Location's transport, every accepted mechanism and every name a
-/// filter uses is one this node was built with, and every accepted Party
-/// one the configuration declares.
+/// started Location's transport, every accepted mechanism, every mechanism a
+/// Party's identity names and every name a filter uses is one this node was
+/// built with, and every accepted Party one the configuration declares.
 pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Vec<String>> {
     let mut problems = linked.scheme_problems();
 
@@ -62,6 +65,10 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
 
     let authenticators: Vec<&dyn Authenticator> =
         linked.authenticators.iter().map(AsRef::as_ref).collect();
+    let parties = Parties::of(&tree.parties, &authenticators).unwrap_or_else(|refused| {
+        problems.extend(refused);
+        Parties::default()
+    });
     let mut gates = Vec::new();
     for location in &tree.receive_locations_to_start {
         match ReceiveGate::of(location, &authenticators, &tree.parties) {
@@ -101,7 +108,11 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
     );
 
     if problems.is_empty() {
-        Ok(Checked { gates, gathering })
+        Ok(Checked {
+            gates,
+            gathering,
+            parties,
+        })
     } else {
         Err(problems)
     }

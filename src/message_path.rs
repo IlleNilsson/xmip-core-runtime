@@ -16,60 +16,24 @@ use authorize::Authorizer;
 use identify::{MessageIdentifier, TransportIdentifier};
 use journey::Journey;
 use message::MessageTreatment;
-use party::Party;
 use persist::storage::XmipStorage;
 use receive::ReceivedStream;
 use route::{Gathering, Subscription};
 use xaudit::origin::Origin;
-use xcore::{Clock, IdGenerator, PartyId, Purpose};
+use xcore::{Clock, IdGenerator};
 
 use crate::arrival::arrive;
 use crate::budget::NodeBudget;
 use crate::dead_message::Unmatched;
 use crate::ledger::{self, Published};
 use crate::outcome::Arrived;
+use crate::parties::PartyDirectory;
 use crate::pickup::Pickup;
 use crate::receiving::ReceiveGate;
 use crate::send_step::SendStep;
 use crate::sending::Sends;
 use crate::sequence;
 use crate::work_step::WorkStep;
-
-/// A Party, by the identifier the gates handed back.
-///
-/// Separate from [`PartyRegistry`], which answers with a `PartyId` and nothing
-/// more. `architecture.xmip` gives the three gates no dependency on
-/// `xmip-core-party`, so a gate cannot read a Party's identities even by
-/// accident; the runtime can, because the send side genuinely needs to —
-/// ADR-0006 resolves *which* Party's identity to present through the Send
-/// Location chain, and something then has to produce it.
-pub trait PartyDirectory: Send + Sync {
-    fn party(&self, party_id: PartyId) -> Option<Party>;
-}
-
-/// The Parties a node knows, answering both the gates' question (whose is
-/// this verified value) and the send side's (which identity does this Party
-/// present). One list, because a deployment has one set of Parties.
-#[derive(Clone, Debug, Default)]
-pub struct Parties(pub Vec<Party>);
-
-impl PartyRegistry for Parties {
-    fn resolve(&self, mechanism: &str, purpose: Purpose, value: &str) -> Option<PartyId> {
-        self.0
-            .iter()
-            .find(|party| party.identity(mechanism, purpose) == Some(value))
-            .map(|party| party.party_id)
-    }
-}
-
-impl PartyDirectory for Parties {
-    fn party(&self, party_id: PartyId) -> Option<Party> {
-        self.0
-            .iter()
-            .find(|party| party.party_id == party_id)
-            .cloned()
-    }
-}
 
 /// Everything the message path needs that is not the Message itself, built
 /// once as a node starts and shared by every Receive Location it runs.
