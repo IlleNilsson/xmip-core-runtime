@@ -80,12 +80,24 @@ pub struct ApplicationFile {
 /// The file cannot be read or does not parse, or a bound Application is not
 /// held or does not read.
 pub fn read(path: &str) -> Result<Read, Unread> {
+    read_accepted(path).map(|(read, _)| read)
+}
+
+/// [`read`], and why the file at `path` was refused where the node runs its
+/// accepted slice instead: a node runs only the slice its cluster's
+/// authority signed (`signed::accepted`; ADR-0031, amendment 2026-11-06).
+///
+/// # Errors
+/// As [`read`], and a slice refused with no accepted slice to run.
+pub fn read_accepted(path: &str) -> Result<(Read, Option<String>), Unread> {
     let root = |reason: String| Unread {
         scope: "xmip:///".to_string(),
         reason,
     };
-    let source = std::fs::read_to_string(path)
+    let file = std::fs::read_to_string(path)
         .map_err(|error| root(format!("cannot read {path}: {error}")))?;
+    let (source, refused) =
+        crate::signed::accepted(std::path::Path::new(path), &file).map_err(root)?;
     let document = read_node(&source).map_err(|report| {
         root(format!(
             "{path} does not parse: {}",
@@ -98,7 +110,7 @@ pub fn read(path: &str) -> Result<Read, Unread> {
             reason: format!("configuration refused: {reason}"),
         })?;
 
-    Ok((document, applications, files))
+    Ok(((document, applications, files), refused))
 }
 
 /// Plan a node from its configuration file, as a surface asks: read it, build
@@ -330,11 +342,15 @@ mod tests {
 
     #[test]
     fn starting_from_a_valid_file_plans_the_node_and_says_it_is_not_running() {
-        let path = std::env::temp_dir().join("xmip-operate-start-test.xmip");
+        let directory =
+            std::env::temp_dir().join(format!("xmip-operate-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a directory");
+        let path = directory.join("node.xmip");
         let (head, node) = service();
-        std::fs::write(
+        crate::fixture::write_signed(
             &path,
-            format!(
+            &format!(
                 r#"
 {head}
 [[modules]]
@@ -375,8 +391,7 @@ start = false
 address = "C:/archive"
 "#
             ),
-        )
-        .expect("write fixture");
+        );
 
         let snapshot = start(path.to_str().expect("utf-8 path"));
 
@@ -520,7 +535,7 @@ filter = "true"
         let directory = std::env::temp_dir().join(format!("xmip-{what}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("a directory");
         let node = directory.join("node.xmip");
-        std::fs::write(&node, text).expect("writes");
+        crate::fixture::write_signed(&node, text);
         let path = node.to_str().expect("utf-8 path").to_string();
         (directory, path)
     }
@@ -573,7 +588,7 @@ filter = "true"
         assert_eq!(read.2[0].text, text);
 
         let unheld = text[..text.find("[[xmip_applications]]").expect("held")].to_string();
-        std::fs::write(&path, unheld).expect("writes");
+        crate::fixture::write_signed(std::path::Path::new(&path), &unheld);
         let refused = &start(&path).health(&format!("xmip:///{node}"))[0];
         assert_eq!(refused.health, Health::Done);
         assert!(

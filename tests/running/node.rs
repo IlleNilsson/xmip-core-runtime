@@ -164,7 +164,7 @@ pub fn written(test: &str, configuration: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).expect("a directory");
     let path = directory.join("node.xmip");
-    std::fs::write(&path, configuration).expect("writes the node");
+    xmip_core_runtime::fixture::write_signed(&path, configuration);
     path
 }
 

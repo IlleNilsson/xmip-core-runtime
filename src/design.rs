@@ -71,6 +71,39 @@ pub fn slices(cluster: &str, node: &str) -> Result<String, String> {
     json(&serde_json::json!({ "slices": slices }))
 }
 
+/// `node`'s document sliced from the cluster's file `cluster` and signed by
+/// the cluster's authority beside that file, made there where none is kept
+/// (`signed::signed_beside`; ADR-0031, amendment 2026-11-06). `argument` is
+/// `{"cluster","node"}`, the file's path and the node; the answer is
+/// `{"text","authority"}`, the file the node is given and the certificate it
+/// checks it by, which a surface writes beside it.
+///
+/// # Errors
+/// As [`slices`]; an argument that is not the two; or the authority cannot
+/// be kept.
+pub fn signed_slice(cluster: &str, argument: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Asked {
+        cluster: String,
+        node: String,
+    }
+    let asked: Asked = serde_json::from_str(argument)
+        .map_err(|error| format!("the argument is not {{\"cluster\",\"node\"}}: {error}"))?;
+    if document_kind(cluster) == DocumentKind::Node {
+        return Err(NOT_A_CLUSTER.to_string());
+    }
+    let sliced = configure::slice(cluster, &asked.node)?;
+    let name = configure::cluster::cluster_name(cluster)?.unwrap_or_default();
+    let path = std::path::Path::new(&asked.cluster);
+    let text = crate::signed::signed_beside(path, &name, cluster, &sliced)?;
+    let place = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(crate::signed::AUTHORITY);
+    let authority = std::fs::read_to_string(place.join(provision::issuer::CERTIFICATE))
+        .map_err(|error| format!("the cluster's authority at {}: {error}", place.display()))?;
+    json(&serde_json::json!({ "text": text, "authority": authority }))
+}
 /// A filter's text as rows and groups, [`filter::structure`].
 ///
 /// # Errors
