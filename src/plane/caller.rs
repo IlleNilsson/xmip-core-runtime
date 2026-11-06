@@ -26,7 +26,7 @@ use identify::Presented;
 use identify::evidence::{MUTUAL_TLS_HANDSHAKE, PEER_CREDENTIALS_SYSTEM};
 use xcore::{Mechanism, mechanism};
 
-use crate::recognized::Recognized;
+use crate::parties::Parties;
 
 /// The caller a certificate proves: `leaf`, DER, the certificate a
 /// handshake this process terminated verified against its anchors, its
@@ -67,7 +67,7 @@ fn gate(
     claim: &Presented,
 ) -> Result<AuthenticatedIdentity, String> {
     let acceptance = Acceptance::closed().accepting(&taken);
-    authenticate::authenticate(&acceptance, &[by], &Recognized::default(), claim)
+    authenticate::authenticate(&acceptance, &[by], &Parties::default(), claim)
         .map_err(|refused| refused.to_string())
 }
 

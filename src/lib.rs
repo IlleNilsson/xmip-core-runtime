@@ -61,6 +61,8 @@ pub mod operator_certificate;
 #[cfg(feature = "node")]
 pub mod outcome;
 #[cfg(feature = "node")]
+pub mod parties;
+#[cfg(feature = "node")]
 pub mod pickup;
 #[cfg(feature = "remote")]
 pub mod plane;
@@ -75,8 +77,6 @@ mod protection;
 pub mod receive_certificate;
 #[cfg(feature = "node")]
 pub mod receiving;
-#[cfg(feature = "node")]
-pub mod recognized;
 #[cfg(feature = "node")]
 pub mod registration;
 #[cfg(feature = "node")]

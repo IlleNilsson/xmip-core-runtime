@@ -369,7 +369,8 @@ mod tests {
     // that matters.
     use crate::departure::{Departed, Progress, depart_to};
     use crate::generation::ReceivedWork;
-    use crate::message_path::{Parties, Runtime};
+    use crate::message_path::Runtime;
+    use crate::parties::Parties;
     use crate::receiving::ReceiveGate;
     use crate::sending::{Sending, Sends};
     use authenticate::{Acceptance, Authenticator, Refusal};
