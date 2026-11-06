@@ -45,7 +45,7 @@ use crate::outcome::{Outcomes, Tally};
 use crate::pickup::Pickup;
 use crate::send_step::SendStep;
 use crate::service::StartupPhase;
-use crate::start::read;
+use crate::start::read_accepted;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
 use crate::storage::Reached;
@@ -98,6 +98,9 @@ pub struct Running {
     pickup: Arc<Pickup>,
     send: Arc<SendStep>,
     data: PathBuf,
+    /// Why its configuration file was refused, where it runs its accepted
+    /// slice instead (`signed::accepted`).
+    refused: Option<String>,
     storage: Reached,
     /// `[operate]`, and the file it was read from ([`Running::operate`]).
     operate: Option<configure::OperateConfiguration>,
@@ -126,7 +129,7 @@ impl Running {
         // The rate a thread's processor time is read at, measured now, so
         // it never lands in a Message's own share (`xcore::spent`).
         xcore::processor_time::ProcessorTime::calibrate();
-        let (document, applications, files) = read(path)
+        let ((document, applications, files), refused) = read_accepted(path)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
         let data = document.service.data_directory(Path::new(path));
         let base = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
@@ -293,6 +296,7 @@ impl Running {
             pickup,
             send,
             data,
+            refused,
             storage,
             operate,
             certificates,
@@ -347,6 +351,13 @@ impl Running {
     #[must_use]
     pub fn data(&self) -> &Path {
         &self.data
+    }
+
+    /// Why its configuration file was refused, where it runs its accepted
+    /// slice instead: what the program running it audits.
+    #[must_use]
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 
     /// How the node reaches Xmip Storage, which its receives write the

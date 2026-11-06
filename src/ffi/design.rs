@@ -140,6 +140,21 @@ pub unsafe extern "C" fn xmip_cluster_slices_v1(
     unsafe { answer(input, argument, out, cap, out_len, design::slices) }
 }
 
+/// `xmip_cluster_signed_slice_v1`: [`design::signed_slice`].
+///
+/// # Safety
+/// As [`xmip_cluster_views_v1`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_cluster_signed_slice_v1(
+    input: Str,
+    argument: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller upholds the header's contract, passed on whole.
+    unsafe { answer(input, argument, out, cap, out_len, design::signed_slice) }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +168,7 @@ mod tests {
         let _: abi::operate::design::DesignFn = xmip_filter_text_v1;
         let _: abi::operate::design::DesignFn = xmip_cluster_edit_v1;
         let _: abi::operate::design::DesignFn = xmip_cluster_slices_v1;
+        let _: abi::operate::design::DesignFn = xmip_cluster_signed_slice_v1;
     }
 
     fn text(value: &str) -> Str {
