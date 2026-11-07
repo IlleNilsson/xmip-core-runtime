@@ -11,10 +11,8 @@
 //! own with no other test beside it, so what tests running in parallel
 //! allocate never reaches its figure.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Read;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use receive::ReceivedStream;
 use xmip_core_runtime::ledger::CHUNK;
@@ -24,33 +22,10 @@ use xmip_core_runtime::outcome::Arrived;
 use super::receive_cycle::receiving;
 use super::{directory, test_node};
 
-/// The system's allocator, counting what is held and the most held since
-/// the count was last reset.
-struct Counted;
-
-static HELD: AtomicUsize = AtomicUsize::new(0);
-static MOST: AtomicUsize = AtomicUsize::new(0);
-
-// SAFETY: every call is the system allocator's own, with the same layout;
-// the counts only watch.
-#[allow(unsafe_code)]
-unsafe impl GlobalAlloc for Counted {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let held = HELD.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-        MOST.fetch_max(held, Ordering::Relaxed);
-        // SAFETY: as the caller promised the layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
-        HELD.fetch_sub(layout.size(), Ordering::Relaxed);
-        // SAFETY: `at` came from `alloc` with `layout`.
-        unsafe { System.dealloc(at, layout) }
-    }
-}
-
+/// The estate's one counting allocator (`xcore::held`), as every test of
+/// bounded memory installs it.
 #[global_allocator]
-static COUNTED: Counted = Counted;
+static HELD: xcore::held::Counted = xcore::held::Counted;
 
 /// The Stream's length: 64 MiB, four thousand chunks of the smallest size.
 const LENGTH: u64 = 64 * 1024 * 1024;
@@ -109,19 +84,6 @@ pub(super) fn alone(test: &str, run: impl FnOnce()) {
     assert!(said.contains("1 passed"), "{test}, alone, ran no test");
 }
 
-/// What `run` returns, and the most this process held at once while it
-/// ran, beyond what it held as it began: the allocator's count, measured.
-/// A figure held to a bound is measured [`alone`].
-pub(super) fn measured<T>(run: impl FnOnce() -> T) -> (T, usize) {
-    let before = HELD.load(Ordering::Relaxed);
-    MOST.store(before, Ordering::Relaxed);
-    let returned = run();
-    (
-        returned,
-        MOST.load(Ordering::Relaxed).saturating_sub(before),
-    )
-}
-
 #[test]
 fn a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory() {
     alone(
@@ -133,8 +95,8 @@ fn a_stream_far_larger_than_a_chunk_is_carried_in_bounded_memory() {
 fn carried_in_bounded_memory() {
     let place = directory("bounded");
     let node = test_node(&place);
-    let (carried, most) = receiving(&node, CHUNK, |carry| {
-        measured(|| carry(ReceivedStream::new(Made::of(LENGTH), "tcp://127.0.0.1:1")))
+    let (most, carried) = receiving(&node, CHUNK, |carry| {
+        xcore::held::above(|| carry(ReceivedStream::new(Made::of(LENGTH), "tcp://127.0.0.1:1")))
     });
     assert_eq!(
         carried.cycle(),

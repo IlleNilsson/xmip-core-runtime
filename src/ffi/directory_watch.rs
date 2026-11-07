@@ -31,11 +31,8 @@ impl Changes {
     /// removed, or written and closed is a change — the last so a file a
     /// producer wrote in place tells as it is finished.
     pub(crate) fn new(directory: &Path) -> std::io::Result<Self> {
-        let wide: Vec<u16> = directory
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide = codec::wide::terminated(directory.as_os_str().encode_wide())
+            .map_err(std::io::Error::other)?;
         let filter =
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
         // SAFETY: `wide` is a NUL-terminated UTF-16 path that lives across

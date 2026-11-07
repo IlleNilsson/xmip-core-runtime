@@ -30,7 +30,7 @@ use xmip_core_runtime::message_path::{Carried, ReceiveCycle, carry};
 use xmip_core_runtime::pool::hardware_threads;
 use xmip_core_runtime::sending::Sends;
 
-use super::bounded::{Made, alone, measured};
+use super::bounded::{Made, alone};
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{Told, dispatching, interleaving, onward, order, out, port, quick, sender};
 use super::{directory, test_node};
@@ -110,7 +110,7 @@ fn fan_out(
                 // and wait for work, as a node's that has been sending do.
                 every_sent(told, &fan_out(order(0)));
                 let read_before = failing.asked_times(Operation::ReadChunk);
-                let (carried, most) = measured(|| {
+                let (most, carried) = xcore::held::above(|| {
                     let made = ReceivedStream::new(Made::of(length), "tcp://127.0.0.1:1");
                     let carried = fan_out(made);
                     sent(told, &carried);

@@ -66,19 +66,15 @@ mod tests {
         fn GetModuleHandleW(name: *const u16) -> *mut c_void;
     }
 
-    fn wide(name: &str) -> Vec<u16> {
-        name.encode_utf16().chain([0]).collect()
-    }
-
     /// Whether `name` is mapped in this process now.
-    fn loaded(name: &[u16]) -> bool {
+    fn loaded(name: &codec::wide::Wide) -> bool {
         // SAFETY: a null-terminated name; the handle is not kept.
         !unsafe { GetModuleHandleW(name.as_ptr()) }.is_null()
     }
 
     /// Load `name`, pin it or not, free it: whether it is still mapped.
     fn mapped_after_free(name: &str, pinned: bool) -> bool {
-        let name = wide(name);
+        let name = codec::wide::encode(name).expect("a library's name");
         assert!(!loaded(&name), "the test's library is loaded already");
         // SAFETY: a system library by a null-terminated name, freed once.
         let module = unsafe { LoadLibraryW(name.as_ptr()) };
