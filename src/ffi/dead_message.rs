@@ -173,7 +173,7 @@ mod tests {
                 &raw mut length,
             )
         };
-        let said = String::from_utf8_lossy(&buffer[..length]).into_owned();
+        let said = String::from_utf8_lossy(&buffer[..length]);
         assert_eq!(code, status::NOT_FOUND);
         assert!(said.starts_with("REFUSED: no node at"), "{said}");
     }

@@ -177,12 +177,16 @@ impl Running {
         start_host_services(&mut host_services)
             .map_err(|problems| Refusal::at(StartupPhase::StartHostServices, problems))?;
 
-        #[cfg(feature = "dynamic-loading")]
-        let libraries = crate::library::Libraries::open(&tree.modules_to_start)
-            .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
-        #[cfg(not(feature = "dynamic-loading"))]
-        crate::library::refuse(&tree.modules_to_start)
-            .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
+        cfg_select! {
+            feature = "dynamic-loading" => {
+                let libraries = crate::library::Libraries::open(&tree.modules_to_start)
+                    .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
+            }
+            _ => {
+                crate::library::refuse(&tree.modules_to_start)
+                    .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
+            }
+        }
 
         let capabilities = load(&tree, &linked, &gathering)
             .map_err(|problems| Refusal::at(StartupPhase::RegisterCapabilities, problems))?;
@@ -247,11 +251,13 @@ impl Running {
         ));
         SendStep::register(&send);
         let cluster = publication::cluster_location(&tree.service.cluster_name);
-        #[cfg(feature = "dynamic-loading")]
-        let running = crate::work_step::opened(&tree, &cluster, &libraries, &linked)
-            .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
-        #[cfg(not(feature = "dynamic-loading"))]
-        let running = Vec::new();
+        let running = cfg_select! {
+            feature = "dynamic-loading" => {
+                crate::work_step::opened(&tree, &cluster, &libraries, &linked)
+                    .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?
+            }
+            _ => Vec::new(),
+        };
         let work = Arc::new(WorkStep::new(
             (&cluster, &scope),
             Arc::clone(storage.storage()),

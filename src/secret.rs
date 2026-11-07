@@ -138,6 +138,7 @@ mod tests {
 mod set {
     use super::*;
     use persist::storage::StoredSecrets;
+    use std::assert_matches;
     use xcore::Secrets as _;
 
     #[test]
@@ -152,7 +153,7 @@ mod set {
         let drawn = format!("drawn-{:x}", now.map(|t| t.as_nanos()).unwrap_or_default());
 
         let applied = set(&node, ("partner-x.set", "password", &drawn), "CN=tester");
-        assert!(matches!(applied, Applied::Taken(_)), "{applied:?}");
+        assert_matches!(applied, Applied::Taken(_), "{applied:?}");
         let name = SecretName::new("partner-x.set").expect("a name");
         let read = StoredSecrets(Arc::clone(storage))
             .secret(&name)

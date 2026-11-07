@@ -124,30 +124,36 @@ fn read_descriptor(module: &Module) -> ModuleDescriptor {
 // Opening.
 // ----------------------------------------------------------------------
 
-/// Specification section 3: load by absolute path, privately, never by name.
-/// On Windows that is `LoadLibraryExW` with `LOAD_WITH_ALTERED_SEARCH_PATH`,
-/// which `libloading`'s portable constructor does *not* pass, so this asks
-/// for it by name. Everywhere else it is `dlopen` with `RTLD_LOCAL`, which
-/// the portable constructor does pass — two modules may legitimately carry
-/// the same symbol, and a global namespace makes the second bind to the
-/// first one's copy.
-#[cfg(windows)]
-fn open_library(path: &Path) -> Result<Library, libloading::Error> {
-    use libloading::os::windows::{LOAD_WITH_ALTERED_SEARCH_PATH, Library as Windows};
+cfg_select! {
+    windows => {
+        /// Specification section 3: load by absolute path, privately, never
+        /// by name. On Windows that is `LoadLibraryExW` with
+        /// `LOAD_WITH_ALTERED_SEARCH_PATH`, which `libloading`'s portable
+        /// constructor does *not* pass, so this asks for it by name.
+        /// Everywhere else it is `dlopen` with `RTLD_LOCAL`, which the portable
+        /// constructor does pass — two modules may legitimately carry the same
+        /// symbol, and a global namespace makes the second bind to the first
+        /// one's copy.
+        fn open_library(path: &Path) -> Result<Library, libloading::Error> {
+            use libloading::os::windows::{LOAD_WITH_ALTERED_SEARCH_PATH, Library as Windows};
 
-    // SAFETY: opening a library runs its initializers, which is arbitrary
-    // code — the host trusts it by naming the path and nothing else here
-    // assumes otherwise. The handle is owned by the returned `Library` and
-    // closed by its `Drop`, after this file's `Drop` has destroyed the
-    // instance.
-    unsafe { Windows::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH) }.map(Library::from)
-}
-
-#[cfg(not(windows))]
-fn open_library(path: &Path) -> Result<Library, libloading::Error> {
-    // SAFETY: as the Windows arm. `Library::new` is
-    // `dlopen(RTLD_LAZY | RTLD_LOCAL)`, the private load section 3 requires.
-    unsafe { Library::new(path) }
+            // SAFETY: opening a library runs its initializers, which is
+            // arbitrary code — the host trusts it by naming the path and
+            // nothing else here assumes otherwise. The handle is owned by the
+            // returned `Library` and closed by its `Drop`, after this file's
+            // `Drop` has destroyed the instance.
+            unsafe { Windows::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH) }
+                .map(Library::from)
+        }
+    }
+    _ => {
+        fn open_library(path: &Path) -> Result<Library, libloading::Error> {
+            // SAFETY: as the Windows arm. `Library::new` is
+            // `dlopen(RTLD_LAZY | RTLD_LOCAL)`, the private load section 3
+            // requires.
+            unsafe { Library::new(path) }
+        }
+    }
 }
 
 /// One module instance, its library, and the descriptor copied out of it.

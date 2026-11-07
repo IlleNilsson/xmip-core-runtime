@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use xcore::lock::Locked;
 
 use context::AuthenticatedIdentity;
@@ -178,8 +178,8 @@ struct Holding {
 }
 
 fn held() -> MutexGuard<'static, Holding> {
-    static HELD: OnceLock<Mutex<Holding>> = OnceLock::new();
-    HELD.get_or_init(Mutex::default).locked()
+    static HELD: LazyLock<Mutex<Holding>> = LazyLock::new(Mutex::default);
+    HELD.locked()
 }
 
 /// Hold `identity` — what the authentication gate answered — until `until`

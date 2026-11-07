@@ -20,42 +20,31 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-#[cfg(windows)]
-use crate::ffi::directory_watch as os;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-mod inotify;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-use inotify as os;
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-))]
-mod kqueue;
-#[cfg(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-))]
-use kqueue as os;
-#[cfg(not(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "dragonfly"
-)))]
-compile_error!("a directory is watched on Windows, Linux, Android, macOS, iOS and the BSDs only");
+cfg_select! {
+    windows => {
+        use crate::ffi::directory_watch as os;
+    }
+    any(target_os = "linux", target_os = "android") => {
+        mod inotify;
+        use inotify as os;
+    }
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ) => {
+        mod kqueue;
+        use kqueue as os;
+    }
+    _ => {
+        compile_error!(
+            "a directory is watched on Windows, Linux, Android, macOS, iOS and the BSDs only"
+        );
+    }
+}
 
 /// A directory watched, and the thread told of its changes.
 pub struct DirectoryWatch {

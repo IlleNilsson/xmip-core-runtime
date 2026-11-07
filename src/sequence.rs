@@ -316,8 +316,10 @@ impl Headed {
 }
 
 fn headed() -> &'static Headed {
-    static HEADED: std::sync::OnceLock<Headed> = std::sync::OnceLock::new();
-    HEADED.get_or_init(|| Headed(std::sync::Mutex::new(std::collections::HashSet::new())))
+    static HEADED: std::sync::LazyLock<Headed> = std::sync::LazyLock::new(|| {
+        Headed(std::sync::Mutex::new(std::collections::HashSet::new()))
+    });
+    &HEADED
 }
 
 /// Whether the Stream the Message of `journey` was born from heads every
