@@ -171,21 +171,11 @@ impl ServiceManager {
     /// bare-metal target has no service manager to probe for.
     #[must_use]
     pub const fn for_target() -> Self {
-        #[cfg(target_os = "windows")]
-        {
-            Self::WindowsScm
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Self::Systemd
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Self::Launchd
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        {
-            Self::None
+        cfg_select! {
+            target_os = "windows" => Self::WindowsScm,
+            target_os = "linux" => Self::Systemd,
+            target_os = "macos" => Self::Launchd,
+            _ => Self::None,
         }
     }
 
@@ -614,13 +604,17 @@ mod tests {
         // Compile-time, not probed: a bare-metal build has nothing to probe.
         let manager = ServiceManager::for_target();
 
-        #[cfg(target_os = "windows")]
-        assert_eq!(manager, ServiceManager::WindowsScm);
-
-        #[cfg(target_os = "linux")]
-        assert_eq!(manager, ServiceManager::Systemd);
-
-        #[cfg(target_os = "macos")]
-        assert_eq!(manager, ServiceManager::Launchd);
+        cfg_select! {
+            target_os = "windows" => {
+                assert_eq!(manager, ServiceManager::WindowsScm);
+            }
+            target_os = "linux" => {
+                assert_eq!(manager, ServiceManager::Systemd);
+            }
+            target_os = "macos" => {
+                assert_eq!(manager, ServiceManager::Launchd);
+            }
+            _ => {}
+        }
     }
 }

@@ -4,6 +4,7 @@
 //! chunk at a time, their SHA-256 digest and length taken from the Stream's
 //! own record; a read of them is verified against both.
 
+use std::assert_matches;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
@@ -30,8 +31,9 @@ fn published(storage: &Arc<dyn XmipStorage>, content: &[u8], chunk: usize) -> Au
             ReceivedStream::new(body, "tcp://127.0.0.1:1"),
         )
     });
-    assert!(
-        matches!(carried.arrived, Arrived::Routed { .. }),
+    assert_matches!(
+        carried.arrived,
+        Arrived::Routed { .. },
         "routed: {:?}",
         carried.arrived
     );

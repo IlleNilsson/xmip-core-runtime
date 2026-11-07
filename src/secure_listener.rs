@@ -390,6 +390,7 @@ fn ended_by(failure: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::time::Instant;
 
     use super::*;
@@ -495,12 +496,12 @@ mod tests {
         )
         .expect("an identity");
         let refused = browse(&listener, &authority, Some(&stranger), b"act");
-        assert!(matches!(listener.accept(), Accepted::Refused(said) if said.contains("handshake")));
+        assert_matches!(listener.accept(), Accepted::Refused(said) if said.contains("handshake"));
         assert!(refused.join().expect("the stranger").is_err());
 
         let silent = TcpStream::connect(listener.address()).expect("connected");
         drop(silent);
-        assert!(matches!(listener.accept(), Accepted::Failed(_)));
+        assert_matches!(listener.accept(), Accepted::Failed(_));
         let again = browse(&listener, &authority, Some(&operator), b"ok");
         answer(&session(&listener), 2);
         assert_eq!(again.join().expect("the browser").expect("answered"), b"OK");
@@ -535,10 +536,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         let stopped = Instant::now();
         listener.stop();
-        assert!(matches!(
-            waiting.join().expect("the accept"),
-            Accepted::Stopped
-        ));
+        assert_matches!(waiting.join().expect("the accept"), Accepted::Stopped);
         assert!(
             stopped.elapsed() < Duration::from_secs(1),
             "{:?}",

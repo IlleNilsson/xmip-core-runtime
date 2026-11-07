@@ -362,6 +362,7 @@ fn settle_message_identity(
 mod tests {
     use super::*;
     use crate::fixture::{Always, Open};
+    use std::assert_matches;
 
     // The spine end to end, so the departure half is exercised from here rather
     // than in isolation: what a Message departs with is decided by what it
@@ -1215,7 +1216,7 @@ filter = "xmip.party = '{party}'"
 
         let departed = depart(&engine, work, facts, routing);
 
-        assert!(matches!(departed[0], Departed::NoSuchDestination { .. }));
+        assert_matches!(departed[0], Departed::NoSuchDestination { .. });
     }
 
     #[test]

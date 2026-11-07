@@ -82,6 +82,7 @@ fn unanswered(error: io::Error) -> PersistError {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -172,9 +173,9 @@ mod tests {
             reason: "no Storage node answered".to_string(),
         };
         let read = io::Error::other(outage);
-        assert!(matches!(unanswered(read), PersistError::Unreachable { .. }));
+        assert_matches!(unanswered(read), PersistError::Unreachable { .. });
         let bare = unanswered(io::Error::other("a pipe broke"));
-        assert!(matches!(bare, PersistError::Failed { .. }), "{bare}");
+        assert_matches!(bare, PersistError::Failed { .. }, "{bare}");
     }
 
     #[test]

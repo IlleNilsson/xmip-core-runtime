@@ -124,10 +124,10 @@ fn directory(test: &str) -> PathBuf {
 
 /// The platform's key store over `keys` (ADR-0063 clause 4).
 fn keys(keys: &Path) -> Box<dyn KeyStore> {
-    #[cfg(windows)]
-    let store = Held::new(secret_dpapi::Dpapi::new(keys));
-    #[cfg(unix)]
-    let store = Held::new(secret_file::KeyFile::new(keys));
+    let store = cfg_select! {
+        windows => Held::new(secret_dpapi::Dpapi::new(keys)),
+        unix => Held::new(secret_file::KeyFile::new(keys)),
+    };
     Box::new(store)
 }
 

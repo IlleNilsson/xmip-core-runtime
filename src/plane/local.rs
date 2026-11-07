@@ -36,12 +36,16 @@
 
 use std::path::PathBuf;
 
-#[cfg(unix)]
-#[path = "local/unix.rs"]
-mod system;
-#[cfg(windows)]
-#[path = "local/windows.rs"]
-mod system;
+cfg_select! {
+    unix => {
+        #[path = "local/unix.rs"]
+        mod system;
+    }
+    windows => {
+        #[path = "local/windows.rs"]
+        mod system;
+    }
+}
 
 #[cfg(feature = "node")]
 pub use system::running_as;
