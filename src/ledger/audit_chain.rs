@@ -85,8 +85,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    use codec::form::Form;
     use persist::fixture::Memory;
-    use persist::storage::{Audited, Embedded, Form, KeptStream};
+    use persist::storage::{Audited, Embedded, KeptStream};
     use secret::{Held, KekName};
     use xaudit::audit_chain::Break;
     use xaudit::audit_record::AuditRecord;

@@ -135,6 +135,9 @@ configure = { package = "xmip-core-configure", git = "https://github.com/IlleNil
 # A loopback address no one holds, for a node a test starts to bind
 # (`net::fixture::unheld`).
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", features = ["test-support"] }
+# A record's one binary form (`codec::form::Form`), which a test of the
+# audit chain writes a changed record back in.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # A runtime store in memory, sealed under a key held in memory, so a test
 # stops and starts a node over the same records without a machine's key store.
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }
