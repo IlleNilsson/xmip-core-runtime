@@ -25,7 +25,7 @@ use xmip_core_runtime::sending::Sends;
 use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;
 
-use super::bounded::{Made, alone, measured};
+use super::bounded::{Made, alone};
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{onward, until};
 use super::{directory, test_node};
@@ -248,7 +248,7 @@ fn held_within_the_node_byte_budget() {
     let budget = NodeBudget::of(&tuning).received.most() as usize;
     const LENGTH: u64 = 4 * 1024 * 1024;
     let items = hardware_threads();
-    let (counts, most) = measured(|| {
+    let (most, counts) = xcore::held::above(|| {
         serve_two(
             "roomed-bytes",
             tuning,

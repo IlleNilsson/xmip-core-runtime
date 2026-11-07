@@ -99,9 +99,10 @@ zeroize = "1"
 # A test authority and each end's certificate, for the operate plane's
 # tests (`fixture::authority`): only the test-support feature turns it on.
 rcgen = { version = "0.14", optional = true }
-# The one byte cursor a loaded contract reads the content through, and the
-# percent-encoding of a call's refusal.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
+# The one byte cursor a loaded contract reads the content through, the
+# percent-encoding of a call's refusal, and the wide string a directory
+# watch names its directory to Windows by (`codec::wide`).
+codec ={ package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 
 # A directory watch (`directory_watch`): a change notification and the
 # event that ends its wait. The local operate endpoint's pipe on Windows is
@@ -136,8 +137,9 @@ configure = { package = "xmip-core-configure", git = "https://github.com/IlleNil
 # (`net::fixture::unheld`).
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", features = ["test-support"] }
 # A record's one binary form (`codec::form::Form`), which a test of the
-# audit chain writes a changed record back in.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# audit chain writes a changed record back in; and the wide string a test of
+# a pinned library names it to Windows by (`codec::wide`).
+codec ={ package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # A runtime store in memory, sealed under a key held in memory, so a test
 # stops and starts a node over the same records without a machine's key store.
 persist = { package = "xmip-core-persist", git = "https://github.com/IlleNilsson/xmip-core-persist", branch = "main", features = ["test-support"] }
