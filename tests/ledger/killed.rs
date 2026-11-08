@@ -60,7 +60,13 @@ fn a_message_acknowledged_before_the_kill_is_in_the_ledger_after_it() {
         let message = Message::from_record(&record.body, |stream| Chunks::referred(&node, stream))
             .expect("the Message reads back");
         let expected = format!("order {}", one.number);
-        assert_eq!(message.sections()[0].stream.bytes(), expected.as_bytes());
+        assert_eq!(
+            message.sections()[0]
+                .stream
+                .load()
+                .expect("the Ledger reads it"),
+            expected.as_bytes()
+        );
         assert_eq!(one.journeys.len(), 1, "one per matched Subscription");
         for journey in &one.journeys {
             let record = node
