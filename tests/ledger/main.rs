@@ -20,7 +20,9 @@
 //! test program's own end among them;
 //! `receive_cycle.rs` the receive a child runs; `halts_at_publication.rs`
 //! the Xmip Storage that stops a receive at its Publication; `killed.rs`
-//! the two kill tests, and what they read back; `bounded.rs` a Stream far
+//! the two kill tests, and what they read back; `unsynced.rs` a receive
+//! killed between its Publication's answer and its sync, and exactly what
+//! the Ledger holds after; `bounded.rs` a Stream far
 //! larger than a chunk carried in bounded memory, and the allocator's count
 //! every test of what is held measures by, each such test run alone in a
 //! process of its own; `held.rs` what a paused
@@ -89,6 +91,7 @@ mod send_streamed;
 mod send_waiting;
 mod sending;
 mod stream_order;
+mod unsynced;
 mod untold;
 mod work_debatch;
 mod work_design;
@@ -168,6 +171,7 @@ fn child() {
         "sending" => send_killed::send_until_killed(&test_node(&place)),
         "fenced" => fenced::send_in_order_until_killed(&test_node(&place)),
         "working" => work_process::work_until_killed(&test_node(&place)),
+        "unsynced" => unsynced::answered_until_killed(&place),
         other => panic!("no child does '{other}'"),
     }
 }

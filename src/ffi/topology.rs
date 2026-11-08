@@ -48,10 +48,12 @@ pub unsafe extern "C" fn xmip_topology_kind_words_v1(
     out_word: *mut Str,
     out_name: *mut Str,
 ) -> i32 {
-    let said = from_wire_kind(kind).map(|kind| (kind.word(), kind.name()));
+    abi::guarded(status::PANIC, || {
+        let said = from_wire_kind(kind).map(|kind| (kind.word(), kind.name()));
 
-    // SAFETY: per the contract above.
-    unsafe { words(said, out_word, out_name) }
+        // SAFETY: per the contract above.
+        unsafe { words(said, out_word, out_name) }
+    })
 }
 
 /// `observe::Origin::word` and `name`, forwarded. Static.
@@ -64,10 +66,12 @@ pub unsafe extern "C" fn xmip_topology_origin_words_v1(
     out_word: *mut Str,
     out_name: *mut Str,
 ) -> i32 {
-    let said = from_wire_origin(origin).map(|origin| (origin.word(), origin.name()));
+    abi::guarded(status::PANIC, || {
+        let said = from_wire_origin(origin).map(|origin| (origin.word(), origin.name()));
 
-    // SAFETY: per the contract above.
-    unsafe { words(said, out_word, out_name) }
+        // SAFETY: per the contract above.
+        unsafe { words(said, out_word, out_name) }
+    })
 }
 
 /// `observe::Pattern::word` and `name`, forwarded. Static.
@@ -80,10 +84,12 @@ pub unsafe extern "C" fn xmip_topology_pattern_words_v1(
     out_word: *mut Str,
     out_name: *mut Str,
 ) -> i32 {
-    let said = from_wire_pattern(pattern).map(|pattern| (pattern.word(), pattern.name()));
+    abi::guarded(status::PANIC, || {
+        let said = from_wire_pattern(pattern).map(|pattern| (pattern.word(), pattern.name()));
 
-    // SAFETY: per the contract above.
-    unsafe { words(said, out_word, out_name) }
+        // SAFETY: per the contract above.
+        unsafe { words(said, out_word, out_name) }
+    })
 }
 
 #[cfg(test)]

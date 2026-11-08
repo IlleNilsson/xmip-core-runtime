@@ -11,8 +11,10 @@
 //! own `[operate] anchors` for client authentication and runs it through
 //! its own gate (`plane::caller::certificate`), and only then issues a
 //! handle of its own. On a call that names that handle (`call::CALLER_HEADER`) the act is
-//! the browser caller's and admitted by the caller's own role — never the
-//! relay's — and only where the handle was issued to the very account the
+//! the browser caller's and admitted by the role the node's configuration
+//! lists the browser's own certificate with (`plane::grant`), none where it
+//! lists it not — never the relay's, nor any role for the whole node — and
+//! only where the handle was issued to the very account the
 //! call comes through, before any certificate of its path ends, and not yet
 //! let go (`Unvouch`). A handle presented by any other account is no one.
 //! Relaying grants no act of its own: the relay's own calls are judged by
@@ -35,7 +37,9 @@ use serde_json::{Value, json};
 
 use crate::plane::caller;
 use crate::plane::fresh::Fresh;
+use crate::plane::grant::Grants;
 use crate::plane::handle::{drawn, now};
+use crate::plane::role::Role;
 
 /// How many callers a node holds for its relays at once, at most.
 pub const MOST: usize = 65_536;
@@ -118,9 +122,10 @@ impl Relaying {
     }
 }
 
-/// One caller a relay vouched for.
+/// One caller a relay vouched for, and the role its certificate is granted.
 struct Vouched {
     identity: AuthenticatedIdentity,
+    role: Option<Role>,
     until: i64,
     through: String,
 }
@@ -149,15 +154,21 @@ pub fn verified(relaying: &Relaying, chain: &[Vec<u8>], usage: Usage) -> Result<
 
 /// The caller `chain` (DER, leaf first) proves ([`verified`]), whose
 /// possession of its key a relay's handshake proved (`plane::possessed`),
-/// vouched for `through` that relay and held until its certificate ends:
-/// the node's handle.
+/// vouched for `through` that relay with the role `grants` lists its leaf
+/// with, and held until its certificate ends: the node's handle.
 ///
 /// # Errors
 ///
 /// The chain, its verification, the gate or a full registry, in words.
-pub fn vouch(relaying: &Relaying, through: &str, chain: &[Vec<u8>]) -> Result<u64, String> {
+pub fn vouch(
+    relaying: &Relaying,
+    through: &str,
+    chain: &[Vec<u8>],
+    grants: &Grants,
+) -> Result<u64, String> {
     let at = now();
     let (identity, until) = relaying.verified_once(chain)?;
+    let role = chain.first().and_then(|leaf| grants.certificate(leaf));
     let mut held = relaying.held();
     if held.len() >= MOST {
         held.retain(|_, caller| caller.until > at);
@@ -172,6 +183,7 @@ pub fn vouch(relaying: &Relaying, through: &str, chain: &[Vec<u8>]) -> Result<u6
         handle,
         Vouched {
             identity,
+            role,
             until,
             through: through.to_string(),
         },
@@ -179,18 +191,22 @@ pub fn vouch(relaying: &Relaying, through: &str, chain: &[Vec<u8>]) -> Result<u6
     Ok(handle)
 }
 
-/// The caller the node's `handle` holds, where it was vouched for `through`
-/// this very account and its certificate has not ended; `None` — no one —
-/// otherwise.
+/// The caller the node's `handle` holds, and the role granted it, where it
+/// was vouched for `through` this very account and its certificate has not
+/// ended; `None` — no one — otherwise.
 #[must_use]
-pub fn proven(relaying: &Relaying, handle: u64, through: &str) -> Option<AuthenticatedIdentity> {
+pub fn proven(
+    relaying: &Relaying,
+    handle: u64,
+    through: &str,
+) -> Option<(AuthenticatedIdentity, Option<Role>)> {
     let mut held = relaying.held();
     let caller = held.get(&handle)?;
     if caller.until <= now() {
         held.remove(&handle);
         return None;
     }
-    (caller.through == through).then(|| caller.identity.clone())
+    (caller.through == through).then(|| (caller.identity.clone(), caller.role))
 }
 
 /// Let the node's `handle` go, where `through` is the account it was
@@ -231,9 +247,10 @@ pub fn nonces(relaying: &Relaying, connection: &AuthenticatedIdentity, message: 
 /// The answer to a relay's `Vouch` — `{"transcript": <base64>, "nonces":
 /// [hex...]}`, the browser's handshake and every nonce bound into it —
 /// once the handshake proves the browser held its key
-/// (`plane::possessed`): `{"caller": <handle>}`, or `{"refused": <why>}`.
+/// (`plane::possessed`), held with the role `grants` lists it with:
+/// `{"caller": <handle>}`, or `{"refused": <why>}`.
 #[must_use]
-pub fn vouched_for(relaying: &Relaying, through: &str, message: &Value) -> Value {
+pub fn vouched_for(relaying: &Relaying, through: &str, message: &Value, grants: &Grants) -> Value {
     let transcript = message["transcript"]
         .as_str()
         .ok_or_else(|| "REFUSED. A Vouch hands the browser's handshake".to_string())
@@ -252,7 +269,7 @@ pub fn vouched_for(relaying: &Relaying, through: &str, message: &Value) -> Value
     let proved = transcript.and_then(|transcript| {
         crate::plane::possessed::possessed(relaying, through, &transcript, &nonces)
     });
-    match proved.and_then(|chain| vouch(relaying, through, &chain)) {
+    match proved.and_then(|chain| vouch(relaying, through, &chain, grants)) {
         Ok(handle) => json!({ "caller": handle }),
         Err(refused) => json!({ "refused": refused }),
     }
@@ -278,9 +295,21 @@ mod tests {
         let relaying = Relaying::new(vec!["HOST\\gui".to_string()], &anchors).expect("anchors");
         assert!(relaying.relays("host\\GUI") && !relaying.relays("HOST\\other"));
 
-        let handle = vouch(&relaying, "HOST\\gui", &[leaf]).expect("vouched");
-        let caller = proven(&relaying, handle, "HOST\\gui").expect("the caller");
+        // The caller holds the role its own certificate is listed with; a
+        // second certificate under the same anchors holds none.
+        let (alice, nobody) = (vec!["CN=alice".to_string()], Vec::new());
+        let grants = Grants::listed([&nobody, &alice, &nobody]);
+        let handle = vouch(&relaying, "HOST\\gui", &[leaf], &grants).expect("vouched");
+        let (caller, role) = proven(&relaying, handle, "HOST\\gui").expect("the caller");
         assert!(caller.value.contains("alice"), "{}", caller.value);
+        assert_eq!(role, Some(Role::Operator));
+        let (other, _, _) = authority.pem("bob");
+        let other = Chain::from_pem(&other).expect("a chain").leaf().to_vec();
+        let bob = vouch(&relaying, "HOST\\gui", &[other], &grants).expect("vouched");
+        assert_eq!(
+            proven(&relaying, bob, "HOST\\gui").map(|(_, role)| role),
+            Some(None)
+        );
         assert!(
             proven(&relaying, handle, "HOST\\other").is_none(),
             "another account's is no one"
@@ -296,7 +325,8 @@ mod tests {
         let stranger = Authority::new();
         let (theirs, _, _) = stranger.pem("mallory");
         let leaf = Chain::from_pem(&theirs).expect("a chain").leaf().to_vec();
-        let refused = vouch(&relaying, "HOST\\gui", &[leaf]).expect_err("not under the anchors");
+        let refused =
+            vouch(&relaying, "HOST\\gui", &[leaf], &grants).expect_err("not under the anchors");
         assert!(refused.starts_with("REFUSED. The certificate"), "{refused}");
         assert!(Relaying::new(Vec::new(), "").is_err());
     }

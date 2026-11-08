@@ -1,9 +1,10 @@
 //! One connection to a node's operate listener: the handshake, who the
 //! certificate — or, on the local endpoint, the operating system — proves,
-//! and each call answered in turn — the publication,
+//! the role the node's configuration grants that very caller
+//! (`plane::grant`), and each call answered in turn — the publication,
 //! a wait for its next revision, and an operator's act, admitted by the
-//! caller's role and audited taken or refused (ADR-0009, amendment
-//! 2026-10-06; ADR-0062).
+//! caller's role and audited taken or refused (ADR-0009, amendments
+//! 2026-10-06 and 2026-11-07; ADR-0062).
 
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpStream};
@@ -22,13 +23,13 @@ use crate::applied::{Applied, apply};
 use crate::plane::call::{self, ACT, NONCES, PUBLICATION, SECRET, SECRETS, UNVOUCH, VOUCH, WAIT};
 use crate::plane::call::{LONGEST_WAIT, WATCH};
 use crate::plane::caller;
+use crate::plane::limits::{Handshaking, handshaken};
 use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
 use crate::plane::role::{Role, admitted};
 use crate::plane::vouched::{self, Relaying};
 
-/// The most a handshake, or a write to a surface that does not read,
-/// waits.
+/// The most a write to a surface that does not read waits.
 const PATIENCE: Duration = Duration::from_secs(5);
 
 /// The audit action every act through the gate records — the one
@@ -36,37 +37,45 @@ const PATIENCE: Duration = Duration::from_secs(5);
 pub const AUDIT_ACTION: &str = "act";
 
 /// Serve one network connection until the surface or the listener ends
-/// it: mutual TLS agreeing `h2`, the caller what the authentication gate
-/// answers for its certificate (`plane::caller::certificate`).
-pub(crate) fn answer(connection: TcpStream, peer: SocketAddr, serve: &Serve) {
-    let settled = connection
-        .set_nodelay(true)
-        .and_then(|()| connection.set_read_timeout(Some(PATIENCE)))
-        .and_then(|()| connection.set_write_timeout(Some(PATIENCE)));
+/// it: mutual TLS agreeing `h2`, its handshake finished within the first of
+/// `bound` in all and counted in progress by the second until it has, the
+/// caller what the authentication gate answers for its certificate
+/// (`plane::caller::certificate`) and its role the one granted it.
+pub(crate) fn answer(
+    connection: TcpStream,
+    peer: SocketAddr,
+    serve: &Serve,
+    bound: (Duration, Handshaking),
+) {
+    let (within, handshaking) = bound;
     let Some(config) = serve.config.as_ref() else {
         return;
     };
-    let guarded = settled
+    let guarded = connection
+        .set_nodelay(true)
         .map_err(|error| error.to_string())
         .and_then(|()| tls::server(connection, Arc::clone(config)).map_err(|e| e.message))
         .and_then(|mut guarded| {
+            handshaken(&mut guarded, within)?;
+            drop(handshaking);
             let agreed = tls::alpn::agreed(&mut guarded).map_err(|e| e.message)?;
             if agreed.as_deref() != Some(b"h2") {
                 return Err("refused: the surface did not agree h2".to_string());
             }
-            let who = proven(&guarded)?;
+            let who = proven(&guarded, serve)?;
             // A connection waits on its surface for as long as it is held,
             // looking each WATCH whether the listener stops.
             guarded
                 .sock
                 .set_read_timeout(Some(WATCH))
+                .and_then(|()| guarded.sock.set_write_timeout(Some(PATIENCE)))
                 .map_err(|error| error.to_string())?;
             Ok((guarded, who))
         });
     match guarded {
-        Ok((guarded, caller)) => calls(
+        Ok((guarded, (caller, role))) => calls(
             Box::new(Watched::new(guarded, || serve.stopped())),
-            &caller,
+            (&caller, role),
             serve,
         ),
         Err(reason) => noted(serve, &peer.to_string(), &format!("refused: {reason}")),
@@ -85,9 +94,10 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
     if let Err(error) = stream.watch(WATCH) {
         return noted(serve, &caller.value, &format!("refused: {error}"));
     }
+    let role = serve.grants.account(&caller.value);
     calls(
         Box::new(Watched::new(stream, || serve.stopped())),
-        &caller,
+        (&caller, role),
         serve,
     );
 }
@@ -100,7 +110,7 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
 /// answered a surface's `GOAWAY` with its own and read on until it closed,
 /// a quarter of a millisecond of processor time a connection on the local
 /// endpoint (open problem 35).
-fn calls(connection: Boxed<'_>, caller: &AuthenticatedIdentity, serve: &Serve) {
+fn calls(connection: Boxed<'_>, caller: Caller<'_>, serve: &Serve) {
     let Ok(mut server) = BoxedServer::handshake(connection) else {
         return;
     };
@@ -115,38 +125,46 @@ fn calls(connection: Boxed<'_>, caller: &AuthenticatedIdentity, serve: &Serve) {
     }
 }
 
+/// A connection's caller, and the role granted it; `None` for none.
+type Caller<'a> = (&'a AuthenticatedIdentity, Option<Role>);
+
 /// The caller the certificate the surface presented proves, which the
-/// handshake checked against the anchors, through the authentication gate.
-fn proven(guarded: &tls::GuardedServer) -> Result<AuthenticatedIdentity, String> {
+/// handshake checked against the anchors, through the authentication gate,
+/// and the role `serve` grants that certificate.
+fn proven(
+    guarded: &tls::GuardedServer,
+    serve: &Serve,
+) -> Result<(AuthenticatedIdentity, Option<Role>), String> {
     let leaf = guarded
         .conn
         .peer_certificates()
         .and_then(<[_]>::first)
         .ok_or_else(|| "the surface presented no certificate".to_string())?;
-    caller::certificate(leaf)
+    Ok((caller::certificate(leaf)?, serve.grants.certificate(leaf)))
 }
 
-/// Who asks a call: the caller it is admitted and audited as, and the
-/// relay it came through where a relay called for that caller.
+/// Who asks a call: the caller it is admitted and audited as, the role
+/// granted it, and the relay it came through where a relay called for that
+/// caller.
 #[derive(Clone, Copy)]
 struct Asker<'a> {
     who: &'a str,
+    role: Option<Role>,
     through: Option<&'a str>,
 }
 
 /// The answer to one call: decided from its method, the identity the
 /// connection proved — or, where a relay names the caller it calls for
 /// ([`call::CALLER_HEADER`]), that caller as the node holds it
-/// (`plane::vouched`) — and the role it holds before a byte of it is read
-/// (`role::admitted`), and only then read and answered.
-fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> Response {
+/// (`plane::vouched`) — and the role granted that very caller before a
+/// byte of it is read (`role::admitted`), and only then read and answered.
+fn called(serve: &Serve, (caller, role): Caller<'_>, request: &Request) -> Response {
     let Some(method) = call::method(&request.path).filter(|method| METHODS.contains(method)) else {
         return call::refusal(
             "UNIMPLEMENTED",
             &format!("{} is no method of {}", request.path, call::SERVICE),
         );
     };
-    let role = serve.stated.unwrap_or_default();
     let relaying = serve
         .relaying
         .get()
@@ -154,8 +172,10 @@ fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> R
     if matches!(method, NONCES | VOUCH | UNVOUCH) {
         return relayed(serve, relaying.map(AsRef::as_ref), caller, method, request);
     }
+    // The caller each call names is decided by the identity and role the
+    // connection proved, or the one a relay vouched for, and no other.
     let (acting, through) = match (call::caller_of(request), relaying) {
-        (None, _) => (Some(caller.clone()), None),
+        (None, _) => (Some((caller.clone(), role)), None),
         (Some(handle), Some(_)) => (
             relaying.and_then(|relaying| vouched::proven(relaying, handle, &caller.value)),
             Some(caller.value.as_str()),
@@ -165,16 +185,17 @@ fn called(serve: &Serve, caller: &AuthenticatedIdentity, request: &Request) -> R
             return answered_refused(method, &refused);
         }
     };
-    let Some(acting) = acting else {
+    let Some((acting, role)) = acting else {
         return answered_refused(method, call::UNKNOWN_CALLER);
     };
     let asker = Asker {
         who: acting.value.as_str(),
+        role,
         through,
     };
     let asking = (asked(method), "on this node");
     if let Err(refused) = admitted(Some(&acting), role, method, asking) {
-        record(serve, asker, role, method, "", Some(&refused));
+        record(serve, asker, method, "", Some(&refused));
         return answered_refused(method, &refused);
     }
     let message = match call::message(request) {
@@ -239,7 +260,7 @@ fn relayed(
     };
     let answer = match method {
         NONCES => vouched::nonces(relaying, caller, &message),
-        VOUCH => vouched::vouched_for(relaying, who, &message),
+        VOUCH => vouched::vouched_for(relaying, who, &message, &serve.grants),
         _ => vouched::unvouched(relaying, who, &message),
     };
     if let Some(refused) = answer["refused"].as_str() {
@@ -288,9 +309,8 @@ fn acted(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
         Ok(act) => act,
         Err(refused) => return outcome("invalid", &refused),
     };
-    let role = serve.stated.unwrap_or_default();
     let thing = format!("{} '{target}' at {node}", noun.called());
-    record(serve, asker, role, act.word(), &thing, None);
+    record(serve, asker, act.word(), &thing, None);
     let order = Order {
         node,
         noun,
@@ -314,9 +334,8 @@ fn acted(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
 fn secret_set(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
     let text = |key: &str| message[key].as_str().unwrap_or_default();
     let (node, name) = (text("node"), text("name"));
-    let role = serve.stated.unwrap_or_default();
     let thing = format!("the secret '{name}' at {node}");
-    record(serve, asker, role, "set", &thing, None);
+    record(serve, asker, "set", &thing, None);
     match crate::secret::set(node, (name, text("kind"), text("value")), asker.who) {
         Applied::Taken(said) => outcome("taken", &said),
         Applied::Refused(said) => outcome("refused", &said),
@@ -329,16 +348,10 @@ fn outcome(word: &str, said: &str) -> Response {
 }
 
 /// The gate's record, as `GatedOperator` writes it: who, the act, its
-/// target and the role, taken or refused — and, for a caller a relay
-/// called for, the relay it came through (`through`).
-fn record(
-    serve: &Serve,
-    asker: Asker<'_>,
-    role: Role,
-    act: &str,
-    target: &str,
-    refused: Option<&String>,
-) {
+/// target and the role granted the caller, `none` where none is, taken or
+/// refused — and, for a caller a relay called for, the relay it came
+/// through (`through`).
+fn record(serve: &Serve, asker: Asker<'_>, act: &str, target: &str, refused: Option<&String>) {
     let who = asker.who;
     let asked = match asker.through {
         Some(through) => format!("{who} asked through {through} to {act} {target}"),
@@ -356,7 +369,10 @@ fn record(
         ("act".to_string(), act.to_string()),
         ("target".to_string(), target.to_string()),
         ("who".to_string(), who.to_string()),
-        ("role".to_string(), role.word().to_string()),
+        (
+            "role".to_string(),
+            asker.role.map_or("none", Role::word).to_string(),
+        ),
     ]);
     if let Some(through) = asker.through {
         properties.insert("through".to_string(), through.to_string());
@@ -367,7 +383,7 @@ fn record(
 }
 
 /// A connection refused, in the node's audit.
-fn noted(serve: &Serve, peer: &str, message: &str) {
+pub(crate) fn noted(serve: &Serve, peer: &str, message: &str) {
     let properties = BTreeMap::from([("peer".to_string(), peer.to_string())]);
     let _ = serve.audit.record(
         "operate.connection",

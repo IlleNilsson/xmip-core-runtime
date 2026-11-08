@@ -26,6 +26,19 @@ pub unsafe extern "C" fn xmip_technology_catalogue_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        technology_catalogue(technology, out, cap, out_len)
+    })
+}
+
+/// [`xmip_technology_catalogue_v1`] within its guard.
+unsafe fn technology_catalogue(
+    technology: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on `technology`: its
     // bytes are the caller's, alive for the call, and not freed here.
     let Some(technology) = (unsafe { scope_text(technology) }) else {

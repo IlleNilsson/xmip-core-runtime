@@ -27,10 +27,9 @@ const MOST_ACTS: usize = 10_000;
 pub enum Turned {
     /// Written: the Instance moved on.
     Done,
-    /// Not now, its claim given back: another holds it, its Stream does not
-    /// head its sequence, no step of its Instance waits for it, its
-    /// Instance moved on since it was read, or another Instance took a key
-    /// it starts by — taken again, it joins that one.
+    /// Not now, its claim given back: another holds it, its Stream does not head its sequence,
+    /// no step of its Instance waits for it, its Instance moved on since it was read, or another
+    /// Instance took a key it starts by — taken again, it joins that one.
     Waits(String),
     /// Written Failed with why, kept in its queue for an operator.
     Failed(String),
@@ -38,8 +37,8 @@ pub enum Turned {
     Unwritten(String),
 }
 
-/// The Message `held` names by its Journey, of `running`'s queue, taken a
-/// turn of.
+/// The Message `held` names by its Journey, of `running`'s queue, taken a turn of on one
+/// Storage node: its claim, its reads, the Streams it splits and its write (`Runtime::over`).
 pub(super) fn turn(
     runtime: &Runtime<'_>,
     pickup: &Pickup,
@@ -47,15 +46,16 @@ pub(super) fn turn(
     held: &Held,
 ) -> Turned {
     let step = runtime.work;
-    let id = held.hold.journey;
-    let token = runtime.ids.next_u128();
-    let claim = match step.storage.claim(id, &step.node, token, step.lease) {
+    let statement = persist::storage::statement(&step.storage);
+    let runtime = &runtime.over(&statement);
+    let (id, token) = (held.hold.journey, runtime.ids.next_u128());
+    let claim = match runtime.storage.claim(id, &step.node, token, step.lease) {
         Ok(Some(claim)) => claim,
         Ok(None) => return Turned::Waits("another holds it".to_string()),
         Err(why) => return Turned::Unwritten(why.to_string()),
     };
     let release = |why: String| {
-        let _ = step.storage.release(&claim);
+        let _ = runtime.storage.release(&claim);
         Turned::Waits(why)
     };
     let mut work = match read(runtime, id, &held.hold.body) {
@@ -67,7 +67,8 @@ pub(super) fn turn(
     let to = route::Subscriber::WorkProcess(running.name.clone());
     let configured = (step.cluster(), runtime.sends, runtime.gathering);
     let at = (&mut work.journey, &work.message, &to);
-    match crate::sequence::heading(step.storage.as_ref(), configured, at, (&claim, step.lease)) {
+    let lease = (&claim, step.lease);
+    match crate::sequence::heading(runtime.storage.as_ref(), configured, at, lease) {
         Ok(Placing::Placed) => {}
         Ok(Placing::Behind) => return release("its Stream waits behind another".to_string()),
         Ok(Placing::Lost) => return Turned::Waits("its claim was another's".to_string()),
@@ -81,7 +82,7 @@ pub(super) fn turn(
         .first()
         .map(|sequenced| (sequenced.queue, sequenced.skips));
     if let Some((queue, _)) = point {
-        match heads(step.storage.as_ref(), queue, id.value()) {
+        match heads(runtime.storage.as_ref(), queue, id.value()) {
             Ok(true) => {}
             Ok(false) => return release("it waits behind another at its Work Process".to_string()),
             Err(why) => return release(why),
@@ -97,7 +98,7 @@ pub(super) fn turn(
         point,
     };
     match taking.take(work) {
-        Ok(Some(turn)) => match step.storage.turn(&turn) {
+        Ok(Some(turn)) => match runtime.storage.turn(&turn) {
             Ok(true) => Turned::Done,
             Ok(false) => release(
                 "its Instance moved on since it was read, or another took its key".to_string(),
@@ -208,7 +209,7 @@ impl Taking<'_> {
         work: &ReceivedWork,
         keys: &[(u32, String)],
     ) -> Result<(u128, Option<InstanceRecord>), String> {
-        let storage = &self.runtime.work.storage;
+        let storage = self.runtime.storage;
         for key in keys {
             if let Some(instance) = storage
                 .read_instance_key(self.correlation(key))
@@ -390,7 +391,7 @@ impl Taking<'_> {
             queue: self.running.queue,
             reason: why.to_string(),
         });
-        match self.runtime.work.storage.hand_on(&hand_on) {
+        match self.runtime.storage.hand_on(&hand_on) {
             Ok(true) => Turned::Failed(why.to_string()),
             Ok(false) => Turned::Waits("its claim was another's".to_string()),
             Err(failed) => Turned::Unwritten(failed.to_string()),

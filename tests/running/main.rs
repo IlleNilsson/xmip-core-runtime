@@ -191,11 +191,13 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
 /// not what the next one's test Storage node opens.
 #[test]
 fn what_an_earlier_process_of_the_same_id_left_is_gone() {
-    let earlier = written("left", "");
+    // A slice is signed for its node, so even this one names one.
+    let named = "[service]\nnode_name = \"left\"\n";
+    let earlier = written("left", named);
     let place = earlier.parent().expect("its directory").join("ledger");
     drop(test_storage(&place));
 
-    let path = written("left", "");
+    let path = written("left", named);
 
     drop(test_storage(&place));
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));

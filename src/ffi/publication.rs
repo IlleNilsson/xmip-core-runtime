@@ -166,30 +166,32 @@ pub unsafe extern "C" fn xmip_publication_read_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: the caller upholds the header's contract on `text`.
-    let Some(text) = (unsafe { scope_text(text) }) else {
-        return status::MALFORMED;
-    };
+    abi::guarded(status::PANIC, || {
+        // SAFETY: the caller upholds the header's contract on `text`.
+        let Some(text) = (unsafe { scope_text(text) }) else {
+            return status::MALFORMED;
+        };
 
-    match Publication::read(text) {
-        Ok(publication) => {
-            let read = Box::into_raw(Box::new(Read::of(publication)));
-            // SAFETY: `out` and `out_len` are writable per the contract.
-            unsafe {
-                *out = read.cast::<Handle>();
-                *out_len = 0;
+        match Publication::read(text) {
+            Ok(publication) => {
+                let read = Box::into_raw(Box::new(Read::of(publication)));
+                // SAFETY: `out` and `out_len` are writable per the contract.
+                unsafe {
+                    *out = read.cast::<Handle>();
+                    *out_len = 0;
+                }
+                status::OK
             }
-            status::OK
-        }
-        Err(said) => {
-            // SAFETY: per the contract above.
-            unsafe {
-                *out = core::ptr::null_mut();
-                refuse(&said, report, cap, out_len);
+            Err(said) => {
+                // SAFETY: per the contract above.
+                unsafe {
+                    *out = core::ptr::null_mut();
+                    refuse(&said, report, cap, out_len);
+                }
+                status::INVALID
             }
-            status::INVALID
         }
-    }
+    })
 }
 
 /// Release a handle and everything borrowed from it.
@@ -201,7 +203,8 @@ pub unsafe extern "C" fn xmip_publication_read_v1(
 pub unsafe extern "C" fn xmip_publication_free_v1(publication: *mut Handle) {
     if !publication.is_null() {
         // SAFETY: per the contract above, the box this handle was made from.
-        drop(unsafe { Box::from_raw(publication.cast::<Read>()) });
+        let read = unsafe { Box::from_raw(publication.cast::<Read>()) };
+        abi::guarded((), || drop(read));
     }
 }
 
@@ -214,13 +217,15 @@ pub unsafe extern "C" fn xmip_publication_head_v1(
     publication: *const Handle,
     out: *mut PublicationHead,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    let Some(read) = (unsafe { held(publication) }) else {
-        return status::INVALID;
-    };
-    // SAFETY: `out` is writable per the contract.
-    unsafe { out.write(read.head()) };
-    status::OK
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        let Some(read) = (unsafe { held(publication) }) else {
+            return status::INVALID;
+        };
+        // SAFETY: `out` is writable per the contract.
+        unsafe { out.write(read.head()) };
+        status::OK
+    })
 }
 
 /// The records, worst first.
@@ -235,9 +240,11 @@ pub unsafe extern "C" fn xmip_publication_records_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
-        fill_copied(&read.records, out, cap, out_len)
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
+            fill_copied(&read.records, out, cap, out_len)
+        })
     })
 }
 
@@ -252,9 +259,11 @@ pub unsafe extern "C" fn xmip_publication_counts_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
-        fill_copied(&read.counts, out, cap, out_len)
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
+            fill_copied(&read.counts, out, cap, out_len)
+        })
     })
 }
 
@@ -269,9 +278,11 @@ pub unsafe extern "C" fn xmip_publication_nodes_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
-        fill_copied(&read.nodes, out, cap, out_len)
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
+            fill_copied(&read.nodes, out, cap, out_len)
+        })
     })
 }
 
@@ -286,9 +297,11 @@ pub unsafe extern "C" fn xmip_publication_links_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
-        fill_copied(&read.links, out, cap, out_len)
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { held(publication) }.map_or(status::INVALID, |read| unsafe {
+            fill_copied(&read.links, out, cap, out_len)
+        })
     })
 }
 
@@ -299,6 +312,20 @@ pub unsafe extern "C" fn xmip_publication_links_v1(
 /// As for [`xmip_publication_records_v1`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_publication_run_v1(
+    publication: *const Handle,
+    list: u32,
+    out: *mut Str,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        publication_run(publication, list, out, cap, out_len)
+    })
+}
+
+/// [`xmip_publication_run_v1`] within its guard.
+unsafe fn publication_run(
     publication: *const Handle,
     list: u32,
     out: *mut Str,

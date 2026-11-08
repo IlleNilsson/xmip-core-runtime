@@ -40,10 +40,13 @@ unsafe extern "system" {
 )]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(module: *mut c_void, reason: u32, _reserved: *mut c_void) -> i32 {
-    if reason == PROCESS_ATTACH {
-        stay_resident(module);
-    }
-    1
+    // Pinned or not, the library loads: TRUE, a panic included.
+    abi::guarded(1, || {
+        if reason == PROCESS_ATTACH {
+            stay_resident(module);
+        }
+        1
+    })
 }
 
 /// Pin the module holding `address` for the rest of the process: unloading

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::endpoint::{endpoint, node, surface};
+use super::endpoint::{account_as, endpoint, node, surface};
 use xmip_core_runtime::fixture::absent_node;
 use xmip_core_runtime::plane::{Board, Outcome, Remote, Role};
 
@@ -24,7 +24,7 @@ fn user() -> String {
 #[test]
 fn an_act_on_this_machine_is_the_users_and_is_refused_to_an_observer() {
     let board = Arc::new(Board::default());
-    let (_listener, audit, called) = node(&board, None);
+    let (_listener, audit, called) = node(&board, account_as(Role::Observer, &[]));
     let surface = surface(&called);
 
     let (outcome, said) = surface
@@ -44,7 +44,7 @@ fn an_act_on_this_machine_is_the_users_and_is_refused_to_an_observer() {
 #[test]
 fn an_operator_on_this_machine_acts_and_the_node_answers() {
     let board = Arc::new(Board::default());
-    let (_listener, _, called) = node(&board, Some(Role::Operator));
+    let (_listener, _, called) = node(&board, account_as(Role::Operator, &[]));
     let surface = surface(&called);
 
     let (outcome, said) = surface
@@ -60,7 +60,7 @@ fn an_operator_on_this_machine_acts_and_the_node_answers() {
 #[test]
 fn a_secret_is_set_through_the_endpoint_as_an_act_and_never_said_back() {
     let board = Arc::new(Board::default());
-    let (_listener, _, called) = node(&board, Some(Role::Operator));
+    let (_listener, _, called) = node(&board, account_as(Role::Operator, &[]));
     let operator = surface(&called);
     let drawn = format!("drawn-{}", std::process::id());
 
@@ -78,7 +78,7 @@ fn a_secret_is_set_through_the_endpoint_as_an_act_and_never_said_back() {
         .expect_err("no such node");
     assert!(listed.starts_with("REFUSED: no node at"), "{listed}");
 
-    let (_watching, _, watched) = node(&board, Some(Role::Observer));
+    let (_watching, _, watched) = node(&board, account_as(Role::Observer, &[]));
     let (outcome, said) = surface(&watched)
         .set_secret(0, &absent_node(), ("partner-x", "password", &drawn))
         .expect("it answers");
@@ -89,7 +89,7 @@ fn a_secret_is_set_through_the_endpoint_as_an_act_and_never_said_back() {
 fn a_stop_ends_a_follow_waiting_on_the_endpoint_and_it_is_told() {
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let (mut listener, _, called) = node(&board, None);
+    let (mut listener, _, called) = node(&board, account_as(Role::Observer, &[]));
     let surface = surface(&called);
     let reached = surface.wait(0, Duration::from_secs(5));
     assert!(reached.reachable, "{}", reached.reason);
@@ -111,7 +111,7 @@ fn a_stop_ends_a_follow_waiting_on_the_endpoint_and_it_is_told() {
 #[test]
 fn a_surface_dropped_while_its_follow_waits_ends_at_once() {
     let board = Arc::new(Board::default());
-    let (_listener, _, called) = node(&board, None);
+    let (_listener, _, called) = node(&board, account_as(Role::Observer, &[]));
     let surface = surface(&called);
     assert!(surface.wait(0, Duration::from_secs(5)).reachable);
     std::thread::sleep(Duration::from_millis(20));

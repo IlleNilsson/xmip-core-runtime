@@ -73,6 +73,15 @@ pub unsafe extern "C" fn xmip_event_subscriptions_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_subscriptions(node, out, cap, out_len)
+    })
+}
+
+/// [`xmip_event_subscriptions_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn event_subscriptions(node: Str, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
     // SAFETY: the caller upholds the header's contract on `node`.
     let Some(node) = (unsafe { scope_text(node) }) else {
         return status::MALFORMED;
@@ -93,6 +102,22 @@ pub unsafe extern "C" fn xmip_event_subscriptions_v1(
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_event_subscription_act_v1(
+    id: u64,
+    act: Str,
+    who: Str,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_subscription_act(id, act, who, said, said_cap, said_len)
+    })
+}
+
+/// [`xmip_event_subscription_act_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn event_subscription_act(
     id: u64,
     act: Str,
     who: Str,
@@ -125,6 +150,19 @@ pub unsafe extern "C" fn xmip_event_subscription_act_v1(
 /// `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_publication_event_subscriptions_v1(
+    publication: *const Handle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        publication_event_subscriptions(publication, out, cap, out_len)
+    })
+}
+
+/// [`xmip_publication_event_subscriptions_v1`] within its guard.
+unsafe fn publication_event_subscriptions(
     publication: *const Handle,
     out: *mut u8,
     cap: usize,

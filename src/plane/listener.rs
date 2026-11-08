@@ -15,12 +15,14 @@
 //! one thread, no async runtime: requests are answered in turn, so a
 //! surface following the node holds a connection of its own for its wait;
 //! a thread that answered one is kept for the next (`plane::workers`).
+//! How many it answers at once, how many may be in their handshake and how
+//! long a handshake may take are its [`Limits`] (`plane::limits`).
 //! A stop wakes every wait, and ends every connection reading.
 
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -30,9 +32,10 @@ use xaudit::program_audit::ProgramAudit;
 use xcore::{ExecutionPhase, Severity};
 
 use crate::plane::board::Published;
+use crate::plane::grant::Grants;
+use crate::plane::limits::{Backoff, Handshaking, Limits};
 use crate::plane::local::{self, Acceptor, Cancel};
-use crate::plane::role::Role;
-use crate::plane::served::{answer, answer_local};
+use crate::plane::served::{answer, answer_local, noted};
 use crate::plane::vouched::Relaying;
 use crate::plane::workers::Workers;
 
@@ -46,8 +49,8 @@ pub(crate) struct Serve {
     /// The TLS a network connection is answered inside; none on the local
     /// endpoint.
     pub(crate) config: Option<Arc<tls::ServerConfig>>,
-    /// The role the node's configuration states for every proven caller.
-    pub(crate) stated: Option<Role>,
+    /// Which role each proven caller holds (`plane::grant`).
+    pub(crate) grants: Grants,
     /// Who may relay for a caller and what its certificate must reach
     /// (`[operate] relay`, `plane::vouched`); none until set, so a call
     /// before is relayed for no one.
@@ -75,11 +78,37 @@ struct Connection {
     cancel: Option<Cancel>,
 }
 
-/// The connections being answered, and the threads answering them.
+/// The connections being answered, the threads answering them, what bounds
+/// them, the handshakes in progress, and whether a connection past a bound
+/// was told to the audit since one was last taken.
 #[derive(Default)]
 struct Served {
     connections: Mutex<Vec<Connection>>,
     workers: Arc<Workers>,
+    limits: Mutex<Limits>,
+    handshaking: Arc<AtomicUsize>,
+    refusing: AtomicBool,
+}
+
+impl Served {
+    /// Whether `most` connections are being answered already.
+    fn full(&self, most: usize) -> bool {
+        let mut connections = self.connections.locked();
+        connections.retain(|connection| !connection.done.load(Ordering::SeqCst));
+        connections.len() >= most
+    }
+
+    /// A connection from `peer` closed for going past `most` of `bound`,
+    /// told to the audit where it is the first since one was taken.
+    fn refused(&self, serve: &Serve, peer: &str, (most, bound): (usize, &str)) {
+        if !self.refusing.swap(true, Ordering::SeqCst) {
+            let said = format!(
+                "refused: the listener takes {most} {bound} at once ([tuning] operate_{bound}); \
+                 every connection past them is closed until one ends"
+            );
+            noted(serve, peer, &said);
+        }
+    }
 }
 
 type Connections = Arc<Served>;
@@ -95,9 +124,10 @@ pub struct Listener {
 impl Listener {
     /// Serve what `published` holds, and the acts on it, to every surface
     /// connecting to `listener` with a certificate reaching `identity`'s
-    /// anchors, each caller holding the role `stated` grants a proven
-    /// caller (Observer where it states none); every act, taken or
-    /// refused, recorded in `audit`.
+    /// anchors, each caller holding the role `grants` lists it with and
+    /// none where it lists it not; every act, taken or refused, recorded
+    /// in `audit`. Bounded by the default [`Limits`] until
+    /// [`Listener::limit`] sets others.
     ///
     /// # Errors
     ///
@@ -107,13 +137,13 @@ impl Listener {
         listener: TcpListener,
         identity: &tls::Identity,
         published: Arc<dyn Published>,
-        stated: Option<Role>,
+        grants: Grants,
         audit: &ProgramAudit,
     ) -> Result<Self, String> {
         let server = identity.server().map_err(|failed| failed.message)?;
         let config = Arc::new(tls::alpn::selecting(server, &[b"h2"]));
         let address = listener.local_addr().map_err(|error| error.to_string())?;
-        let serve = serving(Some(config), published, stated, audit);
+        let serve = serving(Some(config), published, grants, audit);
         Self::begin(Place::Network(address), serve, move |serve, served| {
             accept(&listener, serve, served);
         })
@@ -124,9 +154,9 @@ impl Listener {
     /// surface on this machine the operating system lets open it: the
     /// node's account, the machine's administrators and whom `admitting`
     /// names (`[operate] admit`, and on Unix the socket's `[operate]
-    /// group`), each caller the account its process runs as. Plain HTTP/2
-    /// inside the machine, said in `audit` where it is made (ADR-0063
-    /// clause 1).
+    /// group`), each caller the account its process runs as, holding the
+    /// role `grants` lists that account with. Plain HTTP/2 inside the
+    /// machine, said in `audit` where it is made (ADR-0063 clause 1).
     ///
     /// # Errors
     ///
@@ -137,7 +167,7 @@ impl Listener {
         endpoint: &str,
         admitting: local::Admitting<'_>,
         published: Arc<dyn Published>,
-        stated: Option<Role>,
+        grants: Grants,
         audit: &ProgramAudit,
     ) -> Result<Self, String> {
         let path = local::place(endpoint)?;
@@ -150,7 +180,7 @@ impl Listener {
             Some("the local operate endpoint carries gRPC without TLS; the system proves who"),
             BTreeMap::from([("endpoint".to_string(), where_)]),
         );
-        let serve = serving(None, published, stated, audit);
+        let serve = serving(None, published, grants, audit);
         Self::begin(Place::Local(path), serve, move |serve, served| {
             accept_local(&acceptor, serve, served);
         })
@@ -183,6 +213,12 @@ impl Listener {
     /// until then no one is relayed.
     pub fn relay(&self, relaying: Arc<Relaying>) {
         let _ = self.serve.relaying.set(relaying);
+    }
+
+    /// Bound it by `limits` from the next connection on (`[tuning]
+    /// operate_connections`, `operate_handshakes`, `operate_handshake`).
+    pub fn limit(&self, limits: Limits) {
+        *self.served.limits.locked() = limits;
     }
 
     /// Where it listens: `host:port`, or the local endpoint's path.
@@ -225,13 +261,13 @@ impl Drop for Listener {
 fn serving(
     config: Option<Arc<tls::ServerConfig>>,
     published: Arc<dyn Published>,
-    stated: Option<Role>,
+    grants: Grants,
     audit: &ProgramAudit,
 ) -> Arc<Serve> {
     Arc::new(Serve {
         published,
         config,
-        stated,
+        grants,
         audit: audit.clone(),
         relaying: OnceLock::new(),
         stopping: AtomicBool::new(false),
@@ -251,7 +287,11 @@ fn ended(connection: &Connection) {
     }
 }
 
+/// Each connection accepted answered, within the listener's [`Limits`]: one
+/// past them closed as it is accepted, the handshake of one taken bounded in
+/// all.
 fn accept(listener: &TcpListener, serve: &Arc<Serve>, served: &Connections) {
+    let mut backoff = Backoff::default();
     loop {
         // bounded: a listener waits as long as its node runs; a stop wakes it
         let accepted = listener.accept();
@@ -259,22 +299,48 @@ fn accept(listener: &TcpListener, serve: &Arc<Serve>, served: &Connections) {
             return;
         }
         let Ok((connection, peer)) = accepted else {
+            backoff.failed();
             continue;
         };
+        backoff.succeeded();
+        let limits = *served.limits.locked();
+        if served.full(limits.connections) {
+            served.refused(
+                serve,
+                &peer.to_string(),
+                (limits.connections, "connections"),
+            );
+            continue;
+        }
+        let Some(handshaking) = Handshaking::begun(&served.handshaking, limits.handshakes) else {
+            served.refused(serve, &peer.to_string(), (limits.handshakes, "handshakes"));
+            continue;
+        };
+        let bound = (limits.handshake_within, handshaking);
         let serve = Arc::clone(serve);
-        answered(served, None, move || answer(connection, peer, &serve));
+        answered(served, None, move || {
+            answer(connection, peer, &serve, bound)
+        });
     }
 }
 
 fn accept_local(acceptor: &Acceptor, serve: &Arc<Serve>, served: &Connections) {
+    let mut backoff = Backoff::default();
     loop {
         let accepted = acceptor.accept();
         if serve.stopped() {
             return;
         }
         let Ok(stream) = accepted else {
+            backoff.failed();
             continue;
         };
+        backoff.succeeded();
+        let most = served.limits.locked().connections;
+        if served.full(most) {
+            served.refused(serve, "the local endpoint", (most, "connections"));
+            continue;
+        }
         let cancel = stream.cancel();
         let serve = Arc::clone(serve);
         answered(served, Some(cancel), move || answer_local(stream, &serve));
@@ -294,5 +360,6 @@ fn answered(served: &Connections, cancel: Option<Cancel>, work: impl FnOnce() + 
     }));
     if running {
         connections.push(Connection { done, cancel });
+        served.refusing.store(false, Ordering::SeqCst);
     }
 }

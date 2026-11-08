@@ -152,7 +152,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     let permitted = authorize(
         runtime.policies,
         &transport_facts,
-        &Attempt::new(Action::Receive, &gate.location).at(now),
+        &Attempt::new(Action::Receive, &gate.location, now),
         gate.identity.on_misalignment,
         gate.identity.minimum,
     );
@@ -334,7 +334,7 @@ fn settle_message_identity(
     let permitted = authorize(
         runtime.policies,
         &facts,
-        &Attempt::new(Action::Receive, &gate.location).at(now),
+        &Attempt::new(Action::Receive, &gate.location, now),
         gate.identity.on_misalignment,
         gate.identity.minimum,
     );

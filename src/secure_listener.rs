@@ -36,7 +36,9 @@ pub use crate::protection::Protection;
 
 /// How long a client has to finish its handshake once it has connected; a
 /// wait on the socket, so one that never speaks costs its own thread this
-/// long and no one else anything.
+/// long and no one else anything. A node's operate listener takes it as
+/// its default for a handshake in all (`plane::limits`, `[tuning]
+/// operate_handshake`).
 pub const HANDSHAKE_WITHIN: Duration = Duration::from_secs(10);
 
 /// The one application protocol agreed: HTTP/1.1, which the host speaks.
@@ -209,6 +211,7 @@ impl Drop for SecureListener {
 
 /// Accept until stopped, each handshake on a thread of its own.
 fn accept_all(bound: &TcpListener, config: &Arc<tls::ServerConfig>, waiting: &Arc<Waiting>) {
+    let mut backoff = crate::plane::limits::Backoff::default();
     loop {
         // bounded: a listener accepts as long as its host serves; a stop knocks
         let accepted = bound.accept();
@@ -217,11 +220,12 @@ fn accept_all(bound: &TcpListener, config: &Arc<tls::ServerConfig>, waiting: &Ar
         }
         let Ok((tcp, _)) = accepted else {
             // Out of handles, or a connection reset before it was taken:
-            // asked again after a moment, never in a loop holding a
-            // processor.
-            std::thread::sleep(Duration::from_millis(1));
+            // asked again after a pause (`plane::limits`), never in a loop
+            // holding a processor.
+            backoff.failed();
             continue;
         };
+        backoff.succeeded();
         let config = Arc::clone(config);
         let shared = Arc::clone(waiting);
         let spawned = std::thread::Builder::new()

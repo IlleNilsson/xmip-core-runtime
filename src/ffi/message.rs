@@ -81,6 +81,23 @@ pub unsafe extern "C" fn xmip_failed_messages_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        failed_listed(node, port, from, most, out, cap, out_len)
+    })
+}
+
+/// [`xmip_failed_messages_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn failed_listed(
+    node: Str,
+    port: Str,
+    from: u64,
+    most: u32,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on both strings.
     let texts = unsafe { (scope_text(node), scope_text(port)) };
     let (Some(node), Some(port)) = texts else {
@@ -155,6 +172,19 @@ pub unsafe extern "C" fn xmip_publication_failed_messages_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        publication_failed_messages(publication, out, cap, out_len)
+    })
+}
+
+/// [`xmip_publication_failed_messages_v1`] within its guard.
+unsafe fn publication_failed_messages(
+    publication: *const Handle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let Some(read) = (unsafe { held(publication) }) else {
         return status::INVALID;
@@ -179,6 +209,23 @@ pub unsafe extern "C" fn xmip_publication_failed_messages_v1(
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_message_act_v1(
+    node: Str,
+    journey: Str,
+    act: Str,
+    who: Str,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        message_act(node, journey, act, who, said, said_cap, said_len)
+    })
+}
+
+/// [`xmip_message_act_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn message_act(
     node: Str,
     journey: Str,
     act: Str,

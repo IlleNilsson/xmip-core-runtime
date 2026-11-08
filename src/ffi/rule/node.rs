@@ -24,9 +24,11 @@ pub unsafe extern "C" fn xmip_stage_words_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { fill(Stage::WORDS.into_iter(), out, cap, out_len) };
-    status::OK
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { fill(Stage::WORDS.into_iter(), out, cap, out_len) };
+        status::OK
+    })
 }
 
 /// `node::NodeRole::WORDS`, forwarded. Static.
@@ -35,9 +37,11 @@ pub unsafe extern "C" fn xmip_stage_words_v1(
 /// `out` has room for `cap` entries; `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_role_words_v1(out: *mut Str, cap: usize, out_len: *mut usize) -> i32 {
-    // SAFETY: per the contract above.
-    unsafe { fill(NodeRole::WORDS.into_iter(), out, cap, out_len) };
-    status::OK
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        unsafe { fill(NodeRole::WORDS.into_iter(), out, cap, out_len) };
+        status::OK
+    })
 }
 
 /// `node::NodeRole::declared`, forwarded: the roles in the fill shape, or
@@ -49,6 +53,30 @@ pub unsafe extern "C" fn xmip_role_words_v1(out: *mut Str, cap: usize, out_len: 
 /// and `refusal_len` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_role_declared_v1(
+    declared: Str,
+    roles: *mut Str,
+    cap: usize,
+    out_len: *mut usize,
+    refusal: *mut u8,
+    refusal_cap: usize,
+    refusal_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        role_declared(
+            declared,
+            roles,
+            cap,
+            out_len,
+            refusal,
+            refusal_cap,
+            refusal_len,
+        )
+    })
+}
+
+/// [`xmip_role_declared_v1`] within its guard.
+unsafe fn role_declared(
     declared: Str,
     roles: *mut Str,
     cap: usize,
@@ -82,6 +110,14 @@ pub unsafe extern "C" fn xmip_role_stages_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        role_stages(role, out, cap, out_len)
+    })
+}
+
+/// [`xmip_role_stages_v1`] within its guard.
+unsafe fn role_stages(role: Str, out: *mut Str, cap: usize, out_len: *mut usize) -> i32 {
     // SAFETY: the caller upholds the header's contract on `role`.
     let Some(word) = (unsafe { scope_text(role) }) else {
         return status::MALFORMED;
@@ -119,14 +155,14 @@ unsafe fn named(stage: Str) -> Result<Stage, i32> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_stage_pausable_v1(stage: Str, out: *mut u8) -> i32 {
     // SAFETY: per the contract above.
-    match unsafe { named(stage) } {
+    abi::guarded(status::PANIC, || match unsafe { named(stage) } {
         Ok(stage) => {
             // SAFETY: `out` is writable per the contract.
             unsafe { *out = u8::from(stage.pausable()) };
             status::OK
         }
         Err(code) => code,
-    }
+    })
 }
 
 /// `node::Stage::location`, forwarded. Static.
@@ -136,14 +172,14 @@ pub unsafe extern "C" fn xmip_stage_pausable_v1(stage: Str, out: *mut u8) -> i32
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_stage_location_v1(stage: Str, out: *mut Str) -> i32 {
     // SAFETY: per the contract above.
-    match unsafe { named(stage) } {
+    abi::guarded(status::PANIC, || match unsafe { named(stage) } {
         Ok(stage) => {
             // SAFETY: `out` is writable per the contract.
             unsafe { out.write(borrow(stage.location())) };
             status::OK
         }
         Err(code) => code,
-    }
+    })
 }
 
 /// `node::Capability::from_entry`, forwarded: the name borrowed from
@@ -155,6 +191,33 @@ pub unsafe extern "C" fn xmip_stage_location_v1(stage: Str, out: *mut Str) -> i3
 /// is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_capability_entry_v1(
+    entry: Str,
+    out_node: *mut Str,
+    roles: *mut Str,
+    cap: usize,
+    out_len: *mut usize,
+    refusal: *mut u8,
+    refusal_cap: usize,
+    refusal_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        capability_entry(
+            entry,
+            out_node,
+            roles,
+            cap,
+            out_len,
+            refusal,
+            refusal_cap,
+            refusal_len,
+        )
+    })
+}
+
+/// [`xmip_capability_entry_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn capability_entry(
     entry: Str,
     out_node: *mut Str,
     roles: *mut Str,

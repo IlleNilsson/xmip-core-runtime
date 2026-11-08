@@ -16,6 +16,8 @@ use crate::ffi::text::scope_text;
 
 /// Read both texts, answer, and write the answer or the refusal in the
 /// header's text shape: its true length in `out_len` whether or not it fit.
+/// Every export here is this call alone, so it is their outermost frame and
+/// holds their panic guard (specification section 6).
 ///
 /// # Safety
 /// `input` and `argument` point at their stated lengths of readable bytes;
@@ -28,23 +30,25 @@ unsafe fn answer(
     out_len: *mut usize,
     answering: impl FnOnce(&str, &str) -> Result<String, String>,
 ) -> i32 {
-    // SAFETY: the caller upholds the header's contract on both texts: their
-    // bytes are the caller's, alive for the call, and not freed here.
-    let (Some(input), Some(argument)) = (unsafe { scope_text(input) }, unsafe {
-        scope_text(argument)
-    }) else {
-        return status::MALFORMED;
-    };
+    abi::guarded(status::PANIC, || {
+        // SAFETY: the caller upholds the header's contract on both texts:
+        // their bytes are the caller's, alive for the call, and not freed.
+        let (Some(input), Some(argument)) = (unsafe { scope_text(input) }, unsafe {
+            scope_text(argument)
+        }) else {
+            return status::MALFORMED;
+        };
 
-    let (code, text) = match answering(input, argument) {
-        Ok(answer) => (status::OK, answer),
-        Err(refusal) => (status::INVALID, refusal),
-    };
+        let (code, text) = match answering(input, argument) {
+            Ok(answer) => (status::OK, answer),
+            Err(refusal) => (status::INVALID, refusal),
+        };
 
-    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable, per
-    // the contract; the text shape a refusal takes is the answer's too.
-    unsafe { refuse(&text, out, cap, out_len) };
-    code
+        // SAFETY: `out` has room for `cap` bytes and `out_len` is writable,
+        // per the contract; the text shape a refusal takes is the answer's.
+        unsafe { refuse(&text, out, cap, out_len) };
+        code
+    })
 }
 
 /// `xmip_cluster_views_v1`: [`design::views`].
@@ -223,5 +227,43 @@ mod tests {
         };
         assert_eq!(code, status::INVALID);
         assert!(needed > 0);
+    }
+
+    /// An export whose answering panics, as a defect in what it forwards
+    /// would: shaped as every export of this file is.
+    unsafe extern "C" fn panicking(
+        input: Str,
+        argument: Str,
+        out: *mut u8,
+        cap: usize,
+        out_len: *mut usize,
+    ) -> i32 {
+        // SAFETY: the caller's contract is passed on whole.
+        unsafe {
+            answer(input, argument, out, cap, out_len, |_, _| {
+                panic!("a defect in what the export forwards")
+            })
+        }
+    }
+
+    #[test]
+    fn a_panic_in_an_export_answers_panic_across_the_c_boundary_and_never_aborts() {
+        // Called through the header's own function type, as a surface calls:
+        // without the guard the panic reaches the `extern "C"` frame and the
+        // whole test process aborts.
+        let export: abi::operate::design::DesignFn = panicking;
+        let mut needed = 7usize;
+        // SAFETY: a null buffer of capacity 0, and a writable length.
+        let code = unsafe {
+            export(
+                text("x"),
+                text(""),
+                std::ptr::null_mut(),
+                0,
+                &raw mut needed,
+            )
+        };
+        assert_eq!(code, status::PANIC);
+        assert!(status::is_terminal(code), "section 6: the instance is done");
     }
 }

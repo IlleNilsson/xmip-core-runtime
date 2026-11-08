@@ -267,7 +267,11 @@ fn depart_one(
     let permitted = authorize(
         runtime.policies,
         facts,
-        &Attempt::new(Action::Send, &location.name).at(runtime.clock.unix_timestamp_nanos()),
+        &Attempt::new(
+            Action::Send,
+            &location.name,
+            runtime.clock.unix_timestamp_nanos(),
+        ),
         context::OnMisalignment::Accept,
         context::Minimum::TAKEN,
     );

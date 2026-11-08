@@ -49,6 +49,20 @@ pub unsafe extern "C" fn xmip_event_batch_unheard_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_batch_unheard(batch, out, cap, out_len)
+    })
+}
+
+/// [`xmip_event_batch_unheard_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn event_batch_unheard(
+    batch: *const EventBatch,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract, a live batch or null.
     let Some(batch) = (unsafe { batch.cast::<Batch>().as_ref() }) else {
         return status::INVALID;
@@ -74,6 +88,15 @@ pub unsafe extern "C" fn xmip_event_unheard_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_unheard(out, cap, out_len)
+    })
+}
+
+/// [`xmip_event_unheard_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn event_unheard(out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
     let text = json!({ "unheard": listed(&Hub::process().unheard()) }).to_string();
     // SAFETY: `out` and `out_len` per the contract.
     unsafe { refuse(&text, out, cap, out_len) };

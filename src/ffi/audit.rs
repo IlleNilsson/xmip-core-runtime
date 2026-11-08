@@ -60,6 +60,41 @@ pub unsafe extern "C" fn xmip_audit_v1(
     said_cap: usize,
     said_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        audited(
+            program,
+            directory,
+            action,
+            phase,
+            severity,
+            message,
+            properties,
+            properties_len,
+            out_kept,
+            said,
+            said_cap,
+            said_len,
+        )
+    })
+}
+
+/// [`xmip_audit_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn audited(
+    program: Str,
+    directory: Str,
+    action: Str,
+    phase: i32,
+    severity: i32,
+    message: Str,
+    properties: *const Str,
+    properties_len: usize,
+    out_kept: *mut i32,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
     // SAFETY: said_len is writable per the contract.
     unsafe { *said_len = 0 };
 
@@ -130,6 +165,21 @@ pub unsafe extern "C" fn xmip_audit_v1(
 /// writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_audit_read_v1(
+    directory: Str,
+    query: *const Str,
+    query_len: usize,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        audit_read(directory, query, query_len, out, cap, out_len)
+    })
+}
+
+/// [`xmip_audit_read_v1`] within its guard.
+unsafe fn audit_read(
     directory: Str,
     query: *const Str,
     query_len: usize,

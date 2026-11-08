@@ -4,8 +4,11 @@
 //!
 //! A handle owns its remote, or its listener, and one call frees it. The
 //! follow, its recovery loop and every word are the plane's; this lays
-//! them out as the header's values and decides nothing.
+//! them out as the header's values and decides nothing. An act asked
+//! through a handle, on a noun or on the node's secrets, is [`act`]'s.
 #![allow(unsafe_code)]
+
+mod act;
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -14,9 +17,11 @@ use xcore::lock::Locked;
 use abi::ffi::{Str, status};
 use abi::operate::remote::Remote as RemoteHandle;
 
+pub use act::{xmip_remote_act_v1, xmip_secret_v1, xmip_secrets_v1};
+
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
-use crate::plane::{Outcome, Remote};
+use crate::plane::Remote;
 
 /// A remote, and a publication read whole but not yet handed over whole.
 struct Held {
@@ -61,6 +66,33 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        remote_open(
+            address,
+            certificate,
+            key,
+            anchors,
+            out,
+            report,
+            cap,
+            out_len,
+        )
+    })
+}
+
+/// [`xmip_remote_open_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn remote_open(
+    address: Str,
+    certificate: Str,
+    key: Str,
+    anchors: Str,
+    out: *mut *mut RemoteHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let Some([address, certificate, key, anchors]) =
         (unsafe { texts([address, certificate, key, anchors]) })
@@ -84,6 +116,21 @@ pub unsafe extern "C" fn xmip_remote_open_v1(
 /// room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_open_local_v1(
+    endpoint: Str,
+    within_ms: u32,
+    out: *mut *mut RemoteHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        remote_open_local(endpoint, within_ms, out, report, cap, out_len)
+    })
+}
+
+/// [`xmip_remote_open_local_v1`] within its guard.
+unsafe fn remote_open_local(
     endpoint: Str,
     within_ms: u32,
     out: *mut *mut RemoteHandle,
@@ -160,6 +207,20 @@ pub unsafe extern "C" fn xmip_remote_publication_v1(
     out_len: *mut usize,
     out_revision: *mut u64,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        remote_publication(remote, out, cap, out_len, out_revision)
+    })
+}
+
+/// [`xmip_remote_publication_v1`] within its guard.
+unsafe fn remote_publication(
+    remote: *const RemoteHandle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+    out_revision: *mut u64,
+) -> i32 {
     // SAFETY: per the contract above.
     let Some(held) = (unsafe { held(remote) }) else {
         return status::INVALID;
@@ -207,6 +268,35 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
     cap: usize,
     reason_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        remote_wait(
+            remote,
+            seen,
+            timeout_ms,
+            out_told,
+            out_revision,
+            out_reachable,
+            reason,
+            cap,
+            reason_len,
+        )
+    })
+}
+
+/// [`xmip_remote_wait_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn remote_wait(
+    remote: *const RemoteHandle,
+    seen: u64,
+    timeout_ms: u32,
+    out_told: *mut u64,
+    out_revision: *mut u64,
+    out_reachable: *mut u8,
+    reason: *mut u8,
+    cap: usize,
+    reason_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let Some(held) = (unsafe { held(remote) }) else {
         return status::INVALID;
@@ -224,141 +314,6 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
     status::OK
 }
 
-/// `act` on the `noun` called `target` of the node at `node`, as the
-/// identity the certificate proves — or, for `caller` a handle this
-/// process holds a caller by (section 18), as that caller, the node
-/// vouching for it; 0 for this side itself. `XMIP_OK` taken; `XMIP_E_AUTH`
-/// refused by role, or no one; `XMIP_E_NOT_FOUND` refused by the node;
-/// `XMIP_E_INVALID` no act the noun takes; `XMIP_E_IO` Xmip Storage did not
-/// answer; `XMIP_E_UNAVAILABLE` the node did not. The sentence in `said`.
-///
-/// # Safety
-/// `remote` is a live handle; the strings point at their stated lengths;
-/// `said` has room for `cap` bytes and `said_len` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_remote_act_v1(
-    remote: *const RemoteHandle,
-    caller: u64,
-    node: Str,
-    noun: Str,
-    target: Str,
-    act: Str,
-    said: *mut u8,
-    cap: usize,
-    said_len: *mut usize,
-) -> i32 {
-    // SAFETY: per the contract above.
-    let Some(held) = (unsafe { held(remote) }) else {
-        return status::INVALID;
-    };
-    // SAFETY: per the contract above.
-    let Some([node, noun, target, act]) = (unsafe { texts([node, noun, target, act]) }) else {
-        return status::MALFORMED;
-    };
-    let (code, sentence) = match held.remote.act(caller, node, (noun, target, act)) {
-        Ok((outcome, sentence)) => (status_of(outcome), sentence),
-        Err(why) => (status::UNAVAILABLE, why),
-    };
-    // SAFETY: per the contract above.
-    unsafe { refuse(&sentence, said, cap, said_len) };
-    code
-}
-
-/// The status an outcome of the node's crosses as.
-const fn status_of(outcome: Outcome) -> i32 {
-    match outcome {
-        Outcome::Taken => status::OK,
-        Outcome::Denied => status::AUTH,
-        Outcome::Refused => status::NOT_FOUND,
-        Outcome::Invalid => status::INVALID,
-        Outcome::Failed => status::IO,
-    }
-}
-
-/// Set the secret `name` of `kind` to `value` through the node at `node`
-/// (section 24; ADR-0019, amendment 2026-10-29), as the identity the
-/// handle's connection proves — or, for `caller` a handle this process
-/// holds a caller by (section 18), as that caller, the node vouching for
-/// it; 0 for this side itself; the node admits it by role and audits it
-/// with the name, never the value. The sentence in `said`.
-///
-/// # Safety
-/// `remote` is a live handle; the strings point at their stated lengths;
-/// `said` has room for `cap` bytes and `said_len` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_secret_v1(
-    remote: *const RemoteHandle,
-    caller: u64,
-    node: Str,
-    name: Str,
-    kind: Str,
-    value: Str,
-    said: *mut u8,
-    cap: usize,
-    said_len: *mut usize,
-) -> i32 {
-    // SAFETY: per the contract above.
-    let Some(held) = (unsafe { held(remote) }) else {
-        return status::INVALID;
-    };
-    // SAFETY: per the contract above.
-    let Some([node, name, kind, value]) = (unsafe { texts([node, name, kind, value]) }) else {
-        return status::MALFORMED;
-    };
-    let (code, sentence) = match held.remote.set_secret(caller, node, (name, kind, value)) {
-        Ok((outcome, sentence)) => (status_of(outcome), sentence),
-        Err(why) => (status::UNAVAILABLE, why),
-    };
-    // SAFETY: per the contract above.
-    unsafe { refuse(&sentence, said, cap, said_len) };
-    code
-}
-
-/// The secrets the node at `node` keeps, JSON, never a value (section 24),
-/// asked as `xmip_secret_v1` asks, `caller` alike:
-/// written into `out`, its true length in `out_len` whether or not it fit.
-///
-/// # Safety
-/// `remote` is a live handle; `node` points at its stated length; `out`
-/// has room for `cap` bytes and `out_len` is writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_secrets_v1(
-    remote: *const RemoteHandle,
-    caller: u64,
-    node: Str,
-    out: *mut u8,
-    cap: usize,
-    out_len: *mut usize,
-) -> i32 {
-    // SAFETY: per the contract above.
-    let Some(held) = (unsafe { held(remote) }) else {
-        return status::INVALID;
-    };
-    // SAFETY: per the contract above.
-    let Some(node) = (unsafe { scope_text(node) }) else {
-        return status::MALFORMED;
-    };
-    let (code, text) = match held.remote.secrets(caller, node) {
-        Ok(listed) => {
-            let text = listed.to_string();
-            let code = if text.len() > cap {
-                status::TRUNCATED
-            } else {
-                status::OK
-            };
-            (code, text)
-        }
-        // Refused by role, `REFUSED.`, or by the node, `REFUSED:`.
-        Err(why) if why.starts_with("REFUSED.") => (status::AUTH, why),
-        Err(why) if why.starts_with("REFUSED") => (status::NOT_FOUND, why),
-        Err(why) if why.starts_with("FAILED") => (status::IO, why),
-        Err(why) => (status::UNAVAILABLE, why),
-    };
-    // SAFETY: per the contract above.
-    unsafe { refuse(&text, out, cap, out_len) };
-    code
-}
-
 /// End a remote's follow and wake every wait on it, from any thread, while
 /// a call may still be in flight on another: what a binding asks before it
 /// frees the handle.
@@ -367,10 +322,12 @@ pub unsafe extern "C" fn xmip_secrets_v1(
 /// `remote` is null or a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_end_v1(remote: *const RemoteHandle) {
-    // SAFETY: per the contract above.
-    if let Some(held) = unsafe { held(remote) } {
-        held.remote.end();
-    }
+    abi::guarded((), || {
+        // SAFETY: per the contract above.
+        if let Some(held) = unsafe { held(remote) } {
+            held.remote.end();
+        }
+    });
 }
 
 /// Release a remote: its follow ended, its connections closed. No call on
@@ -383,6 +340,7 @@ pub unsafe extern "C" fn xmip_remote_end_v1(remote: *const RemoteHandle) {
 pub unsafe extern "C" fn xmip_remote_free_v1(remote: *mut RemoteHandle) {
     if !remote.is_null() {
         // SAFETY: per the contract above, the box this handle was made from.
-        drop(unsafe { Box::from_raw(remote.cast::<Held>()) });
+        let held = unsafe { Box::from_raw(remote.cast::<Held>()) };
+        abi::guarded((), || drop(held));
     }
 }

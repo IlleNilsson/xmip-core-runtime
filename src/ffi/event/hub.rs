@@ -79,6 +79,27 @@ pub unsafe extern "C" fn xmip_event_subscribe_v1(
     said_cap: usize,
     said_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_subscribe(
+            program, directory, subscriber, filter, capacity, out, said, said_cap, said_len,
+        )
+    })
+}
+
+/// [`xmip_event_subscribe_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn event_subscribe(
+    program: Str,
+    directory: Str,
+    subscriber: Str,
+    filter: *const EventFilter,
+    capacity: usize,
+    out: *mut *mut Handle,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
     // SAFETY: out and said_len are writable per the contract.
     unsafe {
         *out = core::ptr::null_mut();
@@ -113,6 +134,30 @@ pub unsafe extern "C" fn xmip_event_subscribe_v1(
 /// from another thread until the handle is unsubscribed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_event_listen_v1(
+    program: Str,
+    directory: Str,
+    subscriber: Str,
+    filter: *const EventFilter,
+    capacity: usize,
+    callback: Callback,
+    context: *mut c_void,
+    out: *mut *mut Handle,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_listen(
+            program, directory, subscriber, filter, capacity, callback, context, out, said,
+            said_cap, said_len,
+        )
+    })
+}
+
+/// [`xmip_event_listen_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn event_listen(
     program: Str,
     directory: Str,
     subscriber: Str,
@@ -183,6 +228,30 @@ pub unsafe extern "C" fn xmip_event_next_v1(
     out_len: *mut usize,
     out_refused: *mut u64,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_next(
+            subscription,
+            timeout_ms,
+            max,
+            out_batch,
+            out_events,
+            out_len,
+            out_refused,
+        )
+    })
+}
+
+/// [`xmip_event_next_v1`] within its guard.
+unsafe fn event_next(
+    subscription: *mut Handle,
+    timeout_ms: u32,
+    max: usize,
+    out_batch: *mut *mut EventBatch,
+    out_events: *mut *const Wire,
+    out_len: *mut usize,
+    out_refused: *mut u64,
+) -> i32 {
     // SAFETY: every out pointer is writable per the contract.
     unsafe {
         *out_batch = core::ptr::null_mut();
@@ -240,7 +309,8 @@ pub unsafe extern "C" fn xmip_event_next_v1(
 pub unsafe extern "C" fn xmip_event_batch_free_v1(batch: *mut EventBatch) {
     if !batch.is_null() {
         // SAFETY: per the contract, the box next made.
-        drop(unsafe { Box::from_raw(batch.cast::<Batch>()) });
+        let batch = unsafe { Box::from_raw(batch.cast::<Batch>()) };
+        abi::guarded((), || drop(batch));
     }
 }
 
@@ -257,8 +327,11 @@ pub unsafe extern "C" fn xmip_event_batch_free_v1(batch: *mut EventBatch) {
 pub unsafe extern "C" fn xmip_event_unsubscribe_v1(subscription: *mut Handle) {
     if !subscription.is_null() {
         // SAFETY: per the contract, the box subscribe or listen made.
-        drop(unsafe { Box::from_raw(subscription.cast::<Held>()) });
-        xaudit::keeper::settle();
+        let held = unsafe { Box::from_raw(subscription.cast::<Held>()) };
+        abi::guarded((), || {
+            drop(held);
+            xaudit::keeper::settle();
+        });
     }
 }
 
@@ -272,6 +345,14 @@ pub unsafe extern "C" fn xmip_event_publish_v1(
     event: *const Wire,
     out_delivered: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_publish(event, out_delivered)
+    })
+}
+
+/// [`xmip_event_publish_v1`] within its guard.
+unsafe fn event_publish(event: *const Wire, out_delivered: *mut usize) -> i32 {
     // SAFETY: out_delivered is writable per the contract.
     unsafe { *out_delivered = 0 };
     // SAFETY: per the contract, a readable Event or null.
