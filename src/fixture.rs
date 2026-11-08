@@ -24,7 +24,7 @@ pub use authority::Authority;
 pub use drain::{Drain, Stall};
 pub use failing::{Failing, Interleaved, Operation};
 pub use lines::{Lines, LinesUnits};
-pub use signed::{unsigned, write_signed};
+pub use signed::{configuration_folder, unsigned, write_signed};
 
 /// Verifies every claim of its mechanism with the verdict it was given.
 pub struct Always(pub Mechanism, pub Verified);

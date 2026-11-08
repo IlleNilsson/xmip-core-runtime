@@ -355,8 +355,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("xmip-operate-start-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).expect("a directory");
-        let path = directory.join("node.xmip");
+        let path = crate::fixture::configuration_folder(&directory).join("node.xmip");
         let (head, node) = service();
         crate::fixture::write_signed(
             &path,
@@ -543,8 +542,7 @@ filter = "true"
     /// `text` written as a node's configuration in a directory of its own.
     fn written(text: &str, what: &str) -> (std::path::PathBuf, String) {
         let directory = std::env::temp_dir().join(format!("xmip-{what}-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("a directory");
-        let node = directory.join("node.xmip");
+        let node = crate::fixture::configuration_folder(&directory).join("node.xmip");
         crate::fixture::write_signed(&node, text);
         let path = node.to_str().expect("utf-8 path").to_string();
         (directory, path)
