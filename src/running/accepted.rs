@@ -108,19 +108,11 @@ party = ["first"]
     )
 }
 
-/// The configuration folder in `authority`'s directory, made: the node
-/// keeps its accepted slice in the `data` beside it (`signed::kept_at`).
-fn configuration(authority: &Authority) -> PathBuf {
-    let folder = authority.directory.join("config");
-    std::fs::create_dir_all(&folder).expect("a folder");
-    folder
-}
-
 /// The node's configuration written in `authority`'s directory, with the
 /// node's `receive` certificate and the authority as the anchors a Party's
 /// must reach.
 fn written(authority: &Authority, receive: &str) -> PathBuf {
-    let folder = configuration(authority);
+    let folder = crate::fixture::configuration_folder(&authority.directory);
     let (certificate, key, anchors) = authority.pem("localhost");
     for (name, text) in [
         ("receive.pem", &certificate),
@@ -207,7 +199,7 @@ fn a_named_party_is_received_over_tls_and_any_other_refused_at_authentication() 
 #[test]
 fn a_location_terminating_tls_on_a_node_with_no_receive_certificate_is_refused() {
     let authority = Authority::new();
-    let path = configuration(&authority).join("node.xmip");
+    let path = crate::fixture::configuration_folder(&authority.directory).join("node.xmip");
     crate::fixture::write_signed(&path, &node(&unheld().to_string(), ""));
 
     let refused = Running::start(path.to_str().expect("UTF-8"), linked())
