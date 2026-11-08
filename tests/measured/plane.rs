@@ -11,7 +11,7 @@ use xaudit::program_audit::ProgramAudit;
 use xcore::latency::{PlainWake, at_once, spread};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::Authority;
-use xmip_core_runtime::plane::{Board, Listener, Remote};
+use xmip_core_runtime::plane::{Board, Listener, Remote, Role};
 
 use super::{certified, endpoint};
 
@@ -85,7 +85,8 @@ fn a_surface_reads_the_publication_and_is_told_as_it_advances() {
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let (listener, _) = certified::node(&authority, &board, None);
+    let watching = endpoint::listing(Role::Observer, &["CN=surface"]);
+    let (listener, _) = certified::node(&authority, &board, watching);
     let surface = certified::remote(&authority, &listener);
 
     assert_eq!(
@@ -147,7 +148,7 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
         TcpListener::bind(address).expect("the same port"),
         &authority.identity("node"),
         Arc::clone(&board) as Arc<dyn xmip_core_runtime::plane::Published>,
-        None,
+        endpoint::listing(Role::Observer, &["CN=surface"]),
         &audit,
     )
     .expect("it serves");
@@ -167,7 +168,8 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
 fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() {
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let (_listener, _, called) = endpoint::node(&board, None);
+    let watching = endpoint::account_as(Role::Observer, &[]);
+    let (_listener, _, called) = endpoint::node(&board, watching);
     let surface = endpoint::surface(&called);
 
     assert_eq!(
@@ -200,7 +202,8 @@ fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() 
 fn a_connection_on_this_machine_is_proven_and_answered_within_the_millisecond() {
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let (_listener, _, called) = endpoint::node(&board, None);
+    let watching = endpoint::account_as(Role::Observer, &[]);
+    let (_listener, _, called) = endpoint::node(&board, watching);
     assert!(
         endpoint::surface(&called).publication().is_ok(),
         "the first answers"

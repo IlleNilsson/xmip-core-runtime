@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 use abi::ffi::{Str, status};
 use abi::operate::remote::Served as ServedHandle;
+use configure::operate::OperateConfiguration;
 use xaudit::program_audit::ProgramAudit;
 
 use crate::ffi::remote::{identity, texts};
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
-use crate::plane::{Board, Listener, Published, Role};
+use crate::plane::{Board, Grants, Listener, Published};
 
 /// A listener and the board it answers from.
 struct Serving {
@@ -25,22 +26,77 @@ struct Serving {
     board: Arc<Board>,
 }
 
+/// The callers `observers`, `operators` and `developers` list, one name a
+/// line, each holding that role by its own name, as a node's `[operate]`
+/// lists them and checked by the same rule
+/// (`configure::operate::OperateConfiguration::grants`): a name listed
+/// twice is refused in words. `None` where a list is not UTF-8.
+///
+/// # Safety
+/// Each string points at its stated length of readable bytes.
+unsafe fn listed(lists: [Str; 3]) -> Option<Result<Grants, String>> {
+    // SAFETY: the caller upholds the header's contract on every string.
+    let [observers, operators, developers] = lists.map(|list| unsafe { scope_text(list) });
+    let names = |list: &str| -> Vec<String> {
+        list.lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+            .collect()
+    };
+    let operate = OperateConfiguration {
+        observers: names(observers?),
+        operators: names(operators?),
+        developers: names(developers?),
+        ..OperateConfiguration::default()
+    };
+    Some(operate.grants().map(Grants::listed))
+}
+
 /// Serve what is posted to the handle (`xmip_operate_post_v1`) and the
-/// acts on the nodes of this process on an operate listener at `listen`, presenting
-/// `certificate` with `key` and taking a surface whose certificate reaches
-/// `anchors`; every proven caller holds the role `role` names, Observer for
-/// an empty or unknown word. Audited as `program`.
+/// acts on the nodes of this process on an operate listener at `listen`,
+/// presenting `certificate` with `key` and taking a surface whose
+/// certificate reaches `anchors`; each proven caller holds the role the
+/// list naming it is for — `observers`, `operators`, `developers`, one
+/// name a line — and a caller no list names holds none. Audited as
+/// `program`.
 ///
 /// # Safety
 /// The strings point at their stated lengths; `out` is writable; `report`
 /// has room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_operate_serve_v1(
+pub unsafe extern "C" fn xmip_operate_serve_v2(
     listen: Str,
     certificate: Str,
     key: Str,
     anchors: Str,
-    role: Str,
+    observers: Str,
+    operators: Str,
+    developers: Str,
+    program: Str,
+    out: *mut *mut ServedHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operate_serve(
+            [listen, certificate, key, anchors],
+            [observers, operators, developers],
+            program,
+            out,
+            report,
+            cap,
+            out_len,
+        )
+    })
+}
+
+/// [`xmip_operate_serve_v2`] within its guard.
+unsafe fn operate_serve(
+    files: [Str; 4],
+    lists: [Str; 3],
     program: Str,
     out: *mut *mut ServedHandle,
     report: *mut u8,
@@ -48,37 +104,64 @@ pub unsafe extern "C" fn xmip_operate_serve_v1(
     out_len: *mut usize,
 ) -> i32 {
     // SAFETY: per the contract above.
-    let (Some([listen, certificate, key, anchors]), Some(role), Some(program)) = (
-        unsafe { texts([listen, certificate, key, anchors]) },
-        unsafe { scope_text(role) },
-        unsafe { scope_text(program) },
-    ) else {
+    let (Some([listen, certificate, key, anchors]), Some(grants), Some(program)) =
+        (unsafe { texts(files) }, unsafe { listed(lists) }, unsafe {
+            scope_text(program)
+        })
+    else {
         return status::MALFORMED;
     };
-    let stated = (!role.trim().is_empty()).then(|| Role::named(role));
     let audit = ProgramAudit::new(program, None);
     let board = Arc::new(Board::default());
     let published: Arc<dyn Published> = Arc::clone(&board) as Arc<dyn Published>;
-    let started = identity(certificate, key, anchors).and_then(|identity| {
+    let started = grants.and_then(|grants| {
+        let identity = identity(certificate, key, anchors)?;
         let bound = std::net::TcpListener::bind(listen).map_err(|error| error.to_string())?;
-        Listener::start(bound, &identity, published, stated, &audit)
+        Listener::start(bound, &identity, published, grants, &audit)
     });
     // SAFETY: per the contract above.
     unsafe { handed(started, board, out, report, cap, out_len) }
 }
 
 /// Serve the same on this machine's local endpoint called `local` — a
-/// named pipe on Windows, a Unix domain socket elsewhere — every caller
-/// the user its process runs as, holding the role `role` names (ADR-0014,
-/// amendment 2026-10-13). Audited as `program`.
+/// named pipe on Windows, a Unix domain socket elsewhere — each caller the
+/// account its process runs as, holding the role the list naming that
+/// account is for (ADR-0014, amendment 2026-10-13; ADR-0009, amendment
+/// 2026-11-07). Audited as `program`.
 ///
 /// # Safety
 /// The strings point at their stated lengths; `out` is writable; `report`
 /// has room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn xmip_operate_serve_local_v1(
+pub unsafe extern "C" fn xmip_operate_serve_local_v2(
     local: Str,
-    role: Str,
+    observers: Str,
+    operators: Str,
+    developers: Str,
+    program: Str,
+    out: *mut *mut ServedHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operate_serve_local(
+            local,
+            [observers, operators, developers],
+            program,
+            out,
+            report,
+            cap,
+            out_len,
+        )
+    })
+}
+
+/// [`xmip_operate_serve_local_v2`] within its guard.
+unsafe fn operate_serve_local(
+    local: Str,
+    lists: [Str; 3],
     program: Str,
     out: *mut *mut ServedHandle,
     report: *mut u8,
@@ -86,19 +169,19 @@ pub unsafe extern "C" fn xmip_operate_serve_local_v1(
     out_len: *mut usize,
 ) -> i32 {
     // SAFETY: per the contract above.
-    let (Some(local), Some(role), Some(program)) = (
+    let (Some(local), Some(grants), Some(program)) = (
         unsafe { scope_text(local) },
-        unsafe { scope_text(role) },
+        unsafe { listed(lists) },
         unsafe { scope_text(program) },
     ) else {
         return status::MALFORMED;
     };
-    let stated = (!role.trim().is_empty()).then(|| Role::named(role));
     let audit = ProgramAudit::new(program, None);
     let board = Arc::new(Board::default());
     let published: Arc<dyn Published> = Arc::clone(&board) as Arc<dyn Published>;
     let admitting = crate::plane::local::Admitting::default();
-    let started = Listener::local(local, admitting, published, stated, &audit);
+    let started =
+        grants.and_then(|grants| Listener::local(local, admitting, published, grants, &audit));
     // SAFETY: per the contract above.
     unsafe { handed(started, board, out, report, cap, out_len) }
 }
@@ -150,6 +233,19 @@ pub unsafe extern "C" fn xmip_operate_served_address_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operate_served_address(served, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operate_served_address_v1`] within its guard.
+unsafe fn operate_served_address(
+    served: *const ServedHandle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let Some(serving) = (unsafe { served.cast::<Serving>().as_ref() }) else {
         return status::INVALID;
@@ -170,28 +266,31 @@ pub unsafe extern "C" fn xmip_operate_post_v1(
     served: *const ServedHandle,
     publication: Str,
 ) -> i32 {
-    // SAFETY: per the contract above.
-    let Some(serving) = (unsafe { served.cast::<Serving>().as_ref() }) else {
-        return status::INVALID;
-    };
-    // SAFETY: per the contract above.
-    let Some(text) = (unsafe { scope_text(publication) }) else {
-        return status::MALFORMED;
-    };
-    serving.board.post(text.to_string());
-    status::OK
+    abi::guarded(status::PANIC, || {
+        // SAFETY: per the contract above.
+        let Some(serving) = (unsafe { served.cast::<Serving>().as_ref() }) else {
+            return status::INVALID;
+        };
+        // SAFETY: per the contract above.
+        let Some(text) = (unsafe { scope_text(publication) }) else {
+            return status::MALFORMED;
+        };
+        serving.board.post(text.to_string());
+        status::OK
+    })
 }
 
 /// Stop a served listener and release it.
 ///
 /// # Safety
-/// `served` is null or a handle `xmip_operate_serve_v1` or
-/// `xmip_operate_serve_local_v1` returned and nobody freed.
+/// `served` is null or a handle `xmip_operate_serve_v2` or
+/// `xmip_operate_serve_local_v2` returned and nobody freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operate_serve_stop_v1(served: *mut ServedHandle) {
     if !served.is_null() {
         // SAFETY: per the contract above, the box this handle was made from.
-        drop(unsafe { Box::from_raw(served.cast::<Serving>()) });
+        let serving = unsafe { Box::from_raw(served.cast::<Serving>()) };
+        abi::guarded((), || drop(serving));
     }
 }
 
@@ -236,8 +335,8 @@ mod tests {
         let _: header::ActFn = xmip_remote_act_v1;
         let _: header::EndFn = xmip_remote_end_v1;
         let _: header::FreeFn = xmip_remote_free_v1;
-        let _: header::ServeFn = xmip_operate_serve_v1;
-        let _: header::ServeLocalFn = xmip_operate_serve_local_v1;
+        let _: header::ServeFn = xmip_operate_serve_v2;
+        let _: header::ServeLocalFn = xmip_operate_serve_local_v2;
         let _: header::OpenLocalFn = crate::ffi::remote::xmip_remote_open_local_v1;
         let _: abi::operate::secret::SecretFn = crate::ffi::remote::xmip_secret_v1;
         let _: abi::operate::secret::SecretsFn = crate::ffi::remote::xmip_secrets_v1;
@@ -262,11 +361,13 @@ mod tests {
         let mut served: *mut Served = std::ptr::null_mut();
         // SAFETY: every pointer is to live storage of its stated size.
         let code = unsafe {
-            xmip_operate_serve_v1(
+            xmip_operate_serve_v2(
                 text("127.0.0.1:0"),
                 text(&certificate),
                 text(&key),
                 text(&anchors),
+                text("CN=surface\n"),
+                text(""),
                 text(""),
                 text("plane-exports-test"),
                 &raw mut served,
@@ -450,5 +551,30 @@ mod tests {
             "{:?}",
             ended.elapsed()
         );
+    }
+
+    #[test]
+    fn a_name_two_lists_name_is_refused_in_words_and_nothing_is_served() {
+        let mut report = vec![0u8; 4096];
+        let mut length = 0usize;
+        let mut served: *mut Served = std::ptr::null_mut();
+        // SAFETY: every pointer is to live storage of its stated size.
+        let code = unsafe {
+            xmip_operate_serve_local_v2(
+                text("xmip-served-twice-test"),
+                text("CN=alice\n"),
+                text("\ncn=ALICE\n"),
+                text(""),
+                text("plane-exports-test"),
+                &raw mut served,
+                report.as_mut_ptr(),
+                report.len(),
+                &raw mut length,
+            )
+        };
+        let said = String::from_utf8_lossy(&report[..length]).to_string();
+        assert_eq!(code, status::IO, "{said}");
+        assert!(said.contains("under observers and operators"), "{said}");
+        assert!(served.is_null());
     }
 }

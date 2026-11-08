@@ -12,8 +12,11 @@
 //! screen, the caller a handle the runtime handed out holds
 //! (`plane::held`), never a name its host passes. Which role
 //! a proven caller holds is the host's to say: `RoleAssignment` in
-//! `Xmip.Surface` for a web host or the desktop, `[operate] role` for a
-//! node's operate listener, where no directory is asked yet.
+//! `Xmip.Surface` for a web host or the desktop, and for a node's operate
+//! listener the role its configuration lists that very caller with
+//! (`plane::grant`, `[operate] observers`, `operators` and `developers`),
+//! none for a caller it does not list, which acts on nothing and reads
+//! nothing.
 //!
 //! **Every call is decided before it is read**: by its method, the identity
 //! the connection proved and the role it holds ([`RULES`], [`admitted`]),
@@ -112,18 +115,21 @@ fn action(method: &str) -> &'static str {
 
 /// Whether `caller` — the identity the authentication gate answered for
 /// the connection (`plane::caller`), `None` where it answered nothing —
-/// holding `role` may call `method` of the operate listener ([`RULES`]), to
-/// `act` on `target` as its refusal says: the one check the listener asks
-/// before it reads a call. Only a caller the gate called proven is anyone;
-/// one it called anything weaker acts on nothing. `Ok` where it may, the
-/// refusal in words where it may not.
+/// holding `role`, the one granted that caller (`plane::grant`; `None`
+/// where none is), may call `method` of the operate listener ([`RULES`]),
+/// to `act` on `target` as its refusal says: the one check the listener
+/// asks before it reads a call. Only a caller the gate called proven is
+/// anyone; one it called anything weaker acts on nothing, and so does one
+/// granted no role. `Ok` where it may, the refusal in words where it may
+/// not.
 ///
 /// # Errors
 ///
-/// The refusal: nothing proved who asks, or the role may not call it.
+/// The refusal: nothing proved who asks, no role is granted it, or its
+/// role may not call it.
 pub fn admitted(
     caller: Option<&AuthenticatedIdentity>,
-    role: Role,
+    role: Option<Role>,
     method: &str,
     asked: (&str, &str),
 ) -> Result<(), String> {
@@ -131,6 +137,22 @@ pub fn admitted(
         .filter(|caller| caller.verified.is_proven())
         .map(|caller| caller.value.as_str());
     let (act, target) = asked;
+    let (Some(who), None) = (who, role) else {
+        return admitted_as(who, role.unwrap_or_default(), method, asked);
+    };
+    Err(format!(
+        "REFUSED. {who} may not {act} {target}: no role on this node is granted {who}; \
+         [operate] observers, operators and developers name who holds which (ADR-0009)"
+    ))
+}
+
+/// [`admitted`] for a caller holding `role`.
+fn admitted_as(
+    who: Option<&str>,
+    role: Role,
+    method: &str,
+    (act, target): (&str, &str),
+) -> Result<(), String> {
     let admitted = plane::admit(who, role as u8, (action(method), method), RULES);
     match (who, admitted) {
         (_, Ok(())) => Ok(()),
@@ -161,7 +183,7 @@ pub fn admitted(
 /// As [`admitted`].
 pub fn act_admitted(held: u64, role: Role, asked: (&str, &str)) -> Result<(), String> {
     let caller = crate::plane::held::proven(held);
-    admitted(caller.as_ref(), role, call::ACT, asked)
+    admitted(caller.as_ref(), Some(role), call::ACT, asked)
 }
 
 #[cfg(test)]
@@ -189,18 +211,35 @@ mod tests {
     fn only_an_operator_and_up_proven_is_admitted() {
         let a = caller(Verified::Proven);
         let a = Some(&a);
-        assert!(admitted(a, Role::Operator, call::ACT, ("pause", "x")).is_ok());
-        let observer = admitted(a, Role::Observer, call::ACT, ("pause", "x")).unwrap_err();
-        assert!(observer.starts_with("REFUSED. CN=a may not pause x: CN=a is Observer"));
-        let nobody = admitted(None, Role::Developer, call::ACT, ("pause", "x")).unwrap_err();
+        let (observer, operator) = (Some(Role::Observer), Some(Role::Operator));
+        assert!(admitted(a, operator, call::ACT, ("pause", "x")).is_ok());
+        let watching = admitted(a, observer, call::ACT, ("pause", "x")).unwrap_err();
+        assert!(watching.starts_with("REFUSED. CN=a may not pause x: CN=a is Observer"));
+        let developer = Some(Role::Developer);
+        let nobody = admitted(None, developer, call::ACT, ("pause", "x")).unwrap_err();
         assert!(nobody.starts_with("REFUSED. Nothing proved who asks to pause x"));
-        // The publication to anyone proven; the secrets' names to an Operator.
+        // The publication to anyone granted a role; the secrets' names to an
+        // Operator.
         let read = ("read", "the publication");
-        assert!(admitted(a, Role::Observer, call::PUBLICATION, read).is_ok());
+        assert!(admitted(a, observer, call::PUBLICATION, read).is_ok());
         let names = ("list", "the secrets");
-        assert!(admitted(a, Role::Observer, call::SECRETS, names).is_err());
-        assert!(admitted(a, Role::Operator, call::SECRETS, names).is_ok());
-        assert!(admitted(a, Role::Developer, "Nothing", names).is_err());
+        assert!(admitted(a, observer, call::SECRETS, names).is_err());
+        assert!(admitted(a, operator, call::SECRETS, names).is_ok());
+        assert!(admitted(a, developer, "Nothing", names).is_err());
+    }
+
+    #[test]
+    fn a_proven_caller_granted_no_role_reads_nothing_and_acts_on_nothing() {
+        let a = caller(Verified::Proven);
+        for method in [call::PUBLICATION, call::WAIT, call::ACT, call::SECRET] {
+            let refused = admitted(Some(&a), None, method, ("read", "x")).unwrap_err();
+            assert!(
+                refused.starts_with("REFUSED. CN=a may not read x: no role on this node"),
+                "{refused}"
+            );
+        }
+        let nobody = admitted(None, None, call::ACT, ("pause", "x")).unwrap_err();
+        assert!(nobody.starts_with("REFUSED. Nothing proved"), "{nobody}");
     }
 
     #[test]
@@ -209,7 +248,7 @@ mod tests {
             let weaker = caller(verdict);
             let refused = admitted(
                 Some(&weaker),
-                Role::Developer,
+                Some(Role::Developer),
                 call::PUBLICATION,
                 ("read", "x"),
             );

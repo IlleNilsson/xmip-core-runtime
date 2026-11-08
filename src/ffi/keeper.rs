@@ -79,6 +79,35 @@ pub unsafe extern "C" fn xmip_remote_open_kept_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        remote_open_kept(
+            address,
+            certificate,
+            anchors,
+            sign,
+            context,
+            out,
+            report,
+            cap,
+            out_len,
+        )
+    })
+}
+
+/// [`xmip_remote_open_kept_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn remote_open_kept(
+    address: Str,
+    certificate: Str,
+    anchors: Str,
+    sign: SignFn,
+    context: *mut core::ffi::c_void,
+    out: *mut *mut RemoteHandle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let texts = unsafe {
         (
@@ -108,7 +137,7 @@ mod tests {
     use super::*;
     use crate::ffi::remote::{xmip_remote_act_v1, xmip_remote_free_v1};
     use crate::ffi::served::{
-        xmip_operate_serve_stop_v1, xmip_operate_serve_v1, xmip_operate_served_address_v1,
+        xmip_operate_serve_stop_v1, xmip_operate_serve_v2, xmip_operate_served_address_v1,
     };
     use crate::ffi::text::borrow;
     use crate::fixture::Authority;
@@ -148,11 +177,13 @@ mod tests {
         let mut served: *mut Served = std::ptr::null_mut();
         // SAFETY: every pointer is to live storage of its stated size.
         let code = unsafe {
-            xmip_operate_serve_v1(
+            xmip_operate_serve_v2(
                 borrow("127.0.0.1:0"),
                 borrow(&certificate),
                 borrow(&key),
                 borrow(&anchors),
+                borrow("CN=phone"),
+                borrow(""),
                 borrow(""),
                 borrow("keeper-exports-test"),
                 &raw mut served,

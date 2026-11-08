@@ -3,9 +3,12 @@
 //! surface on this machine reaches it at, which always starts (ADR-0014,
 //! amendments 2026-10-13), and the network address a surface on another reaches it
 //! at, with the certificate it presents and its key, the anchors a
-//! surface's certificate must reach — and the role every proven caller
-//! holds, on either; and who may relay for a caller, `[operate] relay`
-//! (`plane::vouched`).
+//! surface's certificate must reach — and, on either, the role each proven
+//! caller holds by its own name, `[operate] observers`, `operators` and
+//! `developers` (`plane::grant`), none for a caller they do not name; who
+//! may relay for a caller, `[operate] relay` (`plane::vouched`); and what
+//! bounds each listener, `[tuning] operate_connections`,
+//! `operate_handshakes` and `operate_handshake` (`plane::limits`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use xaudit::program_audit::ProgramAudit;
 
 use crate::plane::local::Admitting;
 use crate::plane::vouched::Relaying;
-use crate::plane::{Listener, Published, Role};
+use crate::plane::{Grants, Listener, Published};
 use crate::registration::node_service_name;
 use crate::running::Running;
 
@@ -28,33 +31,43 @@ impl Running {
     ///
     /// # Errors
     ///
-    /// A local name that would leave the endpoints' folder, a file that
-    /// cannot be read, an identity that does not pair, or an address or
-    /// endpoint that cannot be bound, each in words naming what.
+    /// A local name that would leave the endpoints' folder, a name listed
+    /// under two roles, a file that cannot be read, an identity that does
+    /// not pair, or an address or endpoint that cannot be bound, each in
+    /// words naming what.
     pub fn operate(
         &self,
         published: &Arc<dyn Published>,
         audit: &ProgramAudit,
     ) -> Result<Vec<Listener>, String> {
         let operate = self.operate.clone().unwrap_or_default();
-        let stated = operate.role.as_deref().map(Role::named);
+        let grants = Grants::listed(operate.grants()?);
         let local = self.local_endpoint();
         let admitting = Admitting {
             admit: &operate.admit,
             group: operate.group.as_deref(),
         };
         let mut listeners = vec![
-            Listener::local(&local, admitting, Arc::clone(published), stated, audit)
-                .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
+            Listener::local(
+                &local,
+                admitting,
+                Arc::clone(published),
+                grants.clone(),
+                audit,
+            )
+            .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
         ];
         if let Some(network) = operate.network()? {
             listeners.push(listen(
                 network,
                 &self.configuration,
                 Arc::clone(published),
-                stated,
+                grants,
                 audit,
             )?);
+        }
+        for listener in &listeners {
+            listener.limit(self.tuning.operate());
         }
         if let Some((relay, anchors)) = operate.relaying()? {
             let anchors = crate::presented::file(&self.configuration, "operate", anchors)?;
@@ -84,7 +97,7 @@ impl Running {
     /// (`plane::deadline::DECLARED`).
     #[must_use]
     pub const fn local_timeout(&self) -> std::time::Duration {
-        self.local_timeout
+        self.tuning.local_timeout
     }
 }
 
@@ -92,12 +105,12 @@ fn listen(
     network: Network<'_>,
     configuration: &Path,
     published: Arc<dyn Published>,
-    stated: Option<Role>,
+    grants: Grants,
     audit: &ProgramAudit,
 ) -> Result<Listener, String> {
     let files = [network.certificate, network.key, network.anchors];
     let identity = crate::presented::identity(configuration, "operate", files)?;
     let bound = std::net::TcpListener::bind(network.listen)
         .map_err(|error| format!("[operate] listen = \"{}\": {error}", network.listen))?;
-    Listener::start(bound, &identity, published, stated, audit)
+    Listener::start(bound, &identity, published, grants, audit)
 }

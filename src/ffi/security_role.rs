@@ -19,13 +19,15 @@ use crate::plane::role::{Role, act_admitted};
 /// `word` points at its stated length of readable bytes; `out` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_security_role_named_v1(word: Str, out: *mut i32) -> i32 {
-    // SAFETY: the caller upholds the header's contract on `word`.
-    let Some(word) = (unsafe { scope_text(word) }) else {
-        return status::MALFORMED;
-    };
-    // SAFETY: `out` is writable per the contract.
-    unsafe { *out = Role::named(word) as i32 };
-    status::OK
+    abi::guarded(status::PANIC, || {
+        // SAFETY: the caller upholds the header's contract on `word`.
+        let Some(word) = (unsafe { scope_text(word) }) else {
+            return status::MALFORMED;
+        };
+        // SAFETY: `out` is writable per the contract.
+        unsafe { *out = Role::named(word) as i32 };
+        status::OK
+    })
 }
 
 /// What a role is called, and what it may do in the words a badge uses;
@@ -39,15 +41,17 @@ pub unsafe extern "C" fn xmip_security_role_words_v1(
     out_word: *mut Str,
     out_description: *mut Str,
 ) -> i32 {
-    let Some(role) = Role::from_wire(role) else {
-        return status::INVALID;
-    };
-    // SAFETY: both are writable per the contract.
-    unsafe {
-        *out_word = borrow(role.word());
-        *out_description = borrow(role.describe());
-    }
-    status::OK
+    abi::guarded(status::PANIC, || {
+        let Some(role) = Role::from_wire(role) else {
+            return status::INVALID;
+        };
+        // SAFETY: both are writable per the contract.
+        unsafe {
+            *out_word = borrow(role.word());
+            *out_description = borrow(role.describe());
+        }
+        status::OK
+    })
 }
 
 /// Whether the caller the handle `caller` holds — one the runtime handed
@@ -61,6 +65,22 @@ pub unsafe extern "C" fn xmip_security_role_words_v1(
 /// bytes and `said_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_act_admitted_v1(
+    caller: u64,
+    role: i32,
+    act: Str,
+    target: Str,
+    said: *mut u8,
+    cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        admitted_act(caller, role, act, target, said, cap, said_len)
+    })
+}
+
+/// [`xmip_act_admitted_v1`] within its guard.
+unsafe fn admitted_act(
     caller: u64,
     role: i32,
     act: Str,
@@ -94,17 +114,21 @@ pub unsafe extern "C" fn xmip_act_admitted_v1(
 /// `out_caller` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_caller_hold_v1(caller: u64, out_caller: *mut u64) -> i32 {
-    let again = held::again(caller);
-    // SAFETY: `out_caller` is writable per the contract.
-    unsafe { *out_caller = again };
-    if again == 0 { status::AUTH } else { status::OK }
+    abi::guarded(status::PANIC, || {
+        let again = held::again(caller);
+        // SAFETY: `out_caller` is writable per the contract.
+        unsafe { *out_caller = again };
+        if again == 0 { status::AUTH } else { status::OK }
+    })
 }
 
 /// Release `caller`: no one after. Releasing 0, or one not held, does
 /// nothing.
 #[unsafe(no_mangle)]
 pub extern "C" fn xmip_caller_release_v1(caller: u64) {
-    held::release(caller);
+    abi::guarded((), || {
+        held::release(caller);
+    });
 }
 
 /// Who the caller `caller` holds is, for a host to show and a directory to
@@ -120,6 +144,14 @@ pub unsafe extern "C" fn xmip_caller_named_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        caller_named(caller, out, cap, out_len)
+    })
+}
+
+/// [`xmip_caller_named_v1`] within its guard.
+unsafe fn caller_named(caller: u64, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
     let name = held::proven(caller)
         .map(|caller| caller.value)
         .unwrap_or_default();
@@ -142,6 +174,20 @@ pub unsafe extern "C" fn xmip_caller_named_v1(
 #[cfg(feature = "node")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_caller_process_v1(
+    out_caller: *mut u64,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        caller_process(out_caller, out, cap, out_len)
+    })
+}
+
+/// [`xmip_caller_process_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn caller_process(
     out_caller: *mut u64,
     out: *mut u8,
     cap: usize,

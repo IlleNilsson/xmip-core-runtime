@@ -34,6 +34,21 @@ pub unsafe extern "C" fn xmip_database_upgrade_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        database_upgrade(server, from, to, out, cap, out_len)
+    })
+}
+
+/// [`xmip_database_upgrade_v1`] within its guard.
+unsafe fn database_upgrade(
+    server: Str,
+    from: u32,
+    to: u32,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on `server`.
     let Some(word) = (unsafe { scope_text(server) }) else {
         return status::MALFORMED;

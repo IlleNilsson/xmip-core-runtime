@@ -212,6 +212,14 @@ impl<'a> LoadedContract<'a> {
 /// estate's one byte cursor (`codec::cursor`). Returns bytes written, 0 at
 /// end of stream, or a negative status; a short read is not end of stream.
 unsafe extern "C" fn read_source(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
+    // SAFETY: the module's contract is this callback's, passed on whole.
+    abi::guarded(i64::from(status::PANIC), || unsafe {
+        source_read(ctx, buf, len)
+    })
+}
+
+/// [`read_source`] within its guard.
+unsafe fn source_read(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
     if ctx.is_null() || (buf.is_null() && len > 0) {
         return i64::from(status::INVALID);
     }
@@ -226,9 +234,7 @@ unsafe extern "C" fn read_source(ctx: *mut c_void, buf: *mut u8, len: usize) -> 
     };
 
     // SAFETY: `taken.len()` bytes exist in both, and the two cannot overlap
-    // — one is the host's slice, the other the module's buffer. Nothing in
-    // this function can panic, so nothing can unwind out of an `extern "C"`
-    // frame.
+    // — one is the host's slice, the other the module's buffer.
     unsafe { std::ptr::copy_nonoverlapping(taken.as_ptr(), buf, taken.len()) };
 
     i64::try_from(taken.len()).unwrap_or(i64::MAX)

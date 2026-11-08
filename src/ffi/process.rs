@@ -36,6 +36,33 @@ pub unsafe extern "C" fn xmip_process_declare_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        process_declare(
+            name,
+            location,
+            purpose,
+            properties,
+            properties_len,
+            out,
+            cap,
+            out_len,
+        )
+    })
+}
+
+/// [`xmip_process_declare_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn process_declare(
+    name: Str,
+    location: Str,
+    purpose: Str,
+    properties: *const Str,
+    properties_len: usize,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     if !properties_len.is_multiple_of(2) || (properties.is_null() && properties_len > 0) {
         return status::INVALID;
     }
@@ -52,7 +79,7 @@ pub unsafe extern "C" fn xmip_process_declare_v1(
 
     let declared = node::Purpose::declared(purpose).and_then(|purpose| {
         said.iter().try_fold(
-            node::Declaration::new(name, location, purpose),
+            node::Declaration::new(name, location, purpose)?,
             |declaration, (key, value)| declaration.with(key, value.as_str()),
         )
     });
@@ -77,6 +104,19 @@ pub unsafe extern "C" fn xmip_process_declare_v1(
 /// for `cap` bytes, `out_len` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_process_declarations_v1(
+    directory: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        process_declarations(directory, out, cap, out_len)
+    })
+}
+
+/// [`xmip_process_declarations_v1`] within its guard.
+unsafe fn process_declarations(
     directory: Str,
     out: *mut u8,
     cap: usize,

@@ -56,6 +56,7 @@ mod accepted;
 mod certificate_standing;
 mod operate;
 pub mod publication;
+pub mod revocation_list;
 mod serving;
 
 use serving::{Served, serve};
@@ -107,8 +108,9 @@ pub struct Running {
     /// When each certificate it presents is due for renewal (ADR-0034,
     /// amendment 2026-10-22).
     certificates: certificate_standing::CertificateStanding,
-    /// `[tuning] local_timeout`: how long a surface's local call waits.
-    local_timeout: std::time::Duration,
+    /// `[tuning]`: how long a surface's local call waits, what bounds the
+    /// operate listeners.
+    tuning: crate::tuning::Tuning,
     configuration: PathBuf,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
@@ -306,7 +308,7 @@ impl Running {
             storage,
             operate,
             certificates,
-            local_timeout: tree.tuning.local_timeout,
+            tuning: tree.tuning,
             configuration: PathBuf::from(path),
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),

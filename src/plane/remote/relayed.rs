@@ -181,7 +181,7 @@ fn said(answer: &Value) -> &str {
 fn no_one() -> String {
     admitted(
         None,
-        Role::Developer,
+        Some(Role::Developer),
         crate::plane::call::ACT,
         ("act", "on the node"),
     )

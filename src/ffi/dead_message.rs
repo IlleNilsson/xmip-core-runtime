@@ -58,6 +58,15 @@ pub unsafe extern "C" fn xmip_dead_messages_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        dead_listed(node, out, cap, out_len)
+    })
+}
+
+/// [`xmip_dead_messages_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn dead_listed(node: Str, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
     // SAFETY: the caller upholds the header's contract on `node`.
     let Some(node) = (unsafe { scope_text(node) }) else {
         return status::MALFORMED;
@@ -84,6 +93,22 @@ pub unsafe extern "C" fn xmip_dead_messages_v1(
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_dead_message_replay_v1(
+    node: Str,
+    message: Str,
+    who: Str,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        dead_message_replay(node, message, who, said, said_cap, said_len)
+    })
+}
+
+/// [`xmip_dead_message_replay_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn dead_message_replay(
     node: Str,
     message: Str,
     who: Str,
@@ -124,6 +149,19 @@ pub unsafe extern "C" fn xmip_dead_message_replay_v1(
 /// `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_publication_dead_messages_v1(
+    publication: *const Handle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        publication_dead_messages(publication, out, cap, out_len)
+    })
+}
+
+/// [`xmip_publication_dead_messages_v1`] within its guard.
+unsafe fn publication_dead_messages(
     publication: *const Handle,
     out: *mut u8,
     cap: usize,

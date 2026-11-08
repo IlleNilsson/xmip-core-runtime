@@ -25,11 +25,11 @@ use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::plane::local::running_as;
 use xmip_core_runtime::plane::vouched::{self, Relaying};
-use xmip_core_runtime::plane::{Board, Listener, Remote, Role, held};
+use xmip_core_runtime::plane::{Board, Grants, Listener, Remote, Role, held};
 use xmip_core_runtime::secure_listener::SecureListener;
 
 use super::browsing::{browsed, listening, reached};
-use super::endpoint::node;
+use super::endpoint::{account_as, node};
 
 /// How many of each are made: the fastest is what is held.
 const ROUNDS: usize = 31;
@@ -59,7 +59,7 @@ fn hosted(nodes: usize) -> (Duration, Duration, Duration) {
     let board = Arc::new(Board::default());
     let mut kept: Vec<(Listener, Remote)> = Vec::new();
     for _ in 0..nodes {
-        let (listening_node, _, called) = node(&board, Some(Role::Operator));
+        let (listening_node, _, called) = node(&board, account_as(Role::Operator, &["CN=alice"]));
         let relaying = Relaying::new(vec![account.clone()], &anchors).expect("anchors");
         listening_node.relay(Arc::new(relaying));
         kept.push((listening_node, reached(&called)));
@@ -134,11 +134,13 @@ fn checked() -> (Duration, Duration, Duration) {
         .to_vec();
     let through = running_as().expect("this process's account");
     let relaying = Relaying::new(vec![through.clone()], &anchors).expect("anchors");
+    // The browser's role read off its certificate, as a node lists one.
+    let grants = Grants::listed([&[], &["CN=operator@example.org".to_string()], &[]]);
     let (mut whole, mut proof, mut chain) = (Duration::MAX, Duration::MAX, Duration::MAX);
     for _ in 0..ROUNDS {
         let message = handshake(&authority, &host, &relaying, &through, &listener);
         let began = ProcessorTime::thread();
-        let answer = vouched::vouched_for(&relaying, &through, &message);
+        let answer = vouched::vouched_for(&relaying, &through, &message, &grants);
         whole = whole.min(began.elapsed());
         assert!(answer["caller"].is_u64(), "vouched: {answer}");
 

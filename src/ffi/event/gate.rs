@@ -91,6 +91,14 @@ pub unsafe extern "C" fn xmip_event_authorize_v1(
     decide: Option<Decide>,
     context: *mut c_void,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        event_authorize(decide, context)
+    })
+}
+
+/// [`xmip_event_authorize_v1`] within its guard.
+unsafe fn event_authorize(decide: Option<Decide>, context: *mut c_void) -> i32 {
     let policies: Vec<Arc<dyn Authorizer>> = decide
         .map(|decide| {
             Arc::new(Hosted {

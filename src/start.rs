@@ -78,26 +78,36 @@ pub struct ApplicationFile {
 ///
 /// # Errors
 /// The file cannot be read or does not parse, or a bound Application is not
-/// held or does not read.
+/// held or does not read. What the node would run, read and never kept
+/// (`signed::checked`): a plan, an install and a surface read this way.
 pub fn read(path: &str) -> Result<Read, Unread> {
-    read_accepted(path).map(|(read, _)| read)
+    read_admitted(path, crate::signed::checked).map(|(read, _)| read)
 }
 
-/// [`read`], and why the file at `path` was refused where the node runs its
-/// accepted slice instead: a node runs only the slice its cluster's
-/// authority signed (`signed::accepted`; ADR-0031, amendment 2026-11-06).
+/// [`read`] as the running node reads, keeping the slice it accepts, and
+/// why the file at `path` was refused where the node runs its accepted
+/// slice instead: a node runs only the slice its cluster's authority signed
+/// (`signed::accepted`; ADR-0031, amendments 2026-11-06 and 2026-11-07).
 ///
 /// # Errors
 /// As [`read`], and a slice refused with no accepted slice to run.
 pub fn read_accepted(path: &str) -> Result<(Read, Option<String>), Unread> {
+    read_admitted(path, crate::signed::accepted)
+}
+
+/// What [`signed`](crate::signed) admits of a file: its text, and why it
+/// was refused where an accepted slice runs instead.
+type Admit = fn(&std::path::Path, &str) -> Result<(String, Option<String>), String>;
+
+/// [`read`] and [`read_accepted`], by `admit`.
+fn read_admitted(path: &str, admit: Admit) -> Result<(Read, Option<String>), Unread> {
     let root = |reason: String| Unread {
         scope: "xmip:///".to_string(),
         reason,
     };
     let file = std::fs::read_to_string(path)
         .map_err(|error| root(format!("cannot read {path}: {error}")))?;
-    let (source, refused) =
-        crate::signed::accepted(std::path::Path::new(path), &file).map_err(root)?;
+    let (source, refused) = admit(std::path::Path::new(path), &file).map_err(root)?;
     let document = read_node(&source).map_err(|report| {
         root(format!(
             "{path} does not parse: {}",

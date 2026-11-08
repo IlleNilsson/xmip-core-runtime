@@ -37,6 +37,20 @@ pub unsafe extern "C" fn xmip_authority_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        authority(act, arguments, out, cap, out_len)
+    })
+}
+
+/// [`xmip_authority_v1`] within its guard.
+unsafe fn authority(
+    act: Str,
+    arguments: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on both strings.
     let read = [act, arguments].map(|text| unsafe { scope_text(text) });
     let [Some(act), Some(arguments)] = read else {

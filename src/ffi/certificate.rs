@@ -35,6 +35,20 @@ pub unsafe extern "C" fn xmip_operator_request_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operator_request(person, folder, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operator_request_v1`] within its guard.
+unsafe fn operator_request(
+    person: Str,
+    folder: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on both strings.
     let (Some(person), Some(folder)) =
         (unsafe { scope_text(person) }, unsafe { scope_text(folder) })
@@ -76,6 +90,21 @@ pub unsafe extern "C" fn xmip_operator_keep_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operator_keep(path, text, replace, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operator_keep_v1`] within its guard.
+unsafe fn operator_keep(
+    path: Str,
+    text: Str,
+    replace: u8,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on both strings.
     let (Some(path), Some(text)) = (unsafe { scope_text(path) }, unsafe { scope_text(text) })
     else {
@@ -102,6 +131,20 @@ pub unsafe extern "C" fn xmip_operator_keep_v1(
 /// bytes; `out` has room for `cap` bytes and `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operator_information_v1(
+    person: Str,
+    public_key: Slice,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operator_information(person, public_key, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operator_information_v1`] within its guard.
+unsafe fn operator_information(
     person: Str,
     public_key: Slice,
     out: *mut u8,
@@ -139,6 +182,20 @@ pub unsafe extern "C" fn xmip_operator_assemble_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operator_assemble(information, signature, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operator_assemble_v1`] within its guard.
+unsafe fn operator_assemble(
+    information: Slice,
+    signature: Slice,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on both.
     let (information, signature) = unsafe { (slice_bytes(information), slice_bytes(signature)) };
     let (code, text) = match provision::operator::assemble(information, signature) {
@@ -160,6 +217,21 @@ pub unsafe extern "C" fn xmip_operator_assemble_v1(
 #[cfg(feature = "node")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operator_sign_v1(
+    configuration: Str,
+    request: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        operator_sign(configuration, request, out, cap, out_len)
+    })
+}
+
+/// [`xmip_operator_sign_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn operator_sign(
     configuration: Str,
     request: Str,
     out: *mut u8,

@@ -49,6 +49,20 @@ unsafe extern "C" fn health_entry(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this entry's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        health(ctx, scope, out, cap, out_len)
+    })
+}
+
+/// [`health_entry`] within its guard.
+unsafe fn health(
+    ctx: *mut u8,
+    scope: Str,
+    out: *mut HealthEntry,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     let operator = unsafe { &mut *ctx.cast::<Operator>() };
     let Some(text) = (unsafe { scope_text(scope) }) else {
@@ -85,6 +99,21 @@ unsafe extern "C" fn health_entry(
 /// # Safety
 /// As for [`health_entry`].
 unsafe extern "C" fn measure_entry(
+    ctx: *mut u8,
+    scope: Str,
+    what: i32,
+    out: *mut Measurement,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this entry's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        measure(ctx, scope, what, out, cap, out_len)
+    })
+}
+
+/// [`measure_entry`] within its guard.
+unsafe fn measure(
     ctx: *mut u8,
     scope: Str,
     what: i32,
@@ -142,6 +171,12 @@ unsafe extern "C" fn measure_entry(
 /// `ctx` came from [`Operator::table`]; `scope` and `who` each point at their
 /// stated length of readable bytes.
 unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
+    // SAFETY: the caller's contract is this entry's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe { pause(ctx, scope, who) })
+}
+
+/// [`pause_entry`] within its guard.
+unsafe fn pause(ctx: *mut u8, scope: Str, who: Str) -> i32 {
     // SAFETY: per the contract above.
     let operator = unsafe { &mut *ctx.cast::<Operator>() };
     let (Some(text), Some(who)) = (unsafe { scope_text(scope) }, unsafe { scope_text(who) }) else {
@@ -166,6 +201,12 @@ unsafe extern "C" fn pause_entry(ctx: *mut u8, scope: Str, who: Str) -> i32 {
 /// # Safety
 /// As for [`pause_entry`], without `who`.
 unsafe extern "C" fn resume_entry(ctx: *mut u8, scope: Str) -> i32 {
+    // SAFETY: the caller's contract is this entry's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe { resume(ctx, scope) })
+}
+
+/// [`resume_entry`] within its guard.
+unsafe fn resume(ctx: *mut u8, scope: Str) -> i32 {
     // SAFETY: per the contract above.
     let operator = unsafe { &mut *ctx.cast::<Operator>() };
     let Some(text) = (unsafe { scope_text(scope) }) else {
@@ -188,7 +229,8 @@ unsafe extern "C" fn resume_entry(ctx: *mut u8, scope: Str) -> i32 {
 /// `ctx` came from [`Operator::table`] and is not used again.
 unsafe extern "C" fn destroy_entry(ctx: *mut u8) {
     // SAFETY: `ctx` was produced by `Box::into_raw` in `table`.
-    drop(unsafe { Box::from_raw(ctx.cast::<Operator>()) });
+    let operator = unsafe { Box::from_raw(ctx.cast::<Operator>()) };
+    abi::guarded((), || drop(operator));
 }
 
 /// Wait for the immutable operator snapshot to advance.
@@ -206,15 +248,17 @@ pub unsafe extern "C" fn xmip_wait_change_v1(
     timeout_ms: u32,
     out_revision: *mut u64,
 ) -> i32 {
-    if out_revision.is_null() {
-        return status::INVALID;
-    }
+    abi::guarded(status::PANIC, || {
+        if out_revision.is_null() {
+            return status::INVALID;
+        }
 
-    let revision = CHANGED.wait(after_revision, Duration::from_millis(u64::from(timeout_ms)));
+        let revision = CHANGED.wait(after_revision, Duration::from_millis(u64::from(timeout_ms)));
 
-    // SAFETY: checked for null above; the caller promises writable storage.
-    unsafe { out_revision.write(revision) };
-    status::OK
+        // SAFETY: checked for null above; the caller promises writable storage.
+        unsafe { out_revision.write(revision) };
+        status::OK
+    })
 }
 
 /// The one symbol a surface loads. `XMIP_OPERATE_ENTRYPOINT` in the header.
@@ -229,14 +273,16 @@ pub unsafe extern "C" fn xmip_wait_change_v1(
 /// `out` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_operate_v1(version: u32, out: *mut Operate) -> i32 {
-    if version != abi::operate::XMIP_OPERATE_VERSION {
-        return status::UNSUPPORTED;
-    }
+    abi::guarded(status::PANIC, || {
+        if version != abi::operate::XMIP_OPERATE_VERSION {
+            return status::UNSUPPORTED;
+        }
 
-    // SAFETY: `out` is writable per the contract.
-    unsafe { out.write(Box::new(Operator::live()).table()) };
+        // SAFETY: `out` is writable per the contract.
+        unsafe { out.write(Box::new(Operator::live()).table()) };
 
-    status::OK
+        status::OK
+    })
 }
 
 #[cfg(test)]

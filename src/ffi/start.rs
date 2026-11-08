@@ -9,6 +9,7 @@
 
 use abi::ffi::{Str, status};
 
+use crate::ffi::rule::hand;
 use crate::ffi::text::scope_text;
 use crate::start::{start_published, validate};
 
@@ -21,15 +22,18 @@ use crate::start::{start_published, validate};
 /// `path` must point at `path.len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_start_v1(path: Str) -> i32 {
-    let Some(text) = (unsafe { scope_text(path) }) else {
-        return status::MALFORMED;
-    };
+    abi::guarded(status::PANIC, || {
+        // SAFETY: `path` points at its stated length, per the contract.
+        let Some(text) = (unsafe { scope_text(path) }) else {
+            return status::MALFORMED;
+        };
 
-    if start_published(text) {
-        status::OK
-    } else {
-        status::INVALID
-    }
+        if start_published(text) {
+            status::OK
+        } else {
+            status::INVALID
+        }
+    })
 }
 
 /// `xmip_validate_v1`: [`crate::start::validate`] from a surface. The report is written into
@@ -49,31 +53,24 @@ pub unsafe extern "C" fn xmip_validate_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    // SAFETY: the caller upholds the header's contract on `configuration`:
-    // its bytes are the caller's, alive for the call, and not freed here.
-    let Some(text) = (unsafe { scope_text(configuration) }) else {
-        return status::MALFORMED;
-    };
+    abi::guarded(status::PANIC, || {
+        // SAFETY: the caller upholds the header's contract on
+        // `configuration`: its bytes are the caller's, alive for the call.
+        let Some(text) = (unsafe { scope_text(configuration) }) else {
+            return status::MALFORMED;
+        };
 
-    let problems = validate(text);
-    let joined = problems.join("\n");
-    let bytes = joined.as_bytes();
+        let problems = validate(text);
+        // SAFETY: `report` has room for `cap` bytes and `out_len` is
+        // writable per the contract.
+        unsafe { hand(problems.join("\n").as_bytes(), report, cap, out_len) };
 
-    // SAFETY: `out_len` is writable per the contract.
-    unsafe { *out_len = bytes.len() };
-
-    if !bytes.is_empty() && cap > 0 {
-        let n = bytes.len().min(cap);
-
-        // SAFETY: `report` has room for `cap` >= `n` bytes.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), report, n) };
-    }
-
-    if problems.is_empty() {
-        status::OK
-    } else {
-        status::INVALID
-    }
+        if problems.is_empty() {
+            status::OK
+        } else {
+            status::INVALID
+        }
+    })
 }
 
 #[cfg(test)]

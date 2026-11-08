@@ -33,6 +33,27 @@ pub unsafe extern "C" fn xmip_order_v1(
     said_cap: usize,
     said_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        ordered(
+            orders, node, noun, target, act, who, said, said_cap, said_len,
+        )
+    })
+}
+
+/// [`xmip_order_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn ordered(
+    orders: Str,
+    node: Str,
+    noun: Str,
+    target: Str,
+    act: Str,
+    who: Str,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on every string.
     let texts = unsafe {
         [

@@ -11,7 +11,8 @@
 //! Both ends are here, once. The node's side is a [`Listener`] serving what
 //! a [`Published`] holds — a [`Board`] the program running the node posts
 //! its publication to — and the acts on the nodes of its process, each
-//! admitted by the caller's [`Role`] and audited. The surface's side is
+//! admitted by the [`Role`] its configuration grants that very caller
+//! ([`Grants`]) and audited, and held to its [`Limits`]. The surface's side is
 //! [`Remote`], exported through `xmip_operate.h` section 17 so every
 //! language's surface follows a node the same way.
 //!
@@ -33,8 +34,12 @@ pub mod deadline;
 mod follow;
 #[cfg(feature = "node")]
 pub mod fresh;
+#[cfg(feature = "node")]
+pub mod grant;
 pub mod handle;
 pub mod held;
+#[cfg(feature = "node")]
+pub mod limits;
 mod line;
 #[cfg(feature = "node")]
 pub mod listener;
@@ -53,6 +58,10 @@ mod workers;
 
 #[cfg(feature = "node")]
 pub use board::{Board, Published};
+#[cfg(feature = "node")]
+pub use grant::Grants;
+#[cfg(feature = "node")]
+pub use limits::Limits;
 pub use line::host_of;
 #[cfg(feature = "node")]
 pub use listener::Listener;

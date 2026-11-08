@@ -37,6 +37,9 @@
 //! storage_silence = "1s"                      # persist's standby::SILENCE
 //! storage_kept = 67108864                     # persist's standby::KEPT
 //! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
+//! operate_connections = 256                   # plane::limits::CONNECTIONS
+//! operate_handshakes = 32                     # plane::limits::HANDSHAKES
+//! operate_handshake = "10s"                   # secure_listener::HANDSHAKE_WITHIN
 //! ```
 
 use std::time::Duration;
@@ -83,6 +86,9 @@ pub struct Tuning {
     pub storage_silence: Duration,
     pub storage_kept: usize,
     pub local_timeout: Duration,
+    pub operate_connections: usize,
+    pub operate_handshakes: usize,
+    pub operate_handshake: Duration,
 }
 
 impl Default for Tuning {
@@ -149,6 +155,9 @@ impl Tuning {
             storage_silence: duration("storage_silence"),
             storage_kept: count("storage_kept"),
             local_timeout: duration("local_timeout"),
+            operate_connections: count("operate_connections"),
+            operate_handshakes: count("operate_handshakes"),
+            operate_handshake: duration("operate_handshake"),
         };
         if problems.is_empty() {
             Ok(tuning)
@@ -211,6 +220,16 @@ impl Tuning {
     pub fn send(&self) -> Limits {
         Limits::per_hardware_thread(self.send_threads_per_hardware_thread, self.send_idle)
     }
+
+    /// What bounds each of the node's operate listeners.
+    #[must_use]
+    pub const fn operate(&self) -> crate::plane::Limits {
+        crate::plane::Limits {
+            connections: self.operate_connections,
+            handshakes: self.operate_handshakes,
+            handshake_within: self.operate_handshake,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +267,7 @@ mod tests {
             (standby::BEAT, standby::SILENCE, standby::KEPT)
         );
         assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
+        assert_eq!(tuning.operate(), crate::plane::Limits::default());
         assert_eq!(tuning.receive_handshake, transport::guard::HANDSHAKE);
         assert_eq!(
             tuning.receive().most,
@@ -286,9 +306,18 @@ mod tests {
              receive_sweep = \"3s\"\n\
              receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n\
              node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
-             send_chunks_per_thread = 9\nstream_stall = \"40ms\"\n",
+             send_chunks_per_thread = 9\nstream_stall = \"40ms\"\noperate_connections = 8\n\
+             operate_handshakes = 2\noperate_handshake = \"750ms\"\n",
         )
         .expect("reads");
+        assert_eq!(
+            tuning.operate(),
+            crate::plane::Limits {
+                connections: 8,
+                handshakes: 2,
+                handshake_within: Duration::from_millis(750),
+            }
+        );
         assert_eq!(tuning.failed_window, 12);
         assert_eq!(
             tuning.node_receive().most,

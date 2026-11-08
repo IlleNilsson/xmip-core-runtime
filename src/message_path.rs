@@ -102,6 +102,20 @@ pub struct Runtime<'a> {
     pub origin: &'a Origin,
 }
 
+impl Runtime<'_> {
+    /// This Runtime over `statement`, the Xmip Storage one statement is
+    /// bound to (`persist::storage::statement`): every write a receive
+    /// cycle or a Work Process's turn makes on the one Storage node whose
+    /// sync makes its unsynced chunks durable with it.
+    #[must_use]
+    pub fn over<'b>(&'b self, statement: &'b Arc<dyn XmipStorage>) -> Runtime<'b> {
+        Runtime {
+            storage: statement,
+            ..*self
+        }
+    }
+}
+
 /// How a receive cycle ended, which is what the sender is told: only a
 /// completed one is acknowledged (`runtime-model.md` section 5: *The sender
 /// is acknowledged after the whole receive cycle*).
@@ -160,10 +174,7 @@ pub fn carry(
     // One statement, one Storage node: the Stream's chunks, the Publication
     // and its Journeys (the owner, 2026-10-03).
     let statement = persist::storage::statement(runtime.storage);
-    let runtime = &Runtime {
-        storage: &statement,
-        ..*runtime
-    };
+    let runtime = &runtime.over(&statement);
     let (arrived, published) = published(runtime, pickup, gate, arrive(runtime, gate, received));
     let Some(Published {
         journeys,

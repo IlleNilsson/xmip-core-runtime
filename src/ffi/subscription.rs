@@ -63,6 +63,15 @@ pub unsafe extern "C" fn xmip_subscriptions_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        subscriptions(node, out, cap, out_len)
+    })
+}
+
+/// [`xmip_subscriptions_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn subscriptions(node: Str, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
     // SAFETY: the caller upholds the header's contract on `node`.
     let Some(node) = (unsafe { scope_text(node) }) else {
         return status::MALFORMED;
@@ -88,6 +97,23 @@ pub unsafe extern "C" fn xmip_subscriptions_v1(
 #[unsafe(no_mangle)]
 #[cfg(feature = "node")]
 pub unsafe extern "C" fn xmip_subscription_act_v1(
+    node: Str,
+    name: Str,
+    act: Str,
+    who: Str,
+    said: *mut u8,
+    said_cap: usize,
+    said_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        subscription_act(node, name, act, who, said, said_cap, said_len)
+    })
+}
+
+/// [`xmip_subscription_act_v1`] within its guard.
+#[cfg(feature = "node")]
+unsafe fn subscription_act(
     node: Str,
     name: Str,
     act: Str,
@@ -136,6 +162,19 @@ pub unsafe extern "C" fn xmip_subscription_act_v1(
 /// `out_len` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_publication_subscriptions_v1(
+    publication: *const Handle,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        publication_subscriptions(publication, out, cap, out_len)
+    })
+}
+
+/// [`xmip_publication_subscriptions_v1`] within its guard.
+unsafe fn publication_subscriptions(
     publication: *const Handle,
     out: *mut u8,
     cap: usize,

@@ -29,10 +29,12 @@
 //! three answers serve: whoever allocates, releases, and no allocator is
 //! shared across the boundary.
 //!
-//! Unwinding crosses in neither direction (ADR-0012 clause 8). The host's own
-//! callbacks below are `extern "C"`, and Rust aborts rather than unwinds out
-//! of one, so the rule is kept by the ABI rather than by a `catch_unwind`
-//! this file would have to remember at every edge.
+//! Unwinding crosses in neither direction (ADR-0012 clause 8; specification
+//! section 6). Rust aborts the whole process where a panic reaches an
+//! `extern "C"` frame, and the process is a node or a surface's host, so
+//! every callback this host hands a module runs its body through
+//! `abi::guarded`, the boundary's one guard, and answers a panic in words
+//! its type has.
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -52,18 +54,20 @@ use libloading::Library;
 /// function pointer is not the way to say so — a module is entitled to call
 /// what the table carries. Discarding is honest; routing these into
 /// `xmip-core-observe` is work this slice did not do.
-unsafe extern "C" fn discard_log(_ctx: *mut c_void, _level: i32, _target: Str, _message: Str) {}
+unsafe extern "C" fn discard_log(_ctx: *mut c_void, _level: i32, _target: Str, _message: Str) {
+    abi::guarded((), || {});
+}
 
 /// Nothing this host asks a module to do today is cancellable, so the answer
 /// is always no.
 unsafe extern "C" fn never_cancelled(_ctx: *mut c_void) -> i32 {
-    0
+    abi::guarded(0, || 0)
 }
 
 /// Empty, which header section 6 makes the right answer for a module running
 /// outside a journey — and a module loaded to be verified is.
 unsafe extern "C" fn no_journey(_ctx: *mut c_void) -> Str {
-    Str::empty()
+    abi::guarded(Str::empty(), Str::empty)
 }
 
 fn host_table() -> Host {

@@ -64,6 +64,20 @@ pub unsafe extern "C" fn xmip_curve_read_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        curve_read(text, out, report, cap, out_len)
+    })
+}
+
+/// [`xmip_curve_read_v1`] within its guard.
+unsafe fn curve_read(
+    text: Str,
+    out: *mut *mut Handle,
+    report: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on `text`.
     let Some(text) = (unsafe { scope_text(text) }) else {
         return status::MALFORMED;
@@ -102,6 +116,19 @@ pub unsafe extern "C" fn xmip_curve_points_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        curve_points(curve, out, cap, out_len)
+    })
+}
+
+/// [`xmip_curve_points_v1`] within its guard.
+unsafe fn curve_points(
+    curve: *const Handle,
+    out: *mut Measurement,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: per the contract above.
     match unsafe { curve.cast::<Read>().as_ref() } {
         // SAFETY: per the contract above.
@@ -117,6 +144,12 @@ pub unsafe extern "C" fn xmip_curve_points_v1(
 /// freed; nothing borrowed from it is used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_curve_free_v1(curve: *mut Handle) {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded((), || unsafe { curve_free(curve) });
+}
+
+/// [`xmip_curve_free_v1`] within its guard.
+unsafe fn curve_free(curve: *mut Handle) {
     if !curve.is_null() {
         // SAFETY: per the contract above, the box this handle was made from.
         drop(unsafe { Box::from_raw(curve.cast::<Read>()) });

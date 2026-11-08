@@ -8,9 +8,11 @@ use crate::budget::{
     NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD, RECEIVE_CHUNKS_PER_THREAD, SEND_CHUNKS_PER_THREAD,
 };
 use crate::ledger::SEGMENTS;
+use crate::plane::limits;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
 use crate::receiving::{RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWEEP};
+use crate::secure_listener::HANDSHAKE_WITHIN;
 use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
 };
@@ -226,6 +228,36 @@ pub const TUNING: &Settings = &Settings {
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(LOCAL_TIMEOUT)),
             meaning: "How long a surface's call to this node's local endpoint waits for it.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "operate_connections",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 65_536,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(limits::CONNECTIONS))),
+            meaning: "The connections each operate listener of this node answers at once; one \
+                      past them is closed as it is accepted.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "operate_handshakes",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 4096,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(limits::HANDSHAKES))),
+            meaning: "The connections to the operate listener that may be in their handshake \
+                      at once; one past them is closed as it is accepted.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "operate_handshake",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(HANDSHAKE_WITHIN)),
+            meaning: "How long a handshake with the operate listener may take in all, however \
+                      it is read.",
             applies: Applies::Both,
         },
     ],

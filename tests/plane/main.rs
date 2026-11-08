@@ -2,30 +2,40 @@
 //! 2026-10-12): a node's operate listener and a remote surface, each with
 //! a certificate from one test authority, over gRPC inside Xmip's mutual
 //! TLS — an act gated by the caller's role and audited, a stranger refused,
-//! and a node lost and found again on the recovery loop. How fast a
+//! and a node lost and found again on the recovery loop; each caller its
+//! own role (`granted`), and the listener held to its limits (`bounded`). How fast a
 //! follower is told and a read is answered is the module's timing program's
 //! (`tests/measured`, `doc/governance/rust-style.md` section 5c).
 
+mod bounded;
 mod browsing;
 mod certified;
 mod endpoint;
+mod granted;
 mod local;
 mod relayed;
+mod revoked;
 
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use certified::{node, remote};
+use endpoint::listing;
 use xaudit::program_audit::ProgramAudit;
 use xmip_core_runtime::fixture::{Authority, absent_node};
-use xmip_core_runtime::plane::{Board, Listener, Outcome, Role};
+use xmip_core_runtime::plane::{Board, Grants, Listener, Outcome, Role};
+
+/// The surface `remote` opens, listed under `role`.
+fn surface_as(role: Role) -> Grants {
+    listing(role, &["CN=surface"])
+}
 
 #[test]
 fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
     let authority = Authority::new();
     let board = Arc::new(Board::default());
-    let (listener, audit) = node(&authority, &board, None);
+    let (listener, audit) = node(&authority, &board, surface_as(Role::Observer));
     let surface = remote(&authority, &listener);
 
     let (outcome, said) = surface
@@ -56,7 +66,7 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
 fn an_operator_acts_as_the_certificate_and_the_node_answers() {
     let authority = Authority::new();
     let board = Arc::new(Board::default());
-    let (listener, _) = node(&authority, &board, Some(Role::Operator));
+    let (listener, _) = node(&authority, &board, surface_as(Role::Operator));
     let surface = remote(&authority, &listener);
 
     let (outcome, said) = surface
@@ -74,7 +84,7 @@ fn a_surface_whose_certificate_the_node_does_not_trust_is_refused() {
     let ours = Authority::new();
     let theirs = Authority::new();
     let board = Arc::new(Board::default());
-    let (listener, _) = node(&ours, &board, None);
+    let (listener, _) = node(&ours, &board, surface_as(Role::Observer));
     let stranger = remote(&theirs, &listener);
 
     let refused = stranger.publication().expect_err("refused");
@@ -86,7 +96,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
     let authority = Authority::new();
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let (mut listener, _) = node(&authority, &board, None);
+    let (mut listener, _) = node(&authority, &board, surface_as(Role::Observer));
     let port = listener
         .address()
         .parse::<std::net::SocketAddr>()
@@ -115,7 +125,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
         again,
         &authority.identity("node"),
         Arc::clone(&board) as Arc<dyn xmip_core_runtime::plane::Published>,
-        None,
+        surface_as(Role::Observer),
         &audit,
     )
     .expect("it serves again");

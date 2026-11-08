@@ -33,6 +33,24 @@ pub unsafe extern "C" fn xmip_node_issue_v1(
     cap: usize,
     out_len: *mut usize,
 ) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        node_issue(authority, name, node, names, folder, out, cap, out_len)
+    })
+}
+
+/// [`xmip_node_issue_v1`] within its guard.
+#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
+unsafe fn node_issue(
+    authority: Str,
+    name: Str,
+    node: Str,
+    names: Str,
+    folder: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
     // SAFETY: the caller upholds the header's contract on every string.
     let read = [authority, name, node, names, folder].map(|text| unsafe { scope_text(text) });
     let [
