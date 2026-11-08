@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_reaches_the_storage_nodes_listed_and_carries_on_once_the_primary_stops() {
+    fn a_node_reaches_the_storage_nodes_listed_and_waits_for_the_primary_gone_to_return() {
         let authority = crate::fixture::Authority::new();
         let directory = authority.directory.clone();
         let (certificate, key, anchors) = authority.pem("node");
@@ -583,7 +583,23 @@ mod tests {
             said.2
         );
 
+        // No witness: the primary gone is waited for, never replaced
+        // (ADR-0056, amendment 2026-11-08).
         first.stop();
+        drop(first);
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        assert!(
+            !second.said().contains("the primary Storage node"),
+            "{}",
+            second.said()
+        );
+        assert!(
+            reaching.storage().read_journey(journey.journey).is_err(),
+            "no primary answers"
+        );
+
+        // Back over what it kept: every one listed answers, and they settle.
+        let again = storage(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !second.said().contains("the primary Storage node")
             && std::time::Instant::now() < deadline
@@ -595,6 +611,7 @@ mod tests {
             .read_journey(journey.journey)
             .expect("read");
         assert_eq!(read.map(|r| r.body), Some(b"over the wire".to_vec()));
+        again.stop();
         second.stop();
         let gone = reaching.storage().read_journey(journey.journey);
         assert!(gone.is_err(), "no Storage node answers");

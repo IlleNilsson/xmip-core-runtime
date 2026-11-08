@@ -210,7 +210,8 @@ pub const TUNING: &Settings = &Settings {
             name: "storage_silence",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(standby::SILENCE)),
-            meaning: "How long a standby Storage node hears no primary before it is promoted.",
+            meaning: "How long a Storage node waits to hear from another, and how often a \
+                      primary asks the others what they are.",
             applies: Applies::Both,
         },
         Setting {
