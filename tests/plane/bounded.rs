@@ -101,12 +101,13 @@ fn a_handshake_dribbled_a_byte_at_a_time_is_cut_at_its_deadline() {
         ..Limits::default()
     };
     let listener = bounded(&authority, &board, limits);
+    // Before the connect: the node's deadline runs from its accept.
+    let began = Instant::now();
     let mut tcp = silent(&listener, Duration::from_secs(10));
     let mut writing = tcp.try_clone().expect("a writer");
     // A TLS record of a ClientHello 512 bytes long, sent one byte each 20
     // ms: every read the node makes gets a byte long before any read's own
     // wait could end.
-    let began = Instant::now();
     let dribbling = std::thread::spawn(move || {
         let record = [0x16_u8, 0x03, 0x01, 0x02, 0x00, 0x01];
         for byte in record.into_iter().chain(std::iter::repeat(0)).take(517) {
