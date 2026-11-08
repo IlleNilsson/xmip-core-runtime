@@ -177,6 +177,8 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     // -- Message creation and default promotion ----------------------------
     let message_id = MessageId::new(runtime.ids.next_u128());
     let section_id = SectionId::new(runtime.ids.next_u128());
+    // A clone shares the content: what a gate could not read is asked of it.
+    let kept = stream.clone();
     let section = MessageSection {
         section_id,
         name: None,
@@ -202,20 +204,18 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
     let (facts, message) =
         match settle_message_identity(runtime, gate, transport_facts, message, &received, now) {
             Ok(settled) => settled,
-            Err(reason) => return Arrived::Refused { reason },
+            Err(reason) => return unreadable(&kept).unwrap_or(Arrived::Refused { reason }),
         };
 
     // Before the Journey, where ADR-0013 puts default promotion: a filter that
     // cannot be read refuses the Message rather than declining it.
     let promoted = match promoted(runtime, &message) {
         Ok(promoted) => promoted,
-        Err(reason) => return Arrived::Refused { reason },
+        Err(reason) => return unreadable(&kept).unwrap_or(Arrived::Refused { reason }),
     };
-    // A gate given nothing because the Ledger could not be read routes on nothing.
-    if let Some(why) = message.sections()[0].stream.unread() {
-        return Arrived::Failed {
-            reason: why.to_string(),
-        };
+    // A gate that took a failed read for nothing still routes on nothing.
+    if let Some(failed) = unreadable(&kept) {
+        return failed;
     }
 
     // The Journey opens here and not before. Everything above could have
@@ -254,6 +254,15 @@ fn unchecked_claim(claim: &Presented) -> UncheckedClaim {
 /// once when the Runtime was built (`Runtime::gathering`) and read here
 /// through the route technology its prefix names. A `Null` is absent and
 /// bytes are refused, bare or prefixed (ADR-0046, amended 2026-09-24).
+/// The cycle failed, not refused, where the last read of the Stream whole
+/// failed: a gate that could not read the Ledger did not judge the Message,
+/// and the sender sends again (`Stream::unread`).
+fn unreadable(kept: &stream::Stream) -> Option<Arrived> {
+    kept.unread().map(|why| Arrived::Failed {
+        reason: why.to_string(),
+    })
+}
+
 fn promoted(runtime: &Runtime<'_>, message: &Message) -> Result<Promoted, Refused> {
     runtime
         .gathering
@@ -448,7 +457,7 @@ mod tests {
         }
 
         fn identify(&self, message: &Message) -> Result<Option<Presented>, IdentifyError> {
-            let bytes = message.sections()[0].stream.bytes();
+            let bytes = message.sections()[0].stream.load()?;
             let text = core::str::from_utf8(bytes).map_err(|_| IdentifyError {
                 message: "the interchange envelope is not text".to_string(),
             })?;
