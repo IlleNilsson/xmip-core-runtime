@@ -18,6 +18,7 @@ use crate::departure::{Departed, depart_to, said};
 use crate::generation::ReceivedWork;
 use crate::ledger::Chunks;
 use crate::message_path::Runtime;
+use crate::outcome::Measured;
 use crate::sending::Destination;
 
 /// How one pass of a send ended, once its hand-on was written.
@@ -89,7 +90,7 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         durable,
         claim,
         spent,
-        own,
+        measured,
         ..
     } = departure;
     // The send thread works for its Message now, its send apart as the
@@ -108,12 +109,17 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
     drop(entered);
     // Sent, its far end has it: Xmip's own share of its Message is read
-    // now, with its share of the Storage node's work on its Publication.
+    // now, with its share of the Storage node's work on its Publication;
+    // and the disk's time beside it, with its share of that Publication's
+    // sync.
     if departed.iter().any(Departed::sent)
         && let Some(spent) = spent
     {
-        let ledger = durable.as_ref().map(Durable::worked).unwrap_or_default();
-        *own = Some(spent.own(ledger));
+        let ledger = durable.as_ref();
+        *measured = Some(Measured {
+            own: spent.own(ledger.map(Durable::worked).unwrap_or_default()),
+            disk_sync: spent.disk_sync(ledger.map(Durable::synced).unwrap_or_default()),
+        });
     }
     if step.is_lost(id) {
         return Ended::Lost(departed);

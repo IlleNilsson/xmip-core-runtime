@@ -105,7 +105,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
         // it is closed, and what it has in flight is sent before the scope
         // ends.
         let counted = |departure: &send_step::Departure, ended: &send_step::Ended| match ended {
-            send_step::Ended::Completed(_) => tally.sent(departure.own),
+            send_step::Ended::Completed(_) => tally.sent(departure.measured),
             send_step::Ended::Failed { .. } => tally.not_sent(),
             _ => {}
         };

@@ -206,7 +206,7 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
         until: asked + step.lease,
         durable: None,
         spent: None,
-        own: None,
+        measured: None,
     };
     step.own(departure.work.journey.journey_id(), Owned::of(&departure));
     departure
