@@ -158,7 +158,13 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
     // share, and it is held under a millisecond. A thread waiting for a
     // wake runs nothing, so no wake is counted.
     let own = outcomes.own_share.expect("the node measured its own share");
-    eprintln!("Xmip's own share per Message {own:?}, the fastest of five");
+    // The Ledger's sync, the disk's time, printed beside it and held to
+    // nothing (ADR-0018, amendment 2026-11-09).
+    let disk = outcomes.disk_sync.expect("and the disk's time beside it");
+    eprintln!(
+        "Xmip's own share per Message {own:?}, the disk's sync beside it {disk:?}, the fastest \
+         of five"
+    );
     assert!(own < OWN, "Xmip's own share {own:?}, over {OWN:?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

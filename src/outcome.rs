@@ -154,6 +154,22 @@ pub struct Outcomes {
     /// node's batch (`xcore::spent`). What the millisecond rule holds;
     /// `None` until a Message carried in memory from its receive is sent.
     pub own_share: Option<Duration>,
+    /// The disk's time of a sent Message, the fastest of five, beside its
+    /// own share: what its threads waited for a storage device to sync —
+    /// its sent file's and that file's directory's — with its share of the
+    /// Storage node's sync of its Publication (`xcore::spent::on_sync`).
+    /// Never Xmip's, and never held to the millisecond (ADR-0018,
+    /// amendment 2026-11-09); `None` where `own_share` is.
+    pub disk_sync: Option<Duration>,
+}
+
+/// What one sent Message took, measured from its transport handing it over
+/// to its far end having it: Xmip's own share ([`xcore::spent::Spent::own`])
+/// and the disk's time beside it ([`xcore::spent::Spent::disk_sync`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Measured {
+    pub own: Duration,
+    pub disk_sync: Duration,
 }
 
 /// The counts a running node keeps as each Stream is carried, and why any
@@ -169,14 +185,14 @@ pub(crate) struct Tally {
     sent: AtomicU64,
     not_sent: AtomicU64,
     failures: Mutex<Vec<(String, String)>>,
-    /// The own share of each Message sent, the last [`OWN_SHARE_FIVES`]
-    /// fives kept.
-    own: Mutex<Option<FastestOfFive>>,
+    /// The own share and the disk's time of each Message sent, the last
+    /// [`OWN_SHARE_FIVES`] fives of each kept.
+    measured: Mutex<Option<[FastestOfFive; 2]>>,
 }
 
-/// How many fives of sent Messages' own shares a node keeps for its
-/// report: the last thousand, so what it holds stays bounded however long
-/// it runs.
+/// How many fives of sent Messages' own shares, and of their disk's times,
+/// a node keeps for its report: the last thousand, so what it holds stays
+/// bounded however long it runs.
 pub const OWN_SHARE_FIVES: usize = 1000;
 
 impl Tally {
@@ -196,13 +212,15 @@ impl Tally {
     }
 
     /// Count a Message the send step wrote Completed, with Xmip's own share
-    /// of its time where it was measured.
-    pub(crate) fn sent(&self, own: Option<Duration>) {
+    /// of its time and the disk's beside it, where they were measured.
+    pub(crate) fn sent(&self, measured: Option<Measured>) {
         self.sent.fetch_add(1, Ordering::Relaxed);
-        if let Some(own) = own {
-            let mut kept = self.own.locked();
-            kept.get_or_insert_with(|| FastestOfFive::keeping(OWN_SHARE_FIVES))
-                .push(own);
+        if let Some(measured) = measured {
+            let mut kept = self.measured.locked();
+            let keeping = || FastestOfFive::keeping(OWN_SHARE_FIVES);
+            let [own, disk_sync] = kept.get_or_insert_with(|| [keeping(), keeping()]);
+            own.push(measured.own);
+            disk_sync.push(measured.disk_sync);
         }
     }
 
@@ -223,6 +241,13 @@ impl Tally {
 
     pub(crate) fn outcomes(&self) -> Outcomes {
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        let [own_share, disk_sync] = self
+            .measured
+            .locked()
+            .as_ref()
+            .map_or([None, None], |kept| {
+                kept.each_ref().map(FastestOfFive::read)
+            });
         Outcomes {
             received: read(&self.received),
             routed: read(&self.routed),
@@ -232,7 +257,8 @@ impl Tally {
             failed: read(&self.failed),
             sent: read(&self.sent),
             not_sent: read(&self.not_sent),
-            own_share: self.own.locked().as_ref().and_then(FastestOfFive::read),
+            own_share,
+            disk_sync,
         }
     }
 }

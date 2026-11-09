@@ -92,6 +92,7 @@ use xcore::{IdGenerator, JourneyId};
 
 use crate::departure::Progress;
 use crate::generation::ReceivedWork;
+use crate::outcome::Measured;
 use crate::pool::Limits;
 use crate::sending::{Destination, Sends, queue};
 use crate::stream_share::StreamShare;
@@ -165,8 +166,10 @@ pub struct Departure {
     pub spent: Option<Spent>,
     /// Xmip's own share of its Message, once sent: the processor time its
     /// threads worked for it outside its I/O, from its transport handing it
-    /// over to its far end having it ([`Spent::own`]).
-    pub own: Option<Duration>,
+    /// over to its far end having it ([`Spent::own`]); and the disk's time
+    /// beside it, its waits for a storage device to sync
+    /// ([`Spent::disk_sync`]).
+    pub measured: Option<Measured>,
 }
 
 /// What a Publication writes for the Messages that go on to be sent: each
@@ -371,7 +374,7 @@ impl SendStep {
                 until,
                 durable: Some(durable.clone()),
                 spent: spent.clone(),
-                own: None,
+                measured: None,
             };
             state.owned.insert(id, Owned::of(&departure));
             state.handed.push_back(departure);
