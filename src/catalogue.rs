@@ -4,7 +4,7 @@
 //! Every technology declares its own settings in its own crate
 //! (`xcore::settings::Settings`: a transport's `transport::Configured`, a
 //! contract's `ContractFactory::settings`). The runtime names no technology
-//! (`architecture.xmip`: a platform service depends on no technology
+//! (`architecture.toml`: a platform service depends on no technology
 //! repository), so it holds the declarations of the technologies it has been
 //! given — a node carries each technology here as it loads it (startup phase
 //! 6, `startup.rs`) — and every reader asks here: `xmip_validate_v1`

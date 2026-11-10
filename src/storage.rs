@@ -26,7 +26,7 @@
 //!   nodes reaching it, over Xmip's mutual TLS with what `[storage]`
 //!   presents. Phase 3 refuses a table Xmip Storage does not read, a
 //!   database server, whose backend is not built yet, a program that was
-//!   not built with both engines — what `deploy/profile/role/storage.xmip`
+//!   not built with both engines — what `deploy/profile/role/storage.toml`
 //!   builds — and one of several that names nowhere to serve them; phase 9
 //!   one whose databases do not open or whose listener does not bind.
 //! - **The Storage nodes `[storage]` lists**, reached over Xmip's mutual

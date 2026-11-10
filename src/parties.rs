@@ -22,7 +22,7 @@ use xcore::{Mechanism, PartyId, Purpose, SecretName};
 /// A Party, by the identifier the gates handed back.
 ///
 /// Separate from [`PartyRegistry`], which answers with a `PartyId` and nothing
-/// more. `architecture.xmip` gives the three gates no dependency on
+/// more. `architecture.toml` gives the three gates no dependency on
 /// `xmip-core-party`, so a gate cannot read a Party's identities even by
 /// accident; the runtime can, because the send side genuinely needs to —
 /// ADR-0006 resolves *which* Party's identity to present through the Send
