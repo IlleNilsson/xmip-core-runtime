@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(answer["fragments"], json!([]), "every write finished");
 
         // A write left unfinished is said apart from the chain, which stays whole.
-        let file = directory.join("audit.xmip");
+        let file = directory.join("audit.toml");
         let mut bytes = fs::read(&file).expect("read");
         bytes.extend_from_slice(b"[[record]]\naudit_id = \"0");
         fs::write(&file, bytes).expect("written");
