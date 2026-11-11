@@ -1,7 +1,9 @@
 //! An Event and a filter as `xmip_operate.h` section 11 lays them out,
 //! read from a program and written for one: the crossing `ffi/event.rs`'s
 //! exports make, and nothing the event crate decides. The header's action
-//! and outcome integers are read and written by `crate::wire`.
+//! and outcome integers are read and written by `crate::wire`. Who
+//! subscribes is no argument: the caller this process proves to be
+//! (`subscriber`).
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a program's pointers are read here.
@@ -18,6 +20,7 @@ use xevent::filter::Filter;
 use xevent::subscriber::Subscriber;
 
 use crate::ffi::text::{borrow, scope_text};
+use crate::parties::Parties;
 use crate::wire::{outcome_of, stage_of, wire_outcome, wire_stage};
 
 /// The text an Event's identifiers are written as, and its diagnostics as
@@ -31,37 +34,43 @@ pub(super) struct Texts {
     diagnostics: Vec<Str>,
 }
 
-/// The subscriber and filter a subscribe asked with, or the status that
-/// refuses them.
+/// Where a subscribe's deliveries and refusals are audited, and the filter
+/// it asked with, or the status that refuses them.
 ///
 /// # Safety
 /// As `xmip_event_subscribe_v1`.
 pub(super) unsafe fn asked(
     program: Str,
     directory: Str,
-    subscriber: Str,
     filter: *const EventFilter,
-) -> Result<(Subscriber, Filter), i32> {
+) -> Result<(ProgramAudit, Filter), i32> {
     // SAFETY: the caller upholds the contract on every string.
-    let (program, directory, party) = unsafe {
+    let (program, directory) = unsafe {
         (
             scope_text(program).ok_or(status::MALFORMED)?,
             scope_text(directory).ok_or(status::MALFORMED)?,
-            scope_text(subscriber).ok_or(status::MALFORMED)?,
         )
     };
-    if party.is_empty() {
-        return Err(status::INVALID);
-    }
-    let party = party.parse().map_err(|_| status::MALFORMED)?;
     let stated = (!directory.is_empty()).then(|| Path::new(directory));
-    let subscriber = Subscriber::in_process(party, ProgramAudit::new(program, stated));
     // SAFETY: filter is null or readable with its lists, per the contract.
     let filter = match unsafe { filter.as_ref() } {
         None => Filter::everything(),
         Some(wire) => unsafe { filter_of(wire)? },
     };
-    Ok((subscriber, filter))
+    Ok((ProgramAudit::new(program, stated), filter))
+}
+
+/// The subscriber a program in this process is, asking for `filter`: the
+/// account the operating system says the process runs as, resolved through
+/// the Parties of the nodes serving in this process (`Parties::serving`) by
+/// the runtime's one rule, `plane::caller::subscriber` — never a Party the
+/// program names (the owner, 2026-11-10; ADR-0019, amendment 2026-11-11).
+///
+/// # Errors
+/// The sentence that refuses it, audited in the program's audit with who
+/// asked and what for, as the hub's gate audits its own refusals.
+pub(super) fn subscriber(filter: &Filter, audit: &ProgramAudit) -> Result<Subscriber, String> {
+    crate::plane::caller::subscriber(&Parties::serving(), filter, audit)
 }
 
 /// A filter as the event crate reads one.

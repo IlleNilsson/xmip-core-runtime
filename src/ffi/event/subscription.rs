@@ -187,9 +187,7 @@ unsafe fn publication_event_subscriptions(
 #[cfg(all(test, feature = "node"))]
 mod tests {
     use xaudit::program_audit::ProgramAudit;
-    use xcore::PartyId;
     use xevent::filter::Filter;
-    use xevent::subscriber::Subscriber;
 
     use super::*;
     use crate::ffi::publication::{xmip_publication_free_v1, xmip_publication_read_v1};
@@ -247,14 +245,14 @@ mod tests {
     fn the_process_hub_is_listed_and_acted_on_and_a_stranger_act_is_refused() {
         let at = std::env::temp_dir().join("xmip-runtime-subscription-ffi");
         super::super::gate::allowed::policy();
-        let subscriber = Subscriber::in_process(
-            PartyId::new(9),
-            ProgramAudit::new("xmip-runtime tests", Some(&at)),
-        );
         let cluster = configure::fixture::test_cluster();
         let (scope, node) = (cluster.scope(), cluster.node_scope(0));
+        let asked = Filter::everything().beneath(&scope);
+        let audit = ProgramAudit::new("xmip-runtime tests", Some(&at));
+        let subscriber = super::super::crossing::subscriber(&asked, &audit)
+            .expect("the Party this process proves to be");
         let subscription = Hub::process()
-            .subscribe(subscriber, Filter::everything().beneath(&scope), 4)
+            .subscribe(subscriber, asked, 4)
             .expect("allowed");
         let id = subscription.id();
         let find = || {
@@ -271,10 +269,11 @@ mod tests {
         assert_eq!(entry["state"], "active");
         assert_eq!(entry["scope"], scope.as_str());
         assert_eq!(entry["capacity"], 4);
-        assert_eq!(entry["party"], PartyId::new(9).to_string().as_str());
+        assert_eq!(entry["party"], super::super::gate::allowed::PARTY);
         assert_eq!(
-            entry["subscriber"], "",
-            "declared with no name, and none is made up"
+            entry["subscriber"],
+            super::super::gate::allowed::NAME,
+            "the name the Party was declared with"
         );
 
         assert_eq!(act(id, "pause").0, status::OK);

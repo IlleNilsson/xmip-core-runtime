@@ -112,32 +112,55 @@ unsafe fn event_authorize(decide: Option<Decide>, context: *mut c_void) -> i32 {
     status::OK
 }
 
-/// The test policy every test of section 11 hands the process's hub: the
-/// two Parties those tests subscribe as.
+/// What every test of section 11 stands on: a node serving in this process
+/// whose Party holds the account the tests run as, and the policy the tests
+/// hand the process's hub, allowing that Party.
 #[cfg(test)]
 pub(crate) mod allowed {
+    use std::sync::LazyLock;
+
     use super::*;
     use crate::ffi::text::scope_text;
+    use crate::parties::Parties;
     use abi::ffi::Str;
+    use party::{Identity, Party};
+    use xcore::{PartyId, mechanism};
 
-    /// The Parties allowed.
-    pub(crate) const PARTIES: [&str; 2] = [
-        "0198a3c4-0000-7000-8000-000000000042",
-        "00000000-0000-0000-0000-000000000009",
-    ];
+    /// The Party this process proves to be, and the one the policy allows.
+    pub(crate) const PARTY: &str = "0198a3c4-0000-7000-8000-000000000042";
+
+    /// Its name, as a node's `[[parties]]` declares it.
+    pub(crate) const NAME: &str = "runtime-tests";
 
     extern "C" fn decide(_: *mut c_void, party: Str, _: Str, _: Str, _: Str, _: Str) -> i32 {
         // SAFETY: the runtime hands a string it borrows for the call.
         let party = unsafe { scope_text(party) }.unwrap_or("");
-        if PARTIES.contains(&party) {
+        if party == PARTY {
             decision::ALLOW
         } else {
             decision::NONE
         }
     }
 
-    /// Hand the process's hub the test policy.
+    /// The Parties a node serving in this process lends it, for the
+    /// process's life: [`PARTY`], its `peer-credentials` identity the
+    /// account the operating system says the tests run as.
+    pub(crate) fn serving() {
+        static SERVING: LazyLock<Arc<Parties>> = LazyLock::new(|| {
+            let account = crate::plane::local::running_as().expect("the system names it");
+            let id: PartyId = PARTY.parse().expect("a UUID");
+            let party = Party::new(id, None, NAME)
+                .with(Identity::receiving(mechanism::peer_credentials(), account));
+            let parties = Arc::new(Parties(vec![party]));
+            Parties::serve(&parties);
+            parties
+        });
+        LazyLock::force(&SERVING);
+    }
+
+    /// The node's Parties lent, and the test policy handed the hub.
     pub(crate) fn policy() {
+        serving();
         // SAFETY: a callback of the header's shape, needing no context.
         let code = unsafe { xmip_event_authorize_v1(Some(decide), core::ptr::null_mut()) };
         assert_eq!(code, status::OK);

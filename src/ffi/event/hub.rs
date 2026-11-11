@@ -1,7 +1,9 @@
 //! `xmip_operate.h` section 11, the process's hub: subscribe, drain, listen,
 //! unsubscribe and publish, forwarded to `xmip-core-event`'s `Hub::process`
 //! (ADR-0065, ADR-0052). The node's side only: a remote build carries none
-//! of it (`ffi::event`).
+//! of it (`ffi::event`). No argument names the subscriber: it is the caller
+//! this process proves to be (`crossing::subscriber`; ADR-0019, amendment
+//! 2026-11-11).
 //!
 //! A drained batch owns what it hands out: the Events, the text of their
 //! identifiers, and the header's structs borrowing from both; one call
@@ -26,7 +28,7 @@ use xevent::listener::Listener;
 
 use crate::ffi::rule::refuse;
 
-use super::crossing::{Texts, asked, event_of, texts_of, view_of};
+use super::crossing::{Texts, asked, event_of, subscriber, texts_of, view_of};
 
 /// What a subscription handle holds: a queue the program drains, or a
 /// listener calling it back, which is held only to be dropped.
@@ -61,7 +63,9 @@ impl Context {
     }
 }
 
-/// `xevent::hub::Hub::subscribe` on the process's hub, forwarded.
+/// `xevent::hub::Hub::subscribe` on the process's hub, forwarded, as the
+/// subscriber this process proves to be (`crossing::subscriber`): no
+/// argument names a Party.
 ///
 /// # Safety
 /// Every `Str` points at its stated length of readable bytes; `filter` is
@@ -71,7 +75,6 @@ impl Context {
 pub unsafe extern "C" fn xmip_event_subscribe_v1(
     program: Str,
     directory: Str,
-    subscriber: Str,
     filter: *const EventFilter,
     capacity: usize,
     out: *mut *mut Handle,
@@ -82,7 +85,7 @@ pub unsafe extern "C" fn xmip_event_subscribe_v1(
     // SAFETY: the caller's contract is this export's, passed on whole.
     abi::guarded(status::PANIC, || unsafe {
         event_subscribe(
-            program, directory, subscriber, filter, capacity, out, said, said_cap, said_len,
+            program, directory, filter, capacity, out, said, said_cap, said_len,
         )
     })
 }
@@ -92,7 +95,6 @@ pub unsafe extern "C" fn xmip_event_subscribe_v1(
 unsafe fn event_subscribe(
     program: Str,
     directory: Str,
-    subscriber: Str,
     filter: *const EventFilter,
     capacity: usize,
     out: *mut *mut Handle,
@@ -106,13 +108,18 @@ unsafe fn event_subscribe(
         *said_len = 0;
     }
     // SAFETY: the caller upholds the header's contract on every argument.
-    let asked = unsafe { asked(program, directory, subscriber, filter) };
-    let (subscriber, filter) = match asked {
+    let asked = unsafe { asked(program, directory, filter) };
+    let (audit, filter) = match asked {
         Ok(asked) => asked,
         Err(code) => return code,
     };
 
-    match Hub::process().subscribe(subscriber, filter, capacity) {
+    let subscribed = subscriber(&filter, &audit).and_then(|subscriber| {
+        Hub::process()
+            .subscribe(subscriber, filter, capacity)
+            .map_err(|refused| refused.to_string())
+    });
+    match subscribed {
         Ok(subscription) => {
             // SAFETY: out is writable; the box is the handle's until freed.
             unsafe { *out = handle(Some(subscription), None) };
@@ -120,7 +127,7 @@ unsafe fn event_subscribe(
         }
         Err(refused) => {
             // SAFETY: said and said_len per the contract.
-            unsafe { refuse(&refused.to_string(), said, said_cap, said_len) };
+            unsafe { refuse(&refused, said, said_cap, said_len) };
             status::AUTH
         }
     }
@@ -136,7 +143,6 @@ unsafe fn event_subscribe(
 pub unsafe extern "C" fn xmip_event_listen_v1(
     program: Str,
     directory: Str,
-    subscriber: Str,
     filter: *const EventFilter,
     capacity: usize,
     callback: Callback,
@@ -149,8 +155,7 @@ pub unsafe extern "C" fn xmip_event_listen_v1(
     // SAFETY: the caller's contract is this export's, passed on whole.
     abi::guarded(status::PANIC, || unsafe {
         event_listen(
-            program, directory, subscriber, filter, capacity, callback, context, out, said,
-            said_cap, said_len,
+            program, directory, filter, capacity, callback, context, out, said, said_cap, said_len,
         )
     })
 }
@@ -160,7 +165,6 @@ pub unsafe extern "C" fn xmip_event_listen_v1(
 unsafe fn event_listen(
     program: Str,
     directory: Str,
-    subscriber: Str,
     filter: *const EventFilter,
     capacity: usize,
     callback: Callback,
@@ -176,7 +180,6 @@ unsafe fn event_listen(
         xmip_event_subscribe_v1(
             program,
             directory,
-            subscriber,
             filter,
             capacity,
             &raw mut drained,
@@ -419,10 +422,9 @@ mod tests {
         at.to_string_lossy().into_owned()
     }
 
-    const PARTY: &str = "0198a3c4-0000-7000-8000-000000000042";
-
     fn subscribe(directory: &str, filter: &EventFilter) -> *mut Handle {
-        // Being in this process admits nobody: the test hands its policy.
+        // Being in this process admits nobody: the node serving here lends
+        // the Party the tests' account is, and the test hands its policy.
         super::super::gate::allowed::policy();
         let mut out = core::ptr::null_mut();
         let mut said = [0u8; 256];
@@ -432,7 +434,6 @@ mod tests {
             xmip_event_subscribe_v1(
                 borrow("xmip-core-runtime tests"),
                 borrow(directory),
-                borrow(PARTY),
                 filter,
                 0,
                 &raw mut out,
@@ -441,8 +442,68 @@ mod tests {
                 &raw mut said_len,
             )
         };
-        assert_eq!(code, status::OK);
+        let said = String::from_utf8_lossy(&said[..said_len.min(said.len())]);
+        assert_eq!(code, status::OK, "{said}");
         out
+    }
+
+    #[test]
+    fn a_program_subscribing_names_no_party_of_its_own() {
+        // The owner, 2026-11-10: a Party is never resolved from what is
+        // said, only from what the sender proved. Nothing the program hands
+        // over names a Party: the subscriber is the account this process
+        // runs as, proven by the operating system's word and resolved
+        // through the Parties of the node serving here.
+        let at = directory("proven");
+        let (cluster, _) = apart("proven");
+        let filter = EventFilter {
+            types: core::ptr::null(),
+            types_len: 0,
+            outcomes: core::ptr::null(),
+            outcomes_len: 0,
+            scope: borrow(&cluster),
+            party: Str::empty(),
+        };
+        let handle = subscribe(&at, &filter);
+        // SAFETY: the handle subscribe just made, live until unsubscribed.
+        let held = unsafe { &*handle.cast::<Held>() };
+        let subscriber = held.drained.as_ref().expect("drained").subscriber();
+        let allowed = super::super::gate::allowed::PARTY;
+        assert_eq!(subscriber.party().to_string(), allowed);
+        assert_eq!(subscriber.name(), super::super::gate::allowed::NAME);
+        // SAFETY: the handle is unsubscribed once.
+        unsafe { xmip_event_unsubscribe_v1(handle) };
+
+        // An account no Party of a node serving here holds subscribes as
+        // nobody: refused, in the sentence the export hands back.
+        let audit = xaudit::program_audit::ProgramAudit::new(
+            "xmip-core-runtime tests",
+            Some(std::path::Path::new(&at)),
+        );
+        let account = r"CORP\nobody-holds-this";
+        let asked = xevent::filter::Filter::everything().beneath(&cluster);
+        for parties in [
+            crate::parties::Parties::serving(),
+            crate::parties::Parties::default(),
+        ] {
+            let refused = crate::plane::caller::subscriber_as(account, &parties, &asked, &audit)
+                .expect_err("no Party holds it");
+            assert!(
+                refused.starts_with(&format!("REFUSED: {account}, the account")),
+                "{refused}"
+            );
+            assert!(refused.contains("never one it names"), "{refused}");
+        }
+        // Audited as the hub audits its own refusals: who asked, as the gate
+        // answered, and what for.
+        xaudit::keeper::settle();
+        let kept =
+            std::fs::read_to_string(std::path::Path::new(&at).join(xaudit::file_sink::FILE_NAME))
+                .expect("audited");
+        for said in ["event.subscribe", "peer-credentials", "nobody-holds-this"] {
+            assert!(kept.contains(said), "{said} in {kept}");
+        }
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     fn raised(scope: &str, diagnostics: &[Str]) -> Wire {
@@ -580,7 +641,6 @@ mod tests {
             xmip_event_listen_v1(
                 borrow("xmip-core-runtime tests"),
                 borrow(&at),
-                borrow(PARTY),
                 &raw const filter,
                 0,
                 told,
@@ -615,23 +675,5 @@ mod tests {
         let mut malformed = raised(&scope, &[]);
         malformed.journey = borrow("not a uuid");
         assert_eq!(publish(&malformed).0, status::MALFORMED);
-
-        let (mut out, mut said, mut said_len) = (core::ptr::null_mut(), [0u8; 64], 0);
-        // SAFETY: every pointer is to a live local.
-        let nobody = unsafe {
-            xmip_event_subscribe_v1(
-                borrow("t"),
-                Str::empty(),
-                Str::empty(),
-                core::ptr::null(),
-                0,
-                &raw mut out,
-                said.as_mut_ptr(),
-                said.len(),
-                &raw mut said_len,
-            )
-        };
-        assert_eq!(nobody, status::INVALID, "a subscriber is a Party");
-        assert!(out.is_null());
     }
 }

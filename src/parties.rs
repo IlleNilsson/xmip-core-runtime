@@ -13,11 +13,23 @@
 //! The gates ask whose a verified value is, after it was verified and never
 //! before; the send side asks which identity a Party presents (ADR-0006).
 //! One list answers both, because a deployment has one set of Parties.
+//!
+//! A node serving lends its Parties to its process while it serves
+//! ([`Parties::serve`]): a program in that process — one that loaded the
+//! runtime's library and subscribes to Events — is the account the
+//! operating system names, resolved through them ([`Parties::serving`]),
+//! and never a Party it names (ADR-0019, amendment 2026-11-11).
+
+use std::sync::{Arc, Mutex, Weak};
+use xcore::lock::Locked;
 
 use authenticate::{Authenticator, PartyRegistry};
 use configure::{PartyConfiguration, PartyIdentity};
 use party::{Identity, Party};
 use xcore::{Mechanism, PartyId, Purpose, SecretName};
+
+/// The Parties of every node serving in this process, as each started.
+static SERVING: Mutex<Vec<Weak<Parties>>> = Mutex::new(Vec::new());
 
 /// A Party, by the identifier the gates handed back.
 ///
@@ -69,6 +81,46 @@ impl Parties {
         } else {
             Err(problems)
         }
+    }
+
+    /// `parties`, a node's, lent to this process for as long as the node
+    /// holds them: what a caller in this process resolves through.
+    pub fn serve(parties: &Arc<Self>) {
+        let mut serving = SERVING.locked();
+        serving.retain(|held| held.strong_count() > 0);
+        serving.push(Arc::downgrade(parties));
+    }
+
+    /// The Parties of every node serving in this process, as one registry;
+    /// empty where none serves here. Two nodes may each declare a Party
+    /// holding one account: [`Parties::holding`] names them all, so a
+    /// caller resolves the same whichever node lent first.
+    #[must_use]
+    pub fn serving() -> Self {
+        Self(
+            SERVING
+                .locked()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .flat_map(|parties| parties.0.clone())
+                .collect(),
+        )
+    }
+
+    /// Every Party holding `value` under `mechanism` for `purpose`, each
+    /// once, in the order declared: more than one is a choice nothing here
+    /// makes.
+    #[must_use]
+    pub fn holding(&self, mechanism: &str, purpose: Purpose, value: &str) -> Vec<&Party> {
+        let mut held: Vec<&Party> = Vec::new();
+        for party in &self.0 {
+            if party.holds(mechanism, purpose, value)
+                && held.iter().all(|seen| seen.party_id != party.party_id)
+            {
+                held.push(party);
+            }
+        }
+        held
     }
 }
 
@@ -188,6 +240,20 @@ mod tests {
                 .as_deref(),
             Some("party-sftp")
         );
+    }
+
+    #[test]
+    fn a_node_lends_its_parties_to_the_process_while_it_holds_them() {
+        let configured = vec![party("lent", vec![receiving("lent")])];
+        let id = configured[0].id.expect("minted");
+        let held = Arc::new(Parties::of(&configured, &[]).expect("declared mechanisms"));
+        let lent = || Parties::serving().party(id).is_some();
+
+        assert!(!lent(), "not before it serves");
+        Parties::serve(&held);
+        assert!(lent());
+        drop(held);
+        assert!(!lent(), "not after the node let them go");
     }
 
     #[test]
