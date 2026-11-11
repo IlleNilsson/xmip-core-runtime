@@ -29,8 +29,9 @@ use crate::sequence::{Point, PointKind};
 /// (`transport::pool`).
 pub struct Sending {
     pub configured: ConfiguredLocation,
-    /// Its address in its technology's own terms, what each send names as
-    /// its target (`crate::linked::LinkedTransport::target`).
+    /// What each send names as its target, as its technology says
+    /// (`crate::linked::LinkedTransport::target`): its address in the
+    /// technology's own terms, or the destination its settings name.
     pub target: String,
     pub chain: SendChain,
     pub transport: Box<dyn Transport + Send + Sync>,

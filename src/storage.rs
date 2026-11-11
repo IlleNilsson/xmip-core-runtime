@@ -37,6 +37,11 @@
 //!
 //! A node declaring neither the Storage role nor `[storage] nodes` is
 //! refused at phase 3, in words naming both.
+//!
+//! Where each data domain is kept, by the node's configuration alone, is
+//! [`keeping`]: the one decision [`plan`] starts a node by and the Quests
+//! probe a node's configuration by (`crate::report`; ADR-0072, amendment
+//! 2026-11-10).
 
 mod opened;
 mod reached;
@@ -49,7 +54,7 @@ use std::sync::Arc;
 use configure::XmipConfigurationDocument;
 use node::NodeRole;
 use persist::storage::XmipStorage;
-use persist::storage::database::{self, Domain, Technology};
+use persist::storage::database::{self, Domain, Server, Technology};
 use persist::storage::schema::Database;
 
 use crate::linked::Linked;
@@ -107,6 +112,64 @@ pub struct Serving {
     pub listed: Vec<String>,
 }
 
+/// Where a data domain's records are kept, as the node's configuration says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keeping {
+    /// On the node's own Storage node: it declares the Storage role.
+    Own,
+    /// On the database server its table names, a node with the Storage
+    /// role that keeps the domain there.
+    Server(Server),
+    /// On the Storage nodes `[storage] nodes` lists: the node does not
+    /// declare the Storage role.
+    Listed,
+}
+
+/// Where each data domain is kept, by the word
+/// [`XmipConfigurationDocument::domains`] names it with; or, for a table
+/// whose `storage` names no technology its database may be kept on, why
+/// not, in [`database::technology`]'s words.
+pub type Kept = [(&'static str, Result<Keeping, String>); 3];
+
+/// Where each data domain of `document` is kept — runtime, administration,
+/// audit — by its roles, `[storage] nodes` and each domain's table, the
+/// table's `storage` read by [`database::technology`], the one reading a
+/// node starting is held to ([`database::problems`]).
+///
+/// # Errors
+/// Where its roles are not role words, or it declares no Storage role and
+/// lists no Storage node, in words naming both.
+pub fn keeping(document: &XmipConfigurationDocument) -> Result<Kept, String> {
+    let roles = NodeRole::declared(document.roles.as_deref().unwrap_or(""))?;
+    let stores = roles.contains(&NodeRole::Storage);
+    if !stores && document.storage.nodes.is_empty() {
+        return Err(
+            "this node does not declare the storage role and [storage] nodes lists no \
+             Storage node: only a node with the storage role keeps Xmip Storage, and any \
+             other reaches it through [storage] nodes"
+                .to_string(),
+        );
+    }
+    let tables = document.domains();
+    Ok(std::array::from_fn(|at| {
+        let (word, table) = tables[at];
+        let kept = match table {
+            _ if !stores => Ok(Keeping::Listed),
+            None => Ok(Keeping::Own),
+            Some(table) => database::technology(&Domain {
+                database: Database::ALL[at],
+                storage: &table.storage,
+                connection: &table.connection,
+            })
+            .map(|technology| match technology {
+                Technology::Server(server) => Keeping::Server(server),
+                Technology::RocksDb | Technology::Sqlite => Keeping::Own,
+            }),
+        };
+        (word, kept)
+    }))
+}
+
 /// The data domains' tables `document` holds, each with its database.
 #[must_use]
 pub fn domains(document: &XmipConfigurationDocument) -> Vec<Domain<'_>> {
@@ -143,7 +206,7 @@ pub fn plan(
         return Ok(Planned::Given(Arc::clone(given)));
     }
     let refused = |problem: String| Refusal::at(StartupPhase::ValidateStartup, vec![problem]);
-    let roles = NodeRole::declared(document.roles.as_deref().unwrap_or("")).map_err(refused)?;
+    let kept = keeping(document).map_err(refused)?;
     let listed: Vec<String> = document
         .storage
         .nodes
@@ -167,15 +230,7 @@ pub fn plan(
         crate::presented::identity(file, "storage", files).map_err(|problem| vec![problem])
     };
     let refused_all = |problems| Refusal::at(StartupPhase::ValidateStartup, problems);
-    if !roles.contains(&NodeRole::Storage) {
-        if listed.is_empty() {
-            return Err(refused(
-                "this node does not declare the storage role and [storage] nodes lists no \
-                 Storage node: only a node with the storage role keeps Xmip Storage, and any \
-                 other reaches it through [storage] nodes"
-                    .to_string(),
-            ));
-        }
+    if kept.iter().all(|(_, kept)| *kept == Ok(Keeping::Listed)) {
         let identity = presented().map_err(refused_all)?;
         return Ok(Planned::Reaching { listed, identity });
     }
@@ -194,13 +249,16 @@ pub fn plan(
             listed,
         }),
     };
-    kept(document, file, linked, serving)
+    own(document, file, &kept, linked, serving)
 }
 
-/// The node's own Storage node, held to what `linked` carries.
-fn kept(
+/// The node's own Storage node, each domain kept as `kept` says, held to
+/// what `linked` carries. A table `kept` could not read is refused by
+/// [`database::problems`], in the same words, beside every other problem.
+fn own(
     document: &XmipConfigurationDocument,
     file: &Path,
+    kept: &Kept,
     linked: &Linked,
     serving: Option<Serving>,
 ) -> Result<Planned, Refusal> {
@@ -214,12 +272,11 @@ fn kept(
         .as_ref()
         .map(|d| d.password.as_str());
     let mut problems = database::problems(&named, password);
-    for domain in &named {
-        if let Some(Technology::Server(server)) = Technology::named(domain.storage) {
+    for (word, kept) in kept {
+        if let Ok(Keeping::Server(server)) = kept {
             problems.push(format!(
-                "[{}] storage names {}, and Xmip Storage has no {} backend built yet; it \
+                "[{word}] storage names {}, and Xmip Storage has no {} backend built yet; it \
                  follows as its own technology of xmip-core-persist",
-                domain.database.word(),
                 server.word(),
                 server.word()
             ));
@@ -438,6 +495,50 @@ mod tests {
             .err()
             .expect("no role is called stores");
         assert!(refused.problems[0].contains("stores"), "{refused}");
+    }
+
+    #[test]
+    fn each_data_domain_is_kept_where_the_configuration_says() {
+        let (head, _) = service();
+        let server = format!(
+            "{head}[runtime]\nstorage = \"postgresql\"\nconnection = \"host=db-1 dbname=x\"\n"
+        );
+        assert_eq!(
+            keeping(&document(&server)).expect("kept"),
+            [
+                ("runtime", Ok(Keeping::Server(Server::PostgreSql))),
+                ("administration", Ok(Keeping::Own)),
+                ("audit", Ok(Keeping::Own)),
+            ]
+        );
+        // A word that names no technology, or an engine its database is not
+        // kept on, is kept nowhere: a node starting by it is refused for it.
+        for (table, wrong) in [
+            ("runtime", "postgres"),
+            ("runtime", "sqlite"),
+            ("audit", "rocksdb"),
+        ] {
+            let text = format!("{head}[{table}]\nstorage = \"{wrong}\"\nconnection = \"x\"\n");
+            let kept = keeping(&document(&text)).expect("read");
+            let refused = kept
+                .iter()
+                .find(|(word, _)| *word == table)
+                .and_then(|(_, kept)| kept.clone().err())
+                .expect("kept nowhere");
+            assert!(
+                refused.starts_with(&format!("[{table}] storage: ")),
+                "{refused}"
+            );
+        }
+        let listing = head.replace(STORAGE, "roles = \"receiving\"\n")
+            + "[storage]\nnodes = [\"storage.example:7443\"]\n";
+        let kept = keeping(&document(&listing)).expect("kept");
+        assert_eq!(
+            kept.map(|(_, kept)| kept),
+            [const { Ok(Keeping::Listed) }; 3]
+        );
+        let neither = keeping(&document(&head.replace(STORAGE, ""))).expect_err("neither");
+        assert!(neither.contains("[storage] nodes"), "{neither}");
     }
 
     #[test]

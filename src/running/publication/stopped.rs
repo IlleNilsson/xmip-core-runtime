@@ -12,8 +12,9 @@ use super::{drawn, location};
 /// the rest that they stopped with it — and drawn again. What it declared,
 /// its Subscriptions' standing and the Locations it never started stay as
 /// they were: a pause outlives the stop (ADR-0013, amendment 2026-09-30),
-/// and a Location the configuration does not start did not stop. A surface
-/// over the file shows a stopped node, never a running one that went quiet.
+/// and a Location the configuration does not start did not stop. Drawn
+/// with no window, nothing on it moves. A surface over the file shows a
+/// stopped node, never a running one that went quiet.
 #[must_use]
 pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Publication {
     let at = location(cluster, node);
@@ -117,8 +118,12 @@ mod tests {
         let id = format!("node/{node}");
         assert!(drawn.nodes.iter().any(|drawn| drawn.id == id));
         assert!(
-            (drawn.nodes[0].activity).abs() < f64::EPSILON,
-            "no process alive"
+            drawn
+                .nodes
+                .iter()
+                .all(|node| node.activity.abs() < f64::EPSILON),
+            "nothing moves on a stopped node: {:?}",
+            drawn.nodes
         );
     }
 }

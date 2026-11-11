@@ -52,9 +52,13 @@
 //! publication does not yet say which a Location takes and an endpoint is
 //! labeled by its transport alone, so whoever its Receive Locations accept
 //! and its Send Ports deliver to is drawn as one Party per side, over every
-//! endpoint, [`ANY_PARTY`] (open problem 33).
+//! endpoint, [`ANY_PARTY`] (open problem 33). What moved over it — each
+//! link's rate, each drawn thing's activity — is stated by the window its
+//! publisher keeps (`observe::topology::window`; ADR-0018, amendment
+//! 2026-11-10); a stopped node is drawn still.
 
 use node::{Capability, Stage};
+use observe::topology::window::Window;
 use observe::topology::{draw, party};
 use observe::{
     Count, Counted, FailedMessages, Health, HealthRecord, PauseState, Publication, Snapshot,
@@ -194,11 +198,13 @@ impl Running {
     }
 
     /// The node's publication, as `source` publishes it: its
-    /// [`Running::snapshot`] at its location, with the node drawn.
+    /// [`Running::snapshot`] at its location, with the node drawn and what
+    /// moved over it stated by `window`, the one its publisher keeps.
     #[must_use]
-    pub fn publication(&self, source: &str) -> Publication {
+    pub fn publication(&self, source: &str, window: &mut Window) -> Publication {
         let snapshot = self.snapshot();
-        let topology = self.topology(&snapshot);
+        let mut topology = drawn(&self.cluster, &self.node, &snapshot);
+        window.state(&mut topology, &snapshot);
         Publication::whole(source, &self.location(), &snapshot).with_topology(Some(topology))
     }
 
@@ -233,11 +239,6 @@ impl Running {
                 observed_unix_nanos: now,
             });
         }
-    }
-
-    /// The node drawn from `snapshot`.
-    fn topology(&self, snapshot: &Snapshot) -> Topology {
-        drawn(&self.cluster, &self.node, snapshot)
     }
 }
 
@@ -653,5 +654,99 @@ mod tests {
             );
             assert_eq!(standing.0 == Health::Done, ended, "{scope}");
         }
+    }
+
+    /// What the node counted at `second`, receiving over `In` and sending
+    /// through the Port `Out`, drawn as it publishes itself: `received`
+    /// Streams routed, and `sent` Messages.
+    fn drawn_at(second: i64, received: u64, sent: u64) -> (Topology, Snapshot) {
+        let cluster = configure::fixture::test_cluster();
+        let (name, node) = (&cluster.node(0).name, cluster.node_scope(0));
+        let locations = [("receive", configured("In")), ("send", configured("Out"))];
+        let mut snapshot = Snapshot::new();
+        for (scope, (health, severity), evidence) in
+            stage_records(&node, &locations, &[], &BTreeMap::new())
+        {
+            snapshot.record_health(HealthRecord {
+                scope,
+                health,
+                severity,
+                evidence,
+                observed_unix_nanos: 0,
+            });
+        }
+        let outcomes = Outcomes {
+            received,
+            routed: received,
+            ..Outcomes::default()
+        };
+        let figures = PortFigures {
+            sent,
+            ..PortFigures::default()
+        };
+        for (scope, counted, value) in counts(&node, outcomes, [("Out".into(), figures)].into()) {
+            snapshot.record_count(Count {
+                scope,
+                counted,
+                value,
+                window_start_unix_nanos: 0,
+                window_end_unix_nanos: 0,
+                observed_unix_nanos: 0,
+            });
+        }
+        let mut topology = drawn(&cluster.name, name, &snapshot);
+        topology.observed_unix_nanos = second * 1_000_000_000;
+        (topology, snapshot)
+    }
+
+    /// The owner, 2026-11-10: motion follows traffic. What the node counted
+    /// moves its own drawing, stated by the window its publisher keeps: the
+    /// Party sending in at what it received, the one delivered to at what
+    /// the Port sent; drawn without one, nothing moves. That
+    /// `Running::publication` states it through the window is held by the
+    /// running tests (`tests/running`), over a node started as a program
+    /// starts it.
+    #[test]
+    fn what_the_node_counted_moves_its_drawing_over_the_window_its_publisher_keeps() {
+        let name = configure::fixture::test_cluster().node(0).name.clone();
+        let mut window = Window::new();
+        let (mut first, snapshot) = drawn_at(0, 0, 0);
+        window.state(&mut first, &snapshot);
+        let (mut later, snapshot) = drawn_at(2, 8, 4);
+        let still = later.clone();
+        window.state(&mut later, &snapshot);
+
+        let rate = |topology: &Topology, id: &str| {
+            topology
+                .links
+                .iter()
+                .find(|link| link.id == id)
+                .map(|link| link.rate)
+        };
+        let activity = |topology: &Topology, id: &str| {
+            topology
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .map(|node| node.activity)
+        };
+        let into = format!("party/sending/{ANY_PARTY}/{name}");
+        let out = format!("party/receiving/{ANY_PARTY}/{name}");
+        assert_eq!(
+            rate(&later, &into),
+            Some(4.0),
+            "eight received in two seconds"
+        );
+        assert_eq!(rate(&later, &out), Some(2.0), "four sent through Out");
+        assert_eq!(activity(&later, &format!("node/{name}")), Some(4.0));
+        assert_eq!(rate(&still, &into), Some(0.0), "drawn, not yet stated");
+        assert!(
+            still
+                .nodes
+                .iter()
+                .all(|node| node.activity.abs() < f64::EPSILON),
+            "{:?}",
+            still.nodes
+        );
     }
 }

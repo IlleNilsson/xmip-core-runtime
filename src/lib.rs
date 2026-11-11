@@ -80,6 +80,8 @@ pub mod receiving;
 #[cfg(feature = "node")]
 pub mod registration;
 #[cfg(feature = "node")]
+pub mod report;
+#[cfg(feature = "node")]
 pub mod running;
 #[cfg(feature = "node")]
 pub mod secret;
