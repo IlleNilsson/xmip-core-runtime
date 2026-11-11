@@ -35,8 +35,9 @@ pub(super) struct Served {
     pub(super) gathering: Gathering,
     pub(super) subscriptions: Vec<route::Subscription>,
     /// The Parties the configuration declares: what a verified identity
-    /// resolves to, and what the send side reads a Party's identity from.
-    pub(super) parties: Parties,
+    /// resolves to, and what the send side reads a Party's identity from;
+    /// lent to the process for as long as this thread holds them.
+    pub(super) parties: Arc<Parties>,
     pub(super) pickup: Arc<Pickup>,
     pub(super) send: Arc<SendStep>,
     pub(super) work: Arc<WorkStep>,
@@ -82,8 +83,8 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
         let runtime = Runtime {
             ids: &UuidV7Generator,
             authenticators: &authenticators,
-            parties: &parties,
-            directory: &parties,
+            parties: &*parties,
+            directory: &*parties,
             subscriptions: &subscriptions,
             gathering: &gathering,
             treatment: MessageTreatment::default(),

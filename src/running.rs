@@ -156,6 +156,10 @@ impl Running {
             parties,
         } = check(&tree, &linked)
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
+        // Lent to this process while the node serves: a program in it is
+        // resolved through them, never by a Party it names (`ffi::event`).
+        let parties = Arc::new(parties);
+        crate::parties::Parties::serve(&parties);
         // Set up from the Locations the node starts, before the
         // capabilities are registered, so each is registered as the rest.
         let started = crate::linked::Started {
