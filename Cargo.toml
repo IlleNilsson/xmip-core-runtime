@@ -66,6 +66,11 @@ xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xm
 xevent = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main", optional = true }
 observe = { package = "xmip-core-observe", git = "https://github.com/IlleNilsson/xmip-core-observe", branch = "main" }
 configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", optional = true }
+# Section 25: every Report in one list, and a Quest probing a node's
+# configuration the runtime composes (ADR-0072, amendment 2026-11-10). The
+# list and its answers are the capability's; the runtime hands in the
+# installation and the audit each Quest's last probe is read from.
+report = { package = "xmip-core-report", git = "https://github.com/IlleNilsson/xmip-core-report", branch = "main", optional = true }
 # A Work Process: its compiled program, its engine and its unit; and BPMN
 # 2.0, the default design format the designer reads and compiles
 # (ADR-0066, amendment 2026-10-22).
@@ -192,8 +197,9 @@ default = ["node"]
 # (`secure_listener`), and section 22, a node's certificate from the
 # cluster's authority (`ffi::node_certificate`), and section 23, the
 # cluster's authority kept in a folder and a node's certificate carried
-# across an air gap (`ffi::authority`). Everything a remote surface
-# has, too.
+# across an air gap (`ffi::authority`), and section 25, every Report listed
+# and a Quest probing a node's configuration (`ffi::report`, over
+# `report`). Everything a remote surface has, too.
 node = [
     "remote",
     "dep:serde",
@@ -210,6 +216,7 @@ node = [
     "dep:route",
     "dep:xevent",
     "dep:configure",
+    "dep:report",
     "dep:codec",
     "dep:process",
     "dep:assign",

@@ -2,12 +2,14 @@
 //! starts it, over the transports and test Storage node its tests link
 //! (`node.rs`, the timing program's too): a Location held to its
 //! technology's declaration as the node starts, every transport given its
-//! node's location, a clean stop that lets its listener go, what the
-//! program was not built with refused at start, a library module refused
-//! or opened once, and a paused Subscription holding and sending in order
-//! on its resume. How long a node takes to carry a Message is the
-//! module's timing program's (`tests/measured`).
+//! node's location, a clean stop that lets its listener go, what it
+//! received moving its published drawing (`drawing.rs`), what the program
+//! was not built with refused at start, a library module refused or opened
+//! once, and a paused Subscription holding and sending in order on its
+//! resume. How long a node takes to carry a Message is the module's timing
+//! program's (`tests/measured`).
 
+mod drawing;
 mod node;
 
 #[cfg(feature = "dynamic-loading")]

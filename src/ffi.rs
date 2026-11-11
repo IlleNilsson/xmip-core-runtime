@@ -1,7 +1,7 @@
 //! The runtime's C boundary, in one folder (ADR-0050, refined 2026-09-25):
 //! the operator's table and the exports a surface calls (`xmip_operate.h`
-//! sections 5 to 21, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013 and
-//! ADR-0034) and the loader that opens a module's library and calls through
+//! sections 5 to 25, ADR-0027, ADR-0053, ADR-0064, ADR-0065, ADR-0013,
+//! ADR-0034 and ADR-0072) and the loader that opens a module's library and calls through
 //! its table (ADR-0057), and the Windows calls a directory watch makes
 //! (`directory_watch`; ADR-0018, amendment 2026-10-17). The local operate
 //! endpoint's pipe on Windows is `net::pipe`'s, the estate's one (ADR-0014,
@@ -61,6 +61,8 @@ pub mod process;
 pub mod publication;
 #[cfg(feature = "remote")]
 pub mod remote;
+#[cfg(feature = "node")]
+pub mod report;
 /// The library pins itself when Windows loads it; `build.rs` does the same
 /// for `dlclose` (`xmip_operate.h` section 1).
 #[cfg(windows)]

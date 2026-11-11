@@ -60,7 +60,7 @@ pub type Open = fn(&str, Applies, &[(String, Given)], OnNode<'_>) -> Opened;
 pub struct LinkedTransport {
     settings: &'static Settings,
     schemes: &'static [&'static str],
-    own_terms: fn(&str) -> &str,
+    own_target: fn(&str) -> &str,
     open: Open,
     waits: Waits,
 }
@@ -86,18 +86,20 @@ impl LinkedTransport {
         Self {
             settings: T::SETTINGS,
             schemes: T::SCHEMES,
-            own_terms: T::own_terms,
+            own_target: T::own_target,
             open,
             waits: always,
         }
     }
 
-    /// `location`'s address in this technology's own terms
-    /// (`transport::Configured::own_terms`): what a send names as its
-    /// target.
+    /// What every send from `location` names as its target, as its
+    /// technology says (`transport::Configured::own_target`): its address in
+    /// the technology's own terms, or the empty target, the destination its
+    /// settings name, where its address names only the server (ADR-0064,
+    /// amendment 2026-11-10).
     #[must_use]
     pub fn target<'a>(&self, location: &'a ConfiguredLocation) -> &'a str {
-        (self.own_terms)(&location.address)
+        (self.own_target)(&location.address)
     }
 
     /// The schemes a Location's address is entered with to choose it.
@@ -364,5 +366,85 @@ impl Linked {
         self.key_stores
             .iter()
             .find(|linked| linked.technology() == technology)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tcp::TcpTransport;
+    use transport::{Arrivals, Arrived, Directions, Outgoing, Sending, Waiting};
+    use xcore::settings::Read;
+
+    /// A technology whose address names a broker and whose settings name
+    /// the topic on it, as Kafka's do.
+    struct Brokered;
+
+    impl Transport for Brokered {
+        fn name(&self) -> &'static str {
+            "brokered"
+        }
+        fn directions(&self) -> Directions {
+            Directions::SEND
+        }
+        fn receive_up_to(&self, _most: usize) -> transport::Result<Vec<Arrived>> {
+            Ok(Vec::new())
+        }
+        fn arrivals(&self) -> Arrivals {
+            Arrivals::Unordered("it receives nothing")
+        }
+        fn waiting(&self) -> Waiting {
+            Waiting::Polled("it looks and finds nothing")
+        }
+        fn sending(&self) -> Sending {
+            Sending::Streamed("nothing is held, as nothing is sent")
+        }
+        fn send_from(&self, _target: &str, _outgoing: Outgoing<'_>) -> transport::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Configured for Brokered {
+        const SETTINGS: &'static Settings = &Settings::none("brokered");
+        const SCHEMES: &'static [&'static str] = &["brokered"];
+
+        fn own_target(_address: &str) -> &str {
+            transport::destination::OWN
+        }
+
+        fn configured(_address: &str, _settings: &Read) -> transport::Result<Self> {
+            Ok(Self)
+        }
+    }
+
+    fn at(address: &str) -> ConfiguredLocation {
+        ConfiguredLocation {
+            name: "Out".to_string(),
+            start: true,
+            address: address.to_string(),
+            secret: None,
+            contract: None,
+            settings: configure::LocationSettings::default(),
+            contract_settings: configure::LocationSettings::default(),
+            accept: configure::Accept::default(),
+            prepare: Vec::new(),
+            transform: None,
+            promote: None,
+            demote: None,
+            debatch: None,
+            correlation: None,
+        }
+    }
+
+    #[test]
+    fn a_send_names_the_target_its_technology_says() {
+        let brokered = LinkedTransport::of::<Brokered>();
+        assert_eq!(
+            brokered.target(&at("brokered://host:9092")),
+            transport::destination::OWN,
+            "a broker's Send Location sends to the topic its settings name"
+        );
+        let tcp = LinkedTransport::of::<TcpTransport>();
+        assert_eq!(tcp.target(&at("tcp://host:9000")), "host:9000");
     }
 }
