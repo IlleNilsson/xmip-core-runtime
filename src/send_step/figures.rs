@@ -71,6 +71,10 @@ pub struct PortFigures {
     /// Port is Done while it has not, since what waits in its queue cannot
     /// be found. Gone at the first read answered.
     pub unread: Option<(i128, String)>,
+    /// The median of each step of its latest sends on this node, handed in
+    /// memory and taken from its queue apart, in words (`super::Steps`);
+    /// empty before one was sent.
+    pub steps: String,
 }
 
 /// A Message that failed, waiting in its Send Port's queue for an
@@ -117,6 +121,9 @@ impl PortFigures {
             said.push_str(&format!(
                 "; the Message of the Journey {journey} failed: {why}"
             ));
+        }
+        if !self.steps.is_empty() {
+            said.push_str(&format!("; {}", self.steps));
         }
         said
     }
@@ -208,6 +215,9 @@ impl SendStep {
             figures.failing = window.count;
             figures.oldest_failing.clone_from(&window.oldest);
             figures.blocked = window.count > 0 && state.ports.get(port) == Some(&true);
+        }
+        for (port, timed) in &state.timed {
+            figures.entry(port.clone()).or_default().steps = timed.words();
         }
         figures
     }

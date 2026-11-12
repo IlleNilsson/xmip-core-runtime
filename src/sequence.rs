@@ -46,7 +46,7 @@ use xcore::lock::Locked;
 
 use crate::ledger::Opened;
 use message::Message;
-use persist::storage::{Hold, XmipStorage, named};
+use persist::storage::{Hold, Position, Watched, XmipStorage, named};
 use route::{Gathering, Promoted};
 use xcore::JourneyId;
 
@@ -264,12 +264,31 @@ pub fn points_of<'a>(sends: &'a Sends, to: &'a Subscriber) -> Vec<&'a Point> {
 /// # Errors
 /// Xmip Storage did not answer, in words.
 pub fn heads(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<bool, String> {
+    Ok(waits_on(storage, queue, member)?.is_none())
+}
+
+/// Where the head of the sequence `queue` stands, where `member` does not
+/// hold its first place — what it waits on (`persist::storage::Watched::
+/// Head`): how many places were ever let go of there, which only one let
+/// go of moves — or none where it heads it.
+///
+/// # Errors
+/// Xmip Storage did not answer, in words.
+pub fn waits_on(
+    storage: &dyn XmipStorage,
+    queue: u128,
+    member: u128,
+) -> Result<Option<Position>, String> {
     if headed().contains(&(queue, member)) {
-        return Ok(true);
+        return Ok(None);
     }
     let page = storage
         .read_held(queue, 0, 1)
         .map_err(|why| why.to_string())?;
+    let head = Position {
+        watched: Watched::Head(queue),
+        at: page.next.saturating_sub(page.count),
+    };
     // A page that reads nothing while the queue still holds places is no
     // head: only an empty queue is (corrected 2026-10-27; an empty page
     // read mid-write let a Message overtake under load).
@@ -278,11 +297,40 @@ pub fn heads(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<boo
     match page.held.first() {
         Some(first) if first.hold.journey.value() == member => {
             headed().remember((queue, member));
-            Ok(true)
+            Ok(None)
         }
-        Some(_) => Ok(false),
-        None => Ok(page.count == 0),
+        Some(_) => Ok(Some(head)),
+        None => Ok((page.count != 0).then_some(head)),
     }
+}
+
+/// Each sequence the Message of `journey` holds a place in and does not
+/// head — its Stream's end to end, its Send Port Group delivery's, and its
+/// own at the point it is at — with where its head stands as read now:
+/// what it waits on, taken up the moment any node moves one (open problem
+/// 46, 2026-11-12). None where it heads them all.
+///
+/// # Errors
+/// Xmip Storage did not answer, in words.
+pub fn behind(storage: &dyn XmipStorage, journey: &Journey) -> Result<Vec<Position>, String> {
+    let member = journey.journey_id().value();
+    let stream = journey.received().into_iter().flat_map(|received| {
+        let origin = received.origin;
+        received.sequences.iter().map(move |queue| (*queue, origin))
+    });
+    let group = journey
+        .group
+        .as_ref()
+        .and_then(|group| Some((group.queue?, group.delivery)));
+    let own = journey
+        .sequences
+        .iter()
+        .map(|sequenced| (sequenced.queue, member));
+    let mut behind = Vec::new();
+    for (queue, holder) in stream.chain(group).chain(own) {
+        behind.extend(waits_on(storage, queue, holder)?);
+    }
+    Ok(behind)
 }
 
 /// What this process has seen head its sequence. A place that heads a

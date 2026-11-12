@@ -24,7 +24,11 @@
 //! another node put it there, the step waiting on its queues in Xmip
 //! Storage (`crate::queue_watch`; open problem 46, built 2026-11-12) — and
 //! a timer is the due time of the Message whose turn started it, taken up
-//! when due.
+//! when due. A turn its Instance did not take, or that waits behind
+//! another of its sequence, waits on what holds it — the Instance as it
+//! read it, each key it correlates by that no Instance holds, the
+//! sequence's head — and is taken up the moment any node moves one
+//! ([`Turned::Waits`]; 2026-11-12).
 //!
 //! **The engine never knows the design.** A unit is opened as
 //! `process::Flow`, linked or loaded through the C ABI
@@ -43,12 +47,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use xcore::lock::Locked;
 
-use persist::storage::{Waiter, XmipStorage};
+use persist::storage::XmipStorage;
 use xaudit::program_audit::ProgramAudit;
 use xcore::JourneyId;
 use xcore::wake::Wake;
 
 use crate::pool::Limits;
+use crate::queue_watch::{QueueWatch, Woken};
 
 pub use dispatch::{dispatch, turn_due};
 pub use keys::{KeyWord, ResolvedSet};
@@ -79,9 +84,9 @@ pub struct WorkStep {
     running: Vec<Running>,
     state: Mutex<State>,
     wake: Wake,
-    /// What its watch on its queues waits as, stopped as it closes
-    /// (`crate::queue_watch`).
-    waiter: Arc<Waiter>,
+    /// Its watch on its queues, and on what a turn it gave back waits on,
+    /// stopped as it closes (`crate::queue_watch`).
+    watch: QueueWatch,
 }
 
 #[derive(Default)]
@@ -90,6 +95,8 @@ struct State {
     owned: HashSet<JourneyId>,
     /// Queues to read now.
     asked: Vec<u128>,
+    /// Of those, what is due in each as a wake brought it: read from there.
+    woken: Vec<(u128, persist::storage::DueQueue)>,
     /// When each queue next has a timer due, as its last read showed.
     due: Vec<(u128, Instant)>,
     /// How many turns this node wrote: what tells a turn that waited
@@ -123,7 +130,7 @@ impl WorkStep {
             running,
             state: Mutex::new(State::default()),
             wake: Wake::new(),
-            waiter: Arc::new(Waiter::of(node)),
+            watch: QueueWatch::of(node),
         }
     }
 
@@ -152,6 +159,18 @@ impl WorkStep {
         self.wake.notify_all();
     }
 
+    /// Read `queue` now from what `woken` brought of it: a write on any
+    /// node put a Message in it, or moved what a turn it gave back waits on
+    /// (`crate::queue_watch`).
+    pub(crate) fn woken(&self, queue: u128, woken: Woken) {
+        if let Some(due) = woken.due {
+            let mut state = self.lock();
+            state.woken.retain(|(kept, _)| *kept != queue);
+            state.woken.push((queue, due));
+        }
+        self.ask(queue);
+    }
+
     /// Read every queue it runs now: a Stream ahead in a sequence has ended.
     pub fn ask_every(&self) {
         let mut state = self.lock();
@@ -167,7 +186,7 @@ impl WorkStep {
     /// Stop taking work; what is in a turn finishes it.
     pub fn close(&self) {
         self.lock().closed = true;
-        self.waiter.stop();
+        self.watch.stop();
         self.wake.notify_all();
     }
 

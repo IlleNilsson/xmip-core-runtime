@@ -2,21 +2,20 @@
 //! the Ledger, the unit advanced and its acts carried out until it waits
 //! or ends, and all of it handed on in one write (`XmipStorage::turn`).
 
-use journey::{Journey, JourneyState};
-use persist::storage::{
-    Claim, Failure, HandOn, Held, InstanceKey, InstanceRecord, InstanceWrite, Turn, Wait, named,
-};
+use journey::JourneyState;
+use persist::storage::{Claim, Held, InstanceRecord, Position, Turn, Watched, named};
 use process::{Act, Event, Instance, Outcome, Refused, form};
 
 use super::acts::{self, Made};
 use super::keys::promoted;
 use super::running::Running;
 use crate::generation::ReceivedWork;
-use crate::ledger::{journey_record, message_record};
 use crate::message_path::Runtime;
 use crate::pickup::Pickup;
 use crate::send_step::{Found, read};
-use crate::sequence::{Placing, heads};
+use crate::sequence::{Placing, behind, waits_on};
+
+mod written;
 
 /// The most acts one turn carries out: a flow that keeps asking for work
 /// without waiting is stopped, never run forever.
@@ -27,10 +26,14 @@ const MOST_ACTS: usize = 10_000;
 pub enum Turned {
     /// Written: the Instance moved on.
     Done,
-    /// Not now, its claim given back: another holds it, its Stream does not head its sequence,
-    /// no step of its Instance waits for it, its Instance moved on since it was read, or another
-    /// Instance took a key it starts by — taken again, it joins that one.
-    Waits(String),
+    /// Not now, its claim given back, `why`: another holds it, its Stream does not head its
+    /// sequence, no step of its Instance waits for it, its Instance moved on since it was read,
+    /// or another Instance took a key it starts by — taken again, it joins that one. And `on`,
+    /// what it waits on: a sequence's head, the Instance as it read it, each key it correlates
+    /// by that no Instance holds — taken up the moment any node moves one, at once where one
+    /// moved already (open problem 46, 2026-11-12); none where another holds it, or it is no
+    /// Message to take a turn of.
+    Waits { why: String, on: Vec<Position> },
     /// Written Failed with why, kept in its queue for an operator.
     Failed(String),
     /// Xmip Storage did not take it, in words.
@@ -49,19 +52,23 @@ pub(super) fn turn(
     let statement = persist::storage::statement(&step.storage);
     let runtime = &runtime.over(&statement);
     let (id, token) = (held.hold.journey, runtime.ids.next_u128());
+    let waits = |why: &str| Turned::Waits {
+        why: why.to_string(),
+        on: Vec::new(),
+    };
     let claim = match runtime.storage.claim(id, &step.node, token, step.lease) {
         Ok(Some(claim)) => claim,
-        Ok(None) => return Turned::Waits("another holds it".to_string()),
+        Ok(None) => return waits("another holds it"),
         Err(why) => return Turned::Unwritten(why.to_string()),
     };
-    let release = |why: String| {
+    let release = |why: String, on: Vec<Position>| {
         let _ = runtime.storage.release(&claim);
-        Turned::Waits(why)
+        Turned::Waits { why, on }
     };
     let mut work = match read(runtime, id, &held.hold.body) {
         Ok(Found::Waiting(found)) => found.0,
-        Ok(_) => return release("it is not one to take a turn of".to_string()),
-        Err(why) => return release(why),
+        Ok(_) => return release("it is not one to take a turn of".to_string(), Vec::new()),
+        Err(why) => return release(why, Vec::new()),
     };
     // Its place at the Work Process, taken once its Stream heads its own.
     let to = route::Subscriber::WorkProcess(running.name.clone());
@@ -70,9 +77,12 @@ pub(super) fn turn(
     let lease = (&claim, step.lease);
     match crate::sequence::heading(runtime.storage.as_ref(), configured, at, lease) {
         Ok(Placing::Placed) => {}
-        Ok(Placing::Behind) => return release("its Stream waits behind another".to_string()),
-        Ok(Placing::Lost) => return Turned::Waits("its claim was another's".to_string()),
-        Err(why) => return release(why),
+        Ok(Placing::Behind) => {
+            let on = behind(runtime.storage.as_ref(), &work.journey).unwrap_or_default();
+            return release("its Stream waits behind another".to_string(), on);
+        }
+        Ok(Placing::Lost) => return waits("its claim was another's"),
+        Err(why) => return release(why, Vec::new()),
     }
     // A Message bound for a Work Process holds one place at it: the Work
     // Process's own sequence, where it names a set.
@@ -82,10 +92,13 @@ pub(super) fn turn(
         .first()
         .map(|sequenced| (sequenced.queue, sequenced.skips));
     if let Some((queue, _)) = point {
-        match heads(runtime.storage.as_ref(), queue, id.value()) {
-            Ok(true) => {}
-            Ok(false) => return release("it waits behind another at its Work Process".to_string()),
-            Err(why) => return release(why),
+        match waits_on(runtime.storage.as_ref(), queue, id.value()) {
+            Ok(None) => {}
+            Ok(Some(head)) => {
+                let why = "it waits behind another at its Work Process".to_string();
+                return release(why, vec![head]);
+            }
+            Err(why) => return release(why, Vec::new()),
         }
     }
     let mut taking = Taking {
@@ -96,16 +109,21 @@ pub(super) fn turn(
         body: &held.hold.body,
         made: Made::default(),
         point,
+        on: Vec::new(),
     };
     match taking.take(work) {
         Ok(Some(turn)) => match runtime.storage.turn(&turn) {
             Ok(true) => Turned::Done,
             Ok(false) => release(
                 "its Instance moved on since it was read, or another took its key".to_string(),
+                taking.on,
             ),
             Err(why) => Turned::Unwritten(why.to_string()),
         },
-        Ok(None) => release("no step of its Instance waits for it".to_string()),
+        Ok(None) => release(
+            "no step of its Instance waits for it".to_string(),
+            taking.on,
+        ),
         Err((work, why)) => taking.fail(work, &why),
     }
 }
@@ -121,6 +139,10 @@ struct Taking<'a> {
     /// Its place in its Work Process's sequence, where the Work Process names
     /// a Correlation, and whether a failure lets it go.
     point: Option<(u128, bool)>,
+    /// What it waits on where its Instance does not take it, or its write
+    /// finds the Instance moved: the Instance as it read it, and — where no
+    /// key named one — each key it correlates by, held by no Instance.
+    on: Vec<Position>,
 }
 
 type Taken = Result<Option<Turn>, (Box<ReceivedWork>, String)>;
@@ -139,6 +161,7 @@ impl Taking<'_> {
             Err(why) => return fail(&work, why),
         };
         let over = record.as_ref().map_or(0, |record| record.turns);
+        self.on = self.waits_for((instance_id, over), &work, &keys);
         let mut instance = match &record {
             Some(record) if !record.ended => match form::read::<Instance>(&record.body) {
                 Ok(instance) => instance,
@@ -200,6 +223,29 @@ impl Taking<'_> {
             "{}/work-process/{}/correlation/{name}/{key}",
             self.runtime.work.cluster, self.running.name
         ))
+    }
+
+    /// What a turn of `work` over the Instance `instance`, read at the turn
+    /// `over`, waits on where that Instance does not take it, or moved since:
+    /// the Instance, and where it is the one `work` started — no key of
+    /// `keys` naming one — each key, held by none.
+    fn waits_for(
+        &self,
+        (instance, over): (u128, u64),
+        work: &ReceivedWork,
+        keys: &[(u32, String)],
+    ) -> Vec<Position> {
+        let mut on = vec![Position {
+            watched: Watched::Instance(instance),
+            at: over,
+        }];
+        if instance == work.journey.journey_id().value() {
+            on.extend(keys.iter().map(|key| Position {
+                watched: Watched::Key(self.correlation(key)),
+                at: 0,
+            }));
+        }
+        on
     }
 
     /// The Instance `work` belongs to: the one a key of its correlates to,
@@ -281,120 +327,5 @@ impl Taking<'_> {
             }
         }
         Ok(ended)
-    }
-
-    /// The turn as one write: the Journey, what was made, the Instance and
-    /// its correlations, and the Message kept with a due time where a timer
-    /// waits.
-    fn written(
-        &mut self,
-        work: ReceivedWork,
-        (instance_id, over): (u128, u64),
-        instance: Instance,
-        ended: Option<Outcome>,
-        now: i128,
-    ) -> Turn {
-        let queue = self.running.queue;
-        let mut journey: Journey = work.journey;
-        journey.current_work_process = Some(self.running.name.clone());
-        let mut hand_on = self.hand_on(&journey);
-        let due = instance.next_due().filter(|_| ended.is_none());
-        match (&ended, due) {
-            (Some(Outcome::Failed { code, reason }), _) => {
-                journey.state = JourneyState::Failed;
-                hand_on.failed = Some(Failure {
-                    queue,
-                    reason: format!("{} threw {code}: {reason}", self.running.name),
-                });
-            }
-            (_, Some(due)) => {
-                journey.state = JourneyState::Waiting;
-                let after = u64::try_from(due.saturating_sub(now)).unwrap_or(0);
-                hand_on.waits = Some(Wait {
-                    queue,
-                    after_nanos: after,
-                });
-            }
-            _ => {
-                journey.state = JourneyState::Completed;
-                hand_on.leaves.push(queue);
-            }
-        }
-        if let Some((point, skips)) = self.point {
-            let done = journey.state == JourneyState::Completed;
-            if done || (journey.state == JourneyState::Failed && skips) {
-                hand_on.leaves.push(point);
-            }
-        }
-        hand_on.result = journey_record(&journey);
-        let correlations: Vec<u128> = instance
-            .keys
-            .iter()
-            .map(|key| self.correlation(key))
-            .collect();
-        let finished = ended.is_some();
-        let owned: Vec<InstanceKey> = correlations
-            .iter()
-            .map(|key| InstanceKey {
-                key: *key,
-                instance: instance_id,
-            })
-            .collect();
-        Turn {
-            hand_on,
-            instances: vec![InstanceWrite {
-                record: InstanceRecord {
-                    instance: instance_id,
-                    work_process: self.running.name.clone(),
-                    turns: instance.turns.max(over + 1),
-                    ended: finished,
-                    body: form::instance(&instance),
-                },
-                over,
-            }],
-            keys: if finished { Vec::new() } else { owned.clone() },
-            unkeyed: if finished { owned } else { Vec::new() },
-        }
-    }
-
-    /// The hand-on of `journey`, with what the turn made.
-    fn hand_on(&mut self, journey: &Journey) -> HandOn {
-        let made = std::mem::take(&mut self.made);
-        HandOn {
-            claim: self.claim.clone(),
-            result: journey_record(journey),
-            messages: made
-                .new
-                .iter()
-                .filter_map(|id| made.messages.get(id))
-                .map(message_record)
-                .collect(),
-            next: made.opened.iter().map(journey_record).collect(),
-            leaves: Vec::new(),
-            queued: made.holds,
-            requeued: Vec::new(),
-            failed: None,
-            cleared: Vec::new(),
-            waits: None,
-            kept_for_nanos: None,
-        }
-    }
-
-    /// `work` written Failed with `why`, kept in its queue for an operator.
-    fn fail(&mut self, work: Box<ReceivedWork>, why: &str) -> Turned {
-        self.made = Made::default();
-        let mut journey = work.journey;
-        journey.state = JourneyState::Failed;
-        journey.current_work_process = Some(self.running.name.clone());
-        let mut hand_on = self.hand_on(&journey);
-        hand_on.failed = Some(Failure {
-            queue: self.running.queue,
-            reason: why.to_string(),
-        });
-        match self.runtime.storage.hand_on(&hand_on) {
-            Ok(true) => Turned::Failed(why.to_string()),
-            Ok(false) => Turned::Waits("its claim was another's".to_string()),
-            Err(failed) => Turned::Unwritten(failed.to_string()),
-        }
     }
 }

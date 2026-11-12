@@ -5,7 +5,8 @@
 //! wait:
 //!
 //! - a Message published on a node that sends nothing is sent by the node
-//!   that sends its Send Port, which started first;
+//!   that sends its Send Port, which started first, reading nothing of
+//!   what is due after the wake, which brought it (2026-11-12);
 //! - a client's Messages published on a node that runs no Work Process are
 //!   taken their turns by the node that runs it, and its batch published;
 //! - and a node's own Publications into a queue it sends, claimed in them,
@@ -20,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use persist::storage::XmipStorage;
+use persist::storage::{Watched, XmipStorage};
 use route::Subscriber;
 use xmip_core_runtime::fixture::{Failing, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
@@ -57,6 +58,7 @@ fn a_message_another_node_publishes_is_sent_at_once_by_the_node_sending_its_port
             // Its first scan found nothing; the next is an hour away.
             until(|| sends.send.scans() == 1, "the first scan made");
             let failed = failing.asked_times(Operation::ReadFailed);
+            let due = failing.asked_times(Operation::ReadDue);
             let id = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
                 let carried = carry(runtime, pickup, gate, order(1));
                 assert_eq!(carried.cycle(), ReceiveCycle::Completed);
@@ -66,6 +68,9 @@ fn a_message_another_node_publishes_is_sent_at_once_by_the_node_sending_its_port
             assert_eq!(sends.send.scans(), 1, "sent before any scan came");
             // A wake reads what is due, never the failed Messages.
             assert_eq!(failing.asked_times(Operation::ReadFailed), failed);
+            // What is due came with the wake: no read of it after
+            // (2026-11-12).
+            assert_eq!(failing.asked_times(Operation::ReadDue), due, "no read");
         });
     });
     assert_eq!(took(&taken), ["order 1"]);
@@ -89,7 +94,10 @@ fn a_nodes_own_publications_into_a_queue_it_sends_wake_no_read_of_it() {
                 until(|| sends.send.scans() == 1, "the first scan made");
                 // Its watch waits on the queue before anything is published: a
                 // write before that is found moved, and read, as the wait begins.
-                until(|| node.waiting_on(queue) == 1, "the watch waiting");
+                until(
+                    || node.waiting_on(Watched::Queue(queue)) == 1,
+                    "the watch waiting",
+                );
                 let read = failing.asked_times(Operation::ReadDue);
                 for number in 0..3 {
                     let carried = carry(sends, pickup, gate, order(number));

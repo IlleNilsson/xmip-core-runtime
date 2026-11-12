@@ -33,6 +33,9 @@ pub enum Operation {
     ReadDead,
     Replay,
     WaitQueues,
+    /// What a Message is acted on under its claim, as one request
+    /// (`XmipStorage::read_claimed`); asked as each read it stands for too.
+    ReadClaimed,
 }
 
 /// What a [`Failing`] runs once, the next time an operation is asked,

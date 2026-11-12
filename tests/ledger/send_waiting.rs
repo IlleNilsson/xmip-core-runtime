@@ -20,7 +20,7 @@ use xmip_core_runtime::fixture::{FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::carry;
 use xmip_core_runtime::pool::hardware_threads;
-use xmip_core_runtime::send_step::{Departure, Found, read};
+use xmip_core_runtime::send_step::{Departure, Found, Steps, read};
 
 use super::receive_cycle::{node, on_node, on_runtime};
 use super::send_group::to_both;
@@ -236,6 +236,7 @@ fn a_pass_whose_claim_is_not_surely_held_writes_nothing_and_is_taken_up_again() 
                 durable: None,
                 spent: None,
                 measured: None,
+                steps: Steps::default(),
             };
             dispatching(runtime, |told| {
                 runtime.send.hand(departure);

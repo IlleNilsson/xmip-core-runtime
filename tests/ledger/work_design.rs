@@ -58,7 +58,7 @@ pub(super) fn client() -> String {
 }
 
 /// The cluster's Correlation keyed by the client.
-fn per_client() -> ResolvedSet {
+pub(super) fn per_client() -> ResolvedSet {
     ResolvedSet {
         name: "PerClient".to_string(),
         keys: vec![KeyWord::Context(client())],

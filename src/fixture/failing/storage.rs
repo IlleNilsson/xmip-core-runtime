@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
-    DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord,
-    Position, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Waiter, XmipStorage,
+    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed, DeadEntry, DeadQueue,
+    DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit,
+    MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
+    StreamRecord, Waiter, XmipStorage,
 };
 use xcore::lock::Locked;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
@@ -78,6 +79,26 @@ impl XmipStorage for Failing {
         self.answered(Operation::ReadHeld, asked, answer)
     }
 
+    /// Asked as each read it stands for, failing as any of them is told to,
+    /// and answered as one, as the Storage beneath answers it.
+    fn read_claimed(
+        &self,
+        queue: u128,
+        at: u64,
+        journey: JourneyId,
+    ) -> Result<Claimed, PersistError> {
+        for read in [
+            Operation::ReadHeld,
+            Operation::ReadJourney,
+            Operation::ReadMessage,
+        ] {
+            self.asked(read)?;
+        }
+        let asked = self.asked(Operation::ReadClaimed)?;
+        let answer = self.beneath.read_claimed(queue, at, journey);
+        self.answered(Operation::ReadClaimed, asked, answer)
+    }
+
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {
         let asked = self.asked(Operation::ReadFailed)?;
         let answer = self.beneath.read_failed(queue, from, most);
@@ -99,14 +120,14 @@ impl XmipStorage for Failing {
     fn wait_queues(
         &self,
         seen: &[Position],
-        bound: Duration,
+        wait: (Duration, u32),
         waiter: &Arc<Waiter>,
-    ) -> Result<Vec<Position>, PersistError> {
+    ) -> Result<Vec<Moved>, PersistError> {
         let asked = self.asked(Operation::WaitQueues)?;
         if self.at_once.load(Ordering::SeqCst) {
             return Ok(Vec::new());
         }
-        let answer = self.beneath.wait_queues(seen, bound, waiter);
+        let answer = self.beneath.wait_queues(seen, wait, waiter);
         self.answered(Operation::WaitQueues, asked, answer)
     }
 

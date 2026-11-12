@@ -14,11 +14,14 @@
 //!
 //! What it holds: the delivery across nodes within a millisecond of the
 //! delivery on one node, the medians. The calls the sending node makes only
-//! because another node published it — what is due in its queue, the claim,
-//! and the Message's place, its Journey and its Message read again under
-//! the claim — mostly overlap the publishing node's sync, since the wait is
-//! answered once the Publication is readable, before it is durable; each is
-//! said beside the delivery.
+//! because another node published it — the claim, and the Message's place,
+//! its Journey and its Message read again under the claim, one request —
+//! mostly overlap
+//! the publishing node's sync, since the wait is answered once the
+//! Publication is readable, before it is durable; each is said beside the
+//! delivery. What is due in its queue comes with the wait's answer, so the
+//! sending node reads none of it after a wake (2026-11-12; until then a
+//! round trip of 0.14 ms), which it holds.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -43,14 +46,10 @@ const ROUNDS: usize = 201;
 const HOUR: Duration = Duration::from_secs(3600);
 
 /// The Storage calls the sending node makes only for what another node
-/// published.
-const ACROSS: [Operation; 5] = [
-    Operation::ReadDue,
-    Operation::Claim,
-    Operation::ReadHeld,
-    Operation::ReadJourney,
-    Operation::ReadMessage,
-];
+/// published: the claim, and its place, Journey and Message read under it
+/// as one request (2026-11-12; until then three, and its Stream's record a
+/// fourth).
+const ACROSS: [Operation; 2] = [Operation::Claim, Operation::ReadClaimed];
 
 /// The node sending `Out`, its scan an hour, to a far end noting when it
 /// took each Message.
@@ -134,18 +133,30 @@ fn a_message_another_node_published_is_sent_over_the_wire_within_a_millisecond_o
         (Arc::clone(&sends) as _, Arc::clone(&publishes) as _);
 
     let (sending, took) = sending();
+    let due = Arc::new(Mutex::new(0));
+    let read_due = Arc::clone(&due);
+    let sends_counted = Arc::clone(&sends);
     let [alone, across] = on_node(
         &sends_storage,
         (CHUNK, &onward()),
         sending,
         |node, pickup, gate| {
             dispatching(node, |_| {
-                on_runtime(&publishes_storage, CHUNK, |publisher, by, at| {
+                until(|| node.send.scans() == 1, "the first scan made");
+                let before = sends_counted.asked_times(Operation::ReadDue);
+                let carried = on_runtime(&publishes_storage, CHUNK, |publisher, by, at| {
                     carried((node, pickup, gate), (publisher, by, at), &took)
-                })
+                });
+                *read_due.locked() = sends_counted.asked_times(Operation::ReadDue) - before;
+                carried
             })
             .0
         },
+    );
+    assert_eq!(
+        *due.locked(),
+        0,
+        "what is due came with each wake, never read after it"
     );
     let own = medians(
         &sends,
