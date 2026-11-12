@@ -66,7 +66,9 @@
 //! its place and ownership given back on every path, the dispatching going
 //! on; `work_bounded.rs` turns admitted under a place in the Work pool, each
 //! Work Process its share, a queue read a page a round, in memory a page
-//! bounds;
+//! bounds; `work_sequenced.rs` a turn of a Work Process naming a Correlation
+//! that fails — a thrown error, a refusal, a panic — letting the next of its
+//! key go on under `skip` and keeping it waiting under `block`;
 //! `woken.rs` a Journey another node published taken up at once, by the
 //! send step and by the Work Process step, neither waiting for its scan,
 //! and what is due coming with the wake; `woken_behind.rs` a Journey
@@ -118,6 +120,7 @@ mod work_debatch;
 mod work_design;
 mod work_panicked;
 mod work_process;
+mod work_sequenced;
 mod work_turning;
 
 use std::path::{Path, PathBuf};

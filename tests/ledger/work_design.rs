@@ -1,6 +1,6 @@
 //! The Work Processes its tests run (`work_process.rs`, `work_debatch.rs`,
-//! `woken.rs`, `woken_behind.rs`, `work_panicked.rs`, `work_bounded.rs`)
-//! and the module's timing program (`tests/measured`) measures: BPMN 2.0
+//! `woken.rs`, `woken_behind.rs`, `work_panicked.rs`, `work_bounded.rs`,
+//! `work_sequenced.rs`) and the module's timing program (`tests/measured`) measures: BPMN 2.0
 //! designs compiled to their programs, the node they run on, how a client's
 //! Messages are routed and carried into them, and their batches read back
 //! from the Ledger. What those tests turn with is `work_turning.rs`.

@@ -242,18 +242,7 @@ fn written(
     // Its places in its Send Port's and its Send Locations' sequences are
     // let go once it is sent, or once it failed, each where a failure lets
     // the rest pass.
-    let leaves_point: Vec<u128> = departure
-        .work
-        .journey
-        .sequences
-        .iter()
-        .filter(|sequenced| match state {
-            JourneyState::Completed => true,
-            JourneyState::Failed => sequenced.skips,
-            _ => false,
-        })
-        .map(|sequenced| sequenced.queue)
-        .collect();
+    let leaves_point = crate::sequence::let_go(&journey);
     let hand_on = HandOn {
         claim: departure.claim.clone(),
         result: crate::ledger::journey_record(&journey),
@@ -314,9 +303,9 @@ pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
 }
 
 /// Whether `departure` may be sent now: its Stream heads every sequence it
-/// holds end to end, its delivery its Send Port Group's, and it heads every sequence of its Send Port and of
-/// the Send Locations it may leave by (`crate::sequence`), told it in the
-/// write that brought it to the Port.
+/// holds end to end, its delivery its Send Port Group's, and it heads every
+/// sequence of its Send Port and of the Send Locations it may leave by
+/// (`crate::sequence`), told it in the write that brought it to the Port.
 fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
     let storage = runtime.storage.as_ref();
     if !crate::sequence::stream_heads(storage, &departure.work.journey)? {

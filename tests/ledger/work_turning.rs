@@ -1,12 +1,13 @@
 //! What the Work Process tests turn with (`woken.rs`, `woken_behind.rs`,
-//! `work_panicked.rs`, `work_bounded.rs`): a flow that records or panics
-//! before each advance, units that hold their calls at a gate or panic, the
-//! node whose Work pool a test counts — its turns on the dispatching thread
-//! where a Work Process names a Correlation — and the Work Process step
-//! dispatching while a test runs, closed after.
+//! `work_panicked.rs`, `work_bounded.rs`, `work_sequenced.rs`): a flow that
+//! records, refuses or panics before each advance, units that hold their
+//! calls at a gate, panic, or throw once, the node whose Work pool a test
+//! counts — its turns on the dispatching thread where a Work Process names
+//! a Correlation — and the Work Process step dispatching while a test runs,
+//! closed after.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use message::Message;
@@ -28,8 +29,8 @@ use super::work_design::{compiled, per_client, sending_nothing};
 pub(super) const HOUR: Duration = Duration::from_secs(3600);
 
 /// What a [`Hooked`] flow runs before each advance: a test's record of it,
-/// or a panic.
-pub(super) type Before = Box<dyn Fn() + Send + Sync>;
+/// a refusal of the advance, or a panic.
+pub(super) type Before = Box<dyn Fn() -> Result<(), Refused> + Send + Sync>;
 
 /// A compiled flow that runs its `before` ahead of each advance.
 pub(super) struct Hooked {
@@ -58,7 +59,7 @@ impl Flow for Hooked {
         event: &Event,
         now: i128,
     ) -> Result<Vec<Act>, Refused> {
-        (self.before)();
+        (self.before)()?;
         self.flow.advance(instance, event, now)
     }
 }
@@ -101,6 +102,35 @@ impl WorkUnits for Panicking {
     }
 }
 
+/// Units whose first call throws an error, and whose every later call
+/// answers its Message assigned to a new one.
+#[derive(Default)]
+pub(super) struct ThrowingOnce {
+    thrown: AtomicBool,
+}
+
+impl WorkUnits for ThrowingOnce {
+    fn call(
+        &self,
+        _: &Call,
+        message: &Message,
+        ids: &dyn IdGenerator,
+    ) -> Result<Vec<Message>, Thrown> {
+        if !self.thrown.swap(true, Ordering::AcqRel) {
+            return Err(Thrown {
+                code: "refused".to_string(),
+                reason: "a unit that throws".to_string(),
+            });
+        }
+        let id = MessageId::new(ids.next_u128());
+        Ok(vec![message.assigned(id, message.context().clone())])
+    }
+
+    fn splitter(&self, call: &Call) -> Result<Box<dyn Split>, Thrown> {
+        NoUnits.splitter(call)
+    }
+}
+
 /// A node that sends nothing, its Work pool one thread a hardware thread
 /// and its scan an hour: what holds its turns is what a test counts.
 pub(super) fn counted_node() -> Sender {
@@ -115,14 +145,15 @@ pub(super) fn counted_node() -> Sender {
 }
 
 /// `sender` with the Work Process `name` naming the cluster's Correlation
-/// by client, a failure letting its sequence go on: its turns are taken on
-/// the dispatching thread, in its queue's order.
-pub(super) fn sequenced(mut sender: Sender, name: &str) -> Sender {
+/// by client, a failure blocking its sequence or letting it go on as
+/// `on_failure` says: its turns are taken on the dispatching thread, in its
+/// queue's order.
+pub(super) fn sequenced(mut sender: Sender, name: &str, on_failure: OnFailure) -> Sender {
     sender.sends.points.push(Point {
         kind: PointKind::WorkProcess,
         name: name.to_string(),
         set: per_client(),
-        on_failure: OnFailure::Skip,
+        on_failure,
     });
     sender
 }

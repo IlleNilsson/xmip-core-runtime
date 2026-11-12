@@ -86,19 +86,20 @@ impl SendStep {
             _ => format!("The Message of the Journey {id} dismissed by {who}; its history is kept"),
         };
         let retry = act == Act::Retry;
-        let sequenced: Vec<u128> = kept.sequences.iter().map(|s| s.queue).collect();
+        let after = acted(kept, act, &said);
         let hand_on = HandOn {
             claim: claim.clone(),
-            result: journey_record(&acted(kept, act, &said)),
+            result: journey_record(&after),
             messages: Vec::new(),
             next: Vec::new(),
-            // Dismissed, it lets go of its queue and of its place in its Send
-            // Port's sequence, so the rest may pass.
-            leaves: if retry {
-                Vec::new()
-            } else {
-                std::iter::once(queue).chain(sequenced).collect()
-            },
+            // Dismissed, it lets go of its queue and of its places in its
+            // Send Port's sequences, so the rest may pass; retried, of
+            // neither (`crate::sequence::let_go`).
+            leaves: (!retry)
+                .then_some(queue)
+                .into_iter()
+                .chain(crate::sequence::let_go(&after))
+                .collect(),
             queued: Vec::new(),
             requeued: if retry && !blocks {
                 vec![queue]

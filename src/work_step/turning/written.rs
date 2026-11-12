@@ -1,8 +1,15 @@
 //! A turn written (`super`): the Journey, what the turn made, the Instance
-//! and its correlation keys, in one hand-on — or the Message written Failed,
-//! kept in its queue for an operator, by the one failure writer
-//! ([`failed`]): a flow's uncaught error, a turn that could not be taken,
-//! and a turn that panicked ([`panicked`]; ADR-0066, amendment 2026-11-12).
+//! and its correlation keys, in one hand-on — a flow's error no scope
+//! caught among it, written Failed — or the Message alone written Failed,
+//! nothing the turn made with it, kept in its queue for an operator
+//! ([`failed`]): a turn that could not be taken, and a turn that panicked
+//! ([`panicked`]; ADR-0066, amendment 2026-11-12).
+//!
+//! **Either way the Message lets go of its place in its Work Process's
+//! sequence as the one rule says** (`crate::sequence::let_go`): completed,
+//! or failed where the Work Process's Correlation says `on_failure =
+//! "skip"`, so the next Message of its key is taken its turn; failed where
+//! it blocks, it keeps the place until an operator acts.
 
 use journey::{Journey, JourneyState};
 use persist::storage::{
@@ -16,6 +23,7 @@ use super::{Taking, Turned};
 use crate::generation::ReceivedWork;
 use crate::ledger::{journey_record, message_record};
 use crate::message_path::Runtime;
+use crate::sequence::let_go;
 
 impl Taking<'_> {
     /// The turn as one write: the Journey, what was made, the Instance and
@@ -55,12 +63,7 @@ impl Taking<'_> {
                 hand_on.leaves.push(queue);
             }
         }
-        if let Some((point, skips)) = self.point {
-            let done = journey.state == JourneyState::Completed;
-            if done || (journey.state == JourneyState::Failed && skips) {
-                hand_on.leaves.push(point);
-            }
-        }
+        hand_on.leaves.extend(let_go(&journey));
         hand_on.result = journey_record(&journey);
         let correlations: Vec<u128> = instance
             .keys
@@ -140,6 +143,7 @@ fn failed(
         queue: running.queue,
         reason: why.to_string(),
     });
+    hand_on.leaves = let_go(&journey);
     match runtime.storage.hand_on(&hand_on) {
         Ok(true) => Turned::Failed(why.to_string()),
         Ok(false) => Turned::Waits {

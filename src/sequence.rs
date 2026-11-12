@@ -26,7 +26,9 @@
 //!   the place is the Stream's, held by its origin — the Message it was
 //!   received as — until the last Journey born from it ends, which Xmip
 //!   Storage counts (`persist::storage`'s origin). A Work Process's and a
-//!   Send Port's is the Message's, held while it is at that point.
+//!   Send Port's is the Message's, held while it is at that point, and let
+//!   go of as it fails where the point's `on_failure` is `skip`, however
+//!   it failed ([`let_go`]).
 //! - **A Send Port Group's is its delivery's** (`group`): held for the
 //!   Messages of the member Journeys one Publication opens through the
 //!   Group until every member has succeeded or failed, which Xmip Storage counts too.
@@ -36,12 +38,14 @@
 mod configured;
 mod group;
 mod late;
+mod let_go;
 
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
 pub use group::{delivered, group_heads, group_placed, grouped, waits_for_group};
 use journey::{Journey, Received, Sequenced};
 pub use late::{Placing, heading, take_late, waits_for_places};
+pub use let_go::{let_go, lets_go};
 use xcore::lock::Locked;
 
 use crate::ledger::Opened;

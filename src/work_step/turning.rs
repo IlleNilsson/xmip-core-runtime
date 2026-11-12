@@ -6,9 +6,11 @@
 //! everything after its claim is caught at the turn's boundary — the flow,
 //! a unit's call or split, the runtime's own acts and the turn's write —
 //! and the Journey written Failed with what the panic said, through the
-//! write a flow's uncaught error takes (`written::panicked`), or its claim
-//! given back where that cannot be written. The write is made after the
-//! catch, never while unwinding.
+//! write a turn that could not be taken takes (`written::panicked`), or its
+//! claim given back where that cannot be written. The write is made after
+//! the catch, never while unwinding. However a turn fails, its place in its
+//! Work Process's sequence is let go of where the Correlation skips a
+//! failure (`crate::sequence::let_go`).
 
 use std::panic::{self, AssertUnwindSafe};
 
@@ -122,13 +124,8 @@ fn claimed(
     }
     // A Message bound for a Work Process holds one place at it: the Work
     // Process's own sequence, where it names a set.
-    let point = work
-        .journey
-        .sequences
-        .first()
-        .map(|sequenced| (sequenced.queue, sequenced.skips));
-    if let Some((queue, _)) = point {
-        match waits_on(runtime.storage.as_ref(), queue, id.value()) {
+    if let Some(sequenced) = work.journey.sequences.first() {
+        match waits_on(runtime.storage.as_ref(), sequenced.queue, id.value()) {
             Ok(None) => {}
             Ok(Some(head)) => {
                 let why = "it waits behind another at its Work Process".to_string();
@@ -144,7 +141,6 @@ fn claimed(
         claim: claim.clone(),
         body: &held.hold.body,
         made: Made::default(),
-        point,
         on: Vec::new(),
     };
     match taking.take(work) {
@@ -172,9 +168,6 @@ struct Taking<'a> {
     claim: Claim,
     body: &'a [u8],
     made: Made,
-    /// Its place in its Work Process's sequence, where the Work Process names
-    /// a Correlation, and whether a failure lets it go.
-    point: Option<(u128, bool)>,
     /// What it waits on where its Instance does not take it, or its write
     /// finds the Instance moved: the Instance as it read it, and — where no
     /// key named one — each key it correlates by, held by no Instance.

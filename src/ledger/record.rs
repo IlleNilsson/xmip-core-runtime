@@ -7,7 +7,7 @@
 //! context, an audit record's properties — is in the body alone.
 
 use context::property::PARTY;
-use journey::{Journey, JourneyState};
+use journey::Journey;
 use message::Message;
 use observe::Scope;
 use persist::storage::{
@@ -15,6 +15,8 @@ use persist::storage::{
 };
 use xaudit::audit_record::AuditRecord;
 use xcore::StreamId;
+
+use crate::sequence::lets_go;
 
 /// A Journey as Xmip Storage keeps it: its form, and its state, the Journey
 /// it came from and what caused it, its depth, the Work Process it is in,
@@ -40,12 +42,15 @@ pub(crate) fn journey_record(journey: &Journey) -> JourneyRecord {
                 .last()
                 .map(|held| held.message_id.value()),
             origin: held(journey).map(|received| received.origin),
-            open: held(journey).is_some_and(|received| open(journey.state, received.skips)),
+            // Whether it still keeps its Stream's places end to end, or its
+            // delivery's in its Send Port Group's sequence: until it lets
+            // them go as every place is let go (`crate::sequence::lets_go`).
+            open: held(journey).is_some_and(|received| !lets_go(journey.state, received.skips)),
             group_delivery: journey.group.as_ref().map(|group| group.delivery),
             group_open: journey
                 .group
                 .as_ref()
-                .is_some_and(|group| open(journey.state, group.skips)),
+                .is_some_and(|group| !lets_go(journey.state, group.skips)),
             ..JourneyFacts::default()
         },
     }
@@ -56,19 +61,6 @@ fn held(journey: &Journey) -> Option<&journey::Received> {
     journey
         .received()
         .filter(|received| !received.sequences.is_empty())
-}
-
-/// Whether a Journey in `state` still keeps its Stream's places in the
-/// sequences it holds end to end, or its delivery's in its Send Port
-/// Group's: until it is completed or dismissed, and,
-/// where its sequences block on a failure, while it waits failed for an
-/// operator (`crate::sequence`).
-const fn open(state: JourneyState, skips: bool) -> bool {
-    match state {
-        JourneyState::Completed | JourneyState::Dismissed => false,
-        JourneyState::Failed => !skips,
-        _ => true,
-    }
 }
 
 /// A Message as Xmip Storage keeps it: its form, the Message it came from,
