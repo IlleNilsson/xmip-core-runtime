@@ -20,8 +20,11 @@
 //!
 //! **Nothing waits on a thread.** An Instance waiting for a Message or a
 //! time is a record in the Ledger. A Message of its key waits in the
-//! queue, taken up by whichever node scans first; a timer is the due time
-//! of the Message whose turn started it, taken up when due.
+//! queue, taken up by whichever node reads it first — at once where
+//! another node put it there, the step waiting on its queues in Xmip
+//! Storage (`crate::queue_watch`; open problem 46, built 2026-11-12) — and
+//! a timer is the due time of the Message whose turn started it, taken up
+//! when due.
 //!
 //! **The engine never knows the design.** A unit is opened as
 //! `process::Flow`, linked or loaded through the C ABI
@@ -40,7 +43,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use xcore::lock::Locked;
 
-use persist::storage::XmipStorage;
+use persist::storage::{Waiter, XmipStorage};
 use xaudit::program_audit::ProgramAudit;
 use xcore::JourneyId;
 use xcore::wake::Wake;
@@ -60,7 +63,8 @@ pub use turning::Turned;
 pub const WORK_LEASE: Duration = Duration::from_secs(30);
 
 /// How often the queues of the Work Processes this node runs are read for
-/// what no live claim holds, and for a timer due.
+/// what no live claim holds, and for a timer due, where `[tuning]
+/// work_scan` does not say: every second, the bound on one wait on them.
 pub const WORK_SCAN: Duration = Duration::from_secs(1);
 
 /// The node's Work Process step.
@@ -75,6 +79,9 @@ pub struct WorkStep {
     running: Vec<Running>,
     state: Mutex<State>,
     wake: Wake,
+    /// What its watch on its queues waits as, stopped as it closes
+    /// (`crate::queue_watch`).
+    waiter: Arc<Waiter>,
 }
 
 #[derive(Default)]
@@ -85,17 +92,23 @@ struct State {
     asked: Vec<u128>,
     /// When each queue next has a timer due, as its last read showed.
     due: Vec<(u128, Instant)>,
+    /// How many turns this node wrote: what tells a turn that waited
+    /// whether another was written while it was held.
+    written: u64,
+    /// How many scans of every queue it made.
+    scans: u64,
     closed: bool,
 }
 
 impl WorkStep {
     /// The step of the node at `node` in the cluster at `cluster`, over
-    /// `storage`, running `running` on a pool bounded by `limits`.
+    /// `storage`, running `running` on a pool bounded by `limits`, its
+    /// queues read every `scan` as well as when another node writes to one.
     #[must_use]
     pub fn new(
         (cluster, node): (&str, &str),
         storage: Arc<dyn XmipStorage>,
-        limits: Limits,
+        (limits, scan): (Limits, Duration),
         audit: Option<ProgramAudit>,
         running: Vec<Running>,
     ) -> Self {
@@ -104,12 +117,13 @@ impl WorkStep {
             node: node.to_string(),
             storage,
             lease: WORK_LEASE,
-            scan: WORK_SCAN,
+            scan,
             limits,
             audit,
             running,
             state: Mutex::new(State::default()),
             wake: Wake::new(),
+            waiter: Arc::new(Waiter::of(node)),
         }
     }
 
@@ -153,6 +167,7 @@ impl WorkStep {
     /// Stop taking work; what is in a turn finishes it.
     pub fn close(&self) {
         self.lock().closed = true;
+        self.waiter.stop();
         self.wake.notify_all();
     }
 
@@ -160,18 +175,28 @@ impl WorkStep {
         self.state.locked()
     }
 
-    /// Whether this node holds `journey` in a turn now; `take` it where it
-    /// does not.
-    fn own(&self, journey: JourneyId) -> bool {
-        self.lock().owned.insert(journey)
+    /// `journey` taken for a turn on this node, and how many turns it had
+    /// written as it was; `None` where it holds it in one already.
+    fn own(&self, journey: JourneyId) -> Option<u64> {
+        let mut state = self.lock();
+        state.owned.insert(journey).then_some(state.written)
     }
 
-    fn disown(&self, journey: JourneyId, queue: u128, again: bool) {
+    /// `journey` let go of after its turn, `done` where it was written,
+    /// owned since this node had written `since` turns.
+    fn disown(&self, journey: JourneyId, queue: u128, (done, since): (bool, u64)) {
         let mut state = self.lock();
         state.owned.remove(&journey);
-        // After a written turn the next of its queue may go on now; after
-        // one that waits, a scan finds it again, never a loop of reads.
-        if again && !state.asked.contains(&queue) {
+        if done {
+            state.written += 1;
+        }
+        // After a written turn the next of its queue may go on now. One
+        // that waits is read again only where another turn was written
+        // while it was held — what it waited for may have moved on, and the
+        // read that turn asked passed over it while held here (found
+        // 2026-11-12, once a scan no longer came every second); else the
+        // next written turn's read finds it: never a loop of reads.
+        if (done || state.written != since) && !state.asked.contains(&queue) {
             state.asked.push(queue);
         }
         drop(state);
@@ -188,5 +213,15 @@ impl WorkStep {
     #[must_use]
     pub fn cluster(&self) -> &str {
         &self.cluster
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl WorkStep {
+    /// How many scans of every queue it made: what a test waits for before
+    /// another node publishes, so only a wake can take up what it publishes.
+    #[must_use]
+    pub fn scans(&self) -> u64 {
+        self.lock().scans
     }
 }

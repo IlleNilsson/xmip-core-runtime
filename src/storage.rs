@@ -619,6 +619,7 @@ mod tests {
              node_name = \"{node}\"\ndata = \"state-{place}\"\n\
              [store]\nkey_store = \"xmip-core-secret-memory\"\n\
              [tuning]\nstorage_silence = \"300ms\"\nstorage_beat = \"20ms\"\n\
+             storage_wait = \"20ms\"\n\
              [storage]\nnodes = [{}]\n{listen}certificate = \"tls/node.pem\"\n\
              key = \"tls/node.key\"\nanchors = \"tls/anchors.pem\"\n",
             cluster.name,
@@ -683,6 +684,16 @@ mod tests {
             "{}",
             said.2
         );
+
+        // The primary holds no wait on queues longer than its `[tuning]
+        // storage_wait`, whatever bound the node waiting asks.
+        let waiter = Arc::new(persist::storage::Waiter::new());
+        let seen = [persist::storage::Position { queue: 9, next: 0 }];
+        let held = std::time::Instant::now();
+        let long = std::time::Duration::from_secs(30);
+        let moved = reaching.storage().wait_queues(&seen, long, &waiter);
+        assert_eq!(moved.expect("answered"), []);
+        assert!(held.elapsed() < long / 3, "held {:?}", held.elapsed());
 
         // No witness: the primary gone is waited for, never replaced
         // (ADR-0056, amendment 2026-11-08).

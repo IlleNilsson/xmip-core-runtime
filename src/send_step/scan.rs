@@ -40,9 +40,9 @@ use crate::message_path::Runtime;
 /// from it.
 pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
-    runtime.send.reading(queue);
+    let began = runtime.send.reading(queue);
     let (found, whole) = scanning(runtime, (to, queue), &mut waits);
-    runtime.send.waited(queue, waits, whole);
+    runtime.send.waited(queue, (waits, began), whole);
     found
 }
 

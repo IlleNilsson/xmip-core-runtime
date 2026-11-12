@@ -41,6 +41,11 @@
 //! since that read began noted, and wakes for it at that time, so one far
 //! end that fails cannot fill the pool every Port shares.
 //!
+//! **Another node's Publication wakes it** (open problem 46, built
+//! 2026-11-12): the step waits on the queues it sends in Xmip Storage, and
+//! reads each one the moment a Publication, a hand-on, a turn or a Replay
+//! on any node puts a Message in it (`crate::queue_watch`).
+//!
 //! **Recovery is a scan.** As the node starts, and every `[tuning]
 //! send_scan` after, each queue this node sends is read oldest first, and
 //! every Message in it no live claim holds, and due, is claimed and sent:
@@ -83,7 +88,7 @@ use xcore::lock::Locked;
 
 use context::IdentityFacts;
 use journey::Journey;
-use persist::storage::{Claim, Durable, Hold, XmipStorage};
+use persist::storage::{Claim, Durable, Hold, Waiter, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::spent::Spent;
@@ -206,6 +211,9 @@ pub struct SendStep {
     /// The Streams its departures read now, each chunk read once for every
     /// departure of a Stream keeping up.
     share: StreamShare,
+    /// What its watch on its queues waits as, stopped as it closes
+    /// (`crate::queue_watch`).
+    waiter: Arc<Waiter>,
 }
 
 #[derive(Default)]
@@ -238,6 +246,12 @@ struct State {
     ports: BTreeMap<String, bool>,
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
+    /// Queues another node's write moved, to read now: what is due in each,
+    /// never its failed Messages, which no such write moves
+    /// (`crate::queue_watch`).
+    woken: Vec<u128>,
+    /// How many scans of every queue it made.
+    scans: u64,
     figures: BTreeMap<String, PortFigures>,
     /// By Send Port, how many failed Messages wait in its queue and the
     /// oldest of them, at most its `window`: read from the queue's
@@ -275,6 +289,9 @@ impl SendStep {
             audit,
             state: Mutex::new(State::default()),
             wake: Wake::new(),
+            // Its own: a Publication this node claims every Message of in
+            // the same write does not wake it (`persist::storage::Waiter`).
+            waiter: Arc::new(Waiter::of(node)),
         }
     }
 
@@ -407,6 +424,17 @@ impl SendStep {
         self.wake.notify_all();
     }
 
+    /// Read what is due in `queue` now: a write, on any node, put a Message
+    /// in it (`crate::queue_watch`).
+    pub(crate) fn woken(&self, queue: u128) {
+        let mut state = self.lock();
+        if !state.woken.contains(&queue) {
+            state.woken.push(queue);
+        }
+        drop(state);
+        self.wake.notify_all();
+    }
+
     /// Read every queue now: a Stream ahead in a sequence has ended.
     pub fn rescan(&self) {
         self.lock().rescan = true;
@@ -418,6 +446,7 @@ impl SendStep {
     /// (ADR-0018 clause 12): it waits in its queue, its due time there.
     pub fn close(&self) {
         self.lock().closed = true;
+        self.waiter.stop();
         self.wake.notify_all();
     }
 

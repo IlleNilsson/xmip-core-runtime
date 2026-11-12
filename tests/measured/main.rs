@@ -21,7 +21,11 @@
 //!   time;
 //! - `directory_watch.rs`: a dropped watch ends its thread at once;
 //! - `sequenced_cost.rs` and `work_turn.rs`: what a hop's sequence check
-//!   and a Work Process's turn cost, held in a release build.
+//!   and a Work Process's turn cost, held in a release build;
+//! - `woken.rs`: a Message another node published is sent over the wire,
+//!   through one Storage node on `RocksDB`, within a millisecond of one the
+//!   sending node published itself, each Storage call of the sending node
+//!   timed (`fixture::Failing::taken`).
 //!
 //! What it stands up is the other test programs' own, shared, not copied:
 //! `tests/running/node.rs`, `tests/plane/certified.rs`, `endpoint.rs` and
@@ -62,6 +66,7 @@ mod plane;
 mod relayed;
 mod running;
 mod sequenced_cost;
+mod woken;
 mod work_turn;
 
 use said::say;

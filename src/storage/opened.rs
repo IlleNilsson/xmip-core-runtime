@@ -89,6 +89,7 @@ impl Planned {
                         .map_err(|problem| did_not_open(problem.to_string()))?;
                         let server = StorageServer::several(&node, bound, &serving.identity)
                             .map_err(|problem| refused(problem.to_string()))?;
+                        server.hold_waits(tuning.storage_wait);
                         node.start(timings.silence + timings.timeout)
                             .map_err(|problem| refused(problem.to_string()))?;
                         (node.reaching(), Behind::Several(node), Some(server))
@@ -101,10 +102,16 @@ impl Planned {
                         let versions = *opened.versions();
                         let opened: Arc<dyn XmipStorage> = Arc::new(opened);
                         let server = match (serving, bound) {
-                            (Some(serving), Some(bound)) => Some(
-                                StorageServer::start(Arc::clone(&opened), bound, &serving.identity)
-                                    .map_err(|problem| refused(problem.to_string()))?,
-                            ),
+                            (Some(serving), Some(bound)) => {
+                                let server = StorageServer::start(
+                                    Arc::clone(&opened),
+                                    bound,
+                                    &serving.identity,
+                                )
+                                .map_err(|problem| refused(problem.to_string()))?;
+                                server.hold_waits(tuning.storage_wait);
+                                Some(server)
+                            }
                             _ => None,
                         };
                         let said = alone(&at, &key_store, &versions);

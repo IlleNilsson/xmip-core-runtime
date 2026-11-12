@@ -219,7 +219,10 @@ pub fn work_step(storage: &Arc<dyn XmipStorage>) -> &'static crate::work_step::W
     Box::leak(Box::new(crate::work_step::WorkStep::new(
         (&cluster.scope(), &cluster.node_scope(0)),
         Arc::clone(storage),
-        crate::pool::Limits::per_hardware_thread(1, std::time::Duration::from_secs(60)),
+        (
+            crate::pool::Limits::per_hardware_thread(1, std::time::Duration::from_secs(60)),
+            crate::work_step::WORK_SCAN,
+        ),
         None,
         Vec::new(),
     )))

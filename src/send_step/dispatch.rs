@@ -1,6 +1,7 @@
 //! The send step's dispatching: what is handed to it, and what a scan of
-//! its queues finds — a queue read again when its earliest retry is due —
-//! each sent on the Send pool; and the claims of work in flight renewed.
+//! its queues finds — a queue read again when its earliest retry is due,
+//! and the moment another node puts a Message in it — each sent on the Send
+//! pool; and the claims of work in flight renewed.
 
 use std::thread::Scope;
 use std::time::Instant;
@@ -8,7 +9,6 @@ use std::time::Instant;
 use route::Subscriber;
 use xcore::JourneyId;
 
-use super::due::Due;
 use super::pass::{Ended, abandoned, blocks, send};
 use super::scan::{self, Ready, Unclaimed, scan};
 use super::{Departure, SendStep, Settled};
@@ -45,9 +45,22 @@ pub fn dispatch<'scope, 'env>(
         .map(|(to, _)| (to.name().to_string(), blocks(runtime, to)))
         .collect();
     scope.spawn(move || step.renewing());
+    // Each queue another node puts a Message in, read at once; the scan of
+    // them all stays, at its interval, the bound on one wait.
+    let queues: Vec<u128> = served.iter().map(|(_, queue)| *queue).collect();
+    scope.spawn(move || {
+        let woken = |queue| step.woken(queue);
+        crate::queue_watch::watch(
+            step.storage.as_ref(),
+            &queues,
+            step.scan,
+            &step.waiter,
+            &woken,
+        );
+    });
     let mut next_scan = Instant::now();
     loop {
-        let (closed, handed, asked) = step.next(next_scan);
+        let (closed, handed, (asked, woken)) = step.next(next_scan);
         for departure in handed {
             run(&pool, runtime, settled, departure);
         }
@@ -57,11 +70,17 @@ pub fn dispatch<'scope, 'env>(
         let now = Instant::now();
         let all = next_scan <= now;
         for (to, queue) in &served {
-            if !all && !asked.contains(queue) {
+            let failed = all || asked.contains(queue);
+            if !failed && !woken.contains(queue) {
                 continue;
             }
-            // Its failed Messages as Xmip Storage counts them, room or none.
-            step.read_failed((to.name(), *queue), false);
+            // Its failed Messages as Xmip Storage counts them, room or none;
+            // not where only a write that put a Message in it woke it, which
+            // fails none: an operator's Retry on another node, which clears
+            // one, is read at the next scan, as before 2026-11-12.
+            if failed {
+                step.read_failed((to.name(), *queue), false);
+            }
             // No room: read again the moment a place frees, not at the
             // next scan.
             if step.room() == 0 {
@@ -79,15 +98,20 @@ pub fn dispatch<'scope, 'env>(
         }
         if all {
             next_scan = now + step.scan;
+            step.lock().scans += 1;
         }
     }
 }
 
+/// Which queues to read: each wholly, and each another node's write woke.
+pub(super) type ToRead = (Vec<u128>, Vec<u128>);
+
 impl SendStep {
-    /// Wait for something to do — handed, asked, a queue's retry due,
-    /// closed — or `until`: whether the step is closed, what was handed and
-    /// which queues are to be read, a queue whose retry is due among them.
-    pub(super) fn next(&self, until: Instant) -> (bool, Vec<Departure>, Vec<u128>) {
+    /// Wait for something to do — handed, asked, woken, a queue's retry
+    /// due, closed — or `until`: whether the step is closed, what was handed
+    /// and which queues are to be read ([`ToRead`]), a queue whose retry is
+    /// due among those read wholly.
+    pub(super) fn next(&self, until: Instant) -> (bool, Vec<Departure>, ToRead) {
         let mut state = self.lock();
         loop {
             let now = Instant::now();
@@ -96,6 +120,7 @@ impl SendStep {
                 || state.rescan
                 || !state.handed.is_empty()
                 || !state.asked.is_empty()
+                || !state.woken.is_empty()
                 || wakes <= now;
             if ready {
                 break;
@@ -117,7 +142,8 @@ impl SendStep {
                 }
             }
         }
-        (state.closed, handed, asked)
+        let woken = std::mem::take(&mut state.woken);
+        (state.closed, handed, (asked, woken))
     }
 
     /// How `departure`'s pass ended, settled: counted, or let go of — a
@@ -133,13 +159,12 @@ impl SendStep {
                 // Its backoff from now, once Xmip Storage took its hand-on:
                 // never before Xmip Storage's own due time, and kept across
                 // a read of its queue under way, which may have passed its
-                // place before the hand-on landed.
-                let port = departure.to.name();
-                state
-                    .due
-                    .entry(departure.queue)
-                    .or_insert_with(|| Due::of(port))
-                    .noted(Instant::now() + *after);
+                // place before the hand-on landed; and how many wait read
+                // after it, so it is counted once.
+                drop(state);
+                let at = Instant::now() + *after;
+                self.noted((departure.to.name(), departure.queue), at);
+                state = self.lock();
             }
             Ended::Behind => {
                 drop(state);
