@@ -11,10 +11,12 @@
 //! it is taken, each Storage call on its own: what is due, the claim, its
 //! place, Journey and Message with its Stream's record — one request since
 //! 2026-11-12 — its sequences, and the hand-on; and around them the stages:
-//! the wake reaching the read of its queue, a send thread taking it up, its
-//! Publication made durable, and the send itself — its transform, its
-//! Stream's chunks, its transport, and the far end's file made durable,
-//! after the far end can see it.
+//! the wake reaching the read of its queue, a send thread taking it up,
+//! what it is sent under made durable — its Publication handed in memory,
+//! its claim taken from its queue, the claim answered readable and its
+//! sync waited on apart (ADR-0018, amendment 2026-11-12) — and the send
+//! itself — its transform, its Stream's chunks, its transport, and the far
+//! end's file made durable, after the far end can see it.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -33,6 +35,8 @@ pub enum Step {
     Due,
     /// From being found or handed to a send thread taking it up.
     Pool,
+    /// The claim's answer, once readable: its sync is
+    /// [`Step::Durable`]'s (ADR-0018, amendment 2026-11-12).
     Claim,
     /// The read under its claim of its place in its queue, its Journey and
     /// its Message with its Stream's record, as one request, and what of
@@ -40,8 +44,10 @@ pub enum Step {
     Read,
     /// The reads of whether it heads its sequences.
     Sequences,
-    /// The wait for its Publication to be durable, where it was handed
-    /// before the Ledger synced it.
+    /// The wait for what it is sent under to be durable in the Ledger,
+    /// beyond the send's own work meanwhile: its Publication, where it was
+    /// handed before the Ledger synced it, or its claim, where it was taken
+    /// ahead of its sync.
     Durable,
     /// The send apart from that wait: its transform, its Stream's chunks,
     /// its transport.
@@ -73,7 +79,7 @@ impl Step {
             Self::Claim => "the claim",
             Self::Read => "its place, Journey and Message",
             Self::Sequences => "its sequences",
-            Self::Durable => "its Publication durable",
+            Self::Durable => "durable in the Ledger",
             Self::Send => "the send",
             Self::HandOn => "the hand-on",
         }
@@ -206,7 +212,7 @@ mod tests {
             kept.words(),
             "of its latest 3 taken from its queue, the median of each step here: the claim \
              2.00 ms, the send 10.00 ms; of its latest 1 handed in memory, the median of each \
-             step here: its Publication durable 1.50 ms"
+             step here: durable in the Ledger 1.50 ms"
         );
         // Only the latest kept: the timed three gone, nothing said of them.
         for _ in 0..STEPS_KEPT {

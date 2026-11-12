@@ -44,7 +44,10 @@ pub enum Ended {
     Lost(Vec<Departed>),
     /// Nothing was tried: the claim was not surely this node's when the
     /// pass began — its last confirmation older than a lease — though no
-    /// renewal found it another's. Nothing is written, so the pass leaves no
+    /// renewal found it another's; or what it is sent under, its Publication
+    /// or its claim, was never made durable, and the send its far end would
+    /// have seen was abandoned (ADR-0018, amendment 2026-11-12). Nothing is
+    /// written, so the pass leaves no
     /// entry and counts no try; the claim is given back and the queue read
     /// again, where a scan claims it afresh. Until 2026-10-16 such a pass was
     /// written Recovering, an entry and a backoff for a try never made.
@@ -102,7 +105,8 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     progress.fence = claim.fence;
     let id = work.journey.journey_id();
     let owned = || step.holds(id);
-    // The wait for its Publication to be durable timed apart from the send.
+    // The wait for its Publication, or its claim, to be durable timed apart
+    // from the send (ADR-0018, amendment 2026-11-12).
     let waited = Cell::new(None);
     let kept = || {
         let began = Instant::now();
@@ -111,7 +115,7 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
             waited.set(Some(began.elapsed()));
         }
         kept.unwrap_or(Ok(()))
-            .map_err(|why| format!("its Publication was not kept in the Ledger: {why}"))
+            .map_err(|why| format!("its Publication or claim was not kept in the Ledger: {why}"))
     };
     let sending = Instant::now();
     let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
@@ -217,6 +221,7 @@ fn written(
     outcome: String,
     kept: Option<Duration>,
 ) -> Result<bool, String> {
+    departure.settled();
     // Failed, it waits in its queue for an operator, entered in the queue's
     // index of failed Messages in this same write, with why.
     let failed = (state == JourneyState::Failed).then(|| Failure {

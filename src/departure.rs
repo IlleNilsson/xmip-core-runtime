@@ -251,7 +251,7 @@ fn depart_port(
 }
 
 /// One Location tried; nothing where the claim was lost before its
-/// transport was reached.
+/// transport was reached, or what it is sent under was never durable.
 fn depart_one(
     runtime: &Runtime<'_>,
     (work, facts): (&ReceivedWork, &IdentityFacts),
@@ -307,19 +307,25 @@ fn depart_one(
         .sent
         .hold(runtime.budget.send(length, gathered));
 
-    // Seen by the far end only once the Message is durable in the Ledger:
-    // by a technology that holds its delivery back, as it delivers, so its
-    // own work overlaps the Ledger's sync; by every other, before it sends.
-    if sending.transport.holds_back().is_none()
-        && let Err(detail) = kept()
-    {
-        return Some(Departed::Failed {
-            to,
-            retryable: true,
-            detail,
+    // Seen by the far end only once what it is sent under — its Publication,
+    // or its claim — is durable in the Ledger and its claim still this
+    // node's: by a technology that holds its delivery back, as it delivers,
+    // so its own work overlaps the Ledger's sync; by every other, before it
+    // sends. Where either fails, nothing reached the far end and nothing is
+    // counted (ADR-0018, amendments 2026-10-20 and 2026-11-12).
+    let let_go = Cell::new(false);
+    let durable = || {
+        let kept = kept().and_then(|()| {
+            owned()
+                .then_some(())
+                .ok_or_else(|| "its claim is not surely this node's".to_string())
         });
+        let_go.set(let_go.get() || kept.is_err());
+        kept.map_err(TransportError::retryable)
+    };
+    if sending.transport.holds_back().is_none() && durable().is_err() {
+        return None;
     }
-    let durable = || kept().map_err(TransportError::retryable);
 
     // Asked again at the edge: the wait above may have outlasted the claim.
     if !owned() {
@@ -327,10 +333,9 @@ fn depart_one(
     }
     let key = work.journey.journey_id().to_string();
     let share = runtime.send.share();
-    let let_go = Cell::new(false);
     let still = || {
         let still = owned();
-        let_go.set(!still);
+        let_go.set(let_go.get() || !still);
         still
     };
     // The Message's context and identifier go with it, so a technology
@@ -354,7 +359,8 @@ fn depart_one(
     let sent = on_io(|| sending.transport.send_from(&sending.target, outgoing));
     drop(held);
     // The claim lost while the Message was read, before its first byte
-    // went: nothing was sent, and nothing more is tried from here.
+    // went, or what it is sent under never durable: nothing was sent, and
+    // nothing more is tried from here.
     if let_go.get() {
         return None;
     }
