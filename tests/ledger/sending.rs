@@ -4,7 +4,7 @@
 //! `send_killed.rs` run their nodes with.
 
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use xcore::lock::Locked;
 
@@ -262,6 +262,34 @@ impl Told {
     pub fn wait_for(&self, id: JourneyId, said: &'static str) {
         until(|| self.has(id, said), &format!("{id} {said}"));
     }
+}
+
+/// A gate a test opens once: whatever waits on it goes on.
+#[derive(Default)]
+pub struct Gate(Mutex<bool>, Condvar);
+
+impl Gate {
+    pub fn wait(&self) {
+        let mut open = self.0.locked();
+        while !*open {
+            open = self.1.wait(open).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    pub fn open(&self) {
+        *self.0.locked() = true;
+        self.1.notify_all();
+    }
+}
+
+/// Whether another node could take a claim on `id` now — given back at
+/// once where it could.
+pub fn free(storage: &dyn XmipStorage, id: JourneyId) -> bool {
+    let other = configure::fixture::test_cluster().node_scope(1);
+    let taken = storage
+        .claim(id, &other, id.value() ^ 0xf1ee, Duration::from_secs(30))
+        .expect("asked");
+    taken.is_some_and(|claim| storage.release(&claim).expect("asked"))
 }
 
 /// Wait, bounded and never a sleep, until `holds`.

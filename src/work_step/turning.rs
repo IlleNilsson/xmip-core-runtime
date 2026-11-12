@@ -1,6 +1,16 @@
 //! One turn of one Instance: the Message claimed, its Instance read from
 //! the Ledger, the unit advanced and its acts carried out until it waits
 //! or ends, and all of it handed on in one write (`XmipStorage::turn`).
+//!
+//! **A turn that panics ends Failed** (ADR-0066, amendment 2026-11-12):
+//! everything after its claim is caught at the turn's boundary — the flow,
+//! a unit's call or split, the runtime's own acts and the turn's write —
+//! and the Journey written Failed with what the panic said, through the
+//! write a flow's uncaught error takes (`written::panicked`), or its claim
+//! given back where that cannot be written. The write is made after the
+//! catch, never while unwinding.
+
+use std::panic::{self, AssertUnwindSafe};
 
 use journey::JourneyState;
 use persist::storage::{Claim, Held, InstanceRecord, Position, Turn, Watched, named};
@@ -52,17 +62,43 @@ pub(super) fn turn(
     let statement = persist::storage::statement(&step.storage);
     let runtime = &runtime.over(&statement);
     let (id, token) = (held.hold.journey, runtime.ids.next_u128());
+    let claim = match runtime.storage.claim(id, &step.node, token, step.lease) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            return Turned::Waits {
+                why: "another holds it".to_string(),
+                on: Vec::new(),
+            };
+        }
+        Err(why) => return Turned::Unwritten(why.to_string()),
+    };
+    let turned = || claimed((runtime, pickup), running, held, &claim);
+    match panic::catch_unwind(AssertUnwindSafe(turned)) {
+        Ok(turned) => turned,
+        Err(thrown) => {
+            let said = crate::pool::said(thrown.as_ref());
+            written::panicked(runtime, running, (held, &claim), &said)
+        }
+    }
+}
+
+/// The turn of the Message `held` names, under `claim`: its Instance found
+/// and advanced, its acts carried out and all of it written, or its claim
+/// given back where it waits.
+fn claimed(
+    (runtime, pickup): (&Runtime<'_>, &Pickup),
+    running: &Running,
+    held: &Held,
+    claim: &Claim,
+) -> Turned {
+    let step = runtime.work;
+    let id = held.hold.journey;
     let waits = |why: &str| Turned::Waits {
         why: why.to_string(),
         on: Vec::new(),
     };
-    let claim = match runtime.storage.claim(id, &step.node, token, step.lease) {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return waits("another holds it"),
-        Err(why) => return Turned::Unwritten(why.to_string()),
-    };
     let release = |why: String, on: Vec<Position>| {
-        let _ = runtime.storage.release(&claim);
+        let _ = runtime.storage.release(claim);
         Turned::Waits { why, on }
     };
     let mut work = match read(runtime, id, &held.hold.body) {
@@ -74,7 +110,7 @@ pub(super) fn turn(
     let to = route::Subscriber::WorkProcess(running.name.clone());
     let configured = (step.cluster(), runtime.sends, runtime.gathering);
     let at = (&mut work.journey, &work.message, &to);
-    let lease = (&claim, step.lease);
+    let lease = (claim, step.lease);
     match crate::sequence::heading(runtime.storage.as_ref(), configured, at, lease) {
         Ok(Placing::Placed) => {}
         Ok(Placing::Behind) => {

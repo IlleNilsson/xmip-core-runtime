@@ -14,10 +14,9 @@
 //! - however many fail, the node keeps its window of the oldest and Xmip
 //!   Storage's count, the same after a restart, and every one is paged.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use xcore::lock::Locked;
 
 use journey::JourneyState;
 use observe::Act;
@@ -29,26 +28,9 @@ use xmip_core_runtime::pool::hardware_threads;
 
 use super::receive_cycle::{node, on_node, on_runtime};
 use super::sending::{
-    dispatching, interleaving, journey, memory, onward, order, out, refusing, sender, taking, until,
+    Gate, dispatching, free, interleaving, journey, memory, onward, order, out, refusing, sender,
+    taking, until,
 };
-
-/// A gate a test opens once: whatever waits on it goes on.
-#[derive(Default)]
-struct Gate(Mutex<bool>, Condvar);
-
-impl Gate {
-    fn wait(&self) {
-        let mut open = self.0.locked();
-        while !*open {
-            open = self.1.wait(open).unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
-    fn open(&self) {
-        *self.0.locked() = true;
-        self.1.notify_all();
-    }
-}
 
 /// A far end that counts every send it is asked and holds it at `gate`.
 fn held_at(gate: &Arc<Gate>, entered: &Arc<AtomicUsize>) -> Answer {
@@ -58,16 +40,6 @@ fn held_at(gate: &Arc<Gate>, entered: &Arc<AtomicUsize>) -> Answer {
         gate.wait();
         Ok(())
     })
-}
-
-/// Whether another node could take a claim on `id` now — given back at
-/// once where it could.
-fn free(storage: &dyn persist::storage::XmipStorage, id: JourneyId) -> bool {
-    let other = configure::fixture::test_cluster().node_scope(1);
-    let taken = storage
-        .claim(id, &other, id.value() ^ 0xf1ee, Duration::from_secs(30))
-        .expect("asked");
-    taken.is_some_and(|claim| storage.release(&claim).expect("asked"))
 }
 
 #[test]

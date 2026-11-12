@@ -11,6 +11,7 @@
 //! and nothing is copied to hand it over. Dropping the pool lets its
 //! threads finish the work queued and end; the scope joins them.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -119,6 +120,12 @@ impl<'scope, 'env> Pool<'scope, 'env> {
 
     /// Run `work` on a thread of the pool: a free one, or one started for
     /// it while the pool is below its most; otherwise it waits its turn.
+    ///
+    /// A caller hands it no more than its most, each step admitting what it
+    /// hands it — the receive's room in its Location's pool, the send
+    /// step's and the Work Process step's admission (ADR-0066, amendment
+    /// 2026-11-12) — so what waits here is bounded by the threads, never by
+    /// a backlog: the queue itself does not refuse.
     pub fn run(&self, work: Work<'env>) {
         let mut state = self.shared.lock();
         state.queued.push_back(work);
@@ -158,7 +165,8 @@ impl Drop for Pool<'_, '_> {
 /// **A piece of work that panics ends that piece, not the thread**: the
 /// thread takes the next, so a panic never strands what is queued; what
 /// the piece owed is its own to tell on the way out (`receiving`'s
-/// telling). However the thread ends, it is counted out ([`Counted`]).
+/// telling, the send step's `Sending`, the Work Process step's `Owning`).
+/// However the thread ends, it is counted out ([`Counted`]).
 fn serve(shared: &Shared<'_>) {
     let mut counted = Counted { shared, out: false };
     let mut state = shared.lock();
@@ -184,6 +192,18 @@ fn serve(shared: &Shared<'_>) {
     // idle at once never both see another left and leave none.
     state.threads -= 1;
     counted.out = true;
+}
+
+/// What a panic said, from what it threw: its message where it threw a
+/// `&str` or a `String`, as `panic!` does, and that it said nothing
+/// readable otherwise. The runtime's one reading of a caught panic, beside
+/// its catch here (ADR-0066, amendment 2026-11-12).
+pub(crate) fn said(thrown: &(dyn Any + Send)) -> String {
+    thrown
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_string())
+        .or_else(|| thrown.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "it said nothing readable".to_string())
 }
 
 /// A pool thread's place in the count. A thread that returns gives it
@@ -285,5 +305,19 @@ mod tests {
             assert_eq!(pool.threads(), 1, "the thread is counted, and is there");
         });
         assert_eq!(done.load(Ordering::Relaxed), 1, "queued after it, ran");
+    }
+
+    #[test]
+    fn what_a_panic_said_is_its_message_or_said_to_be_none() {
+        let thrown = |run: fn()| panic::catch_unwind(run).expect_err("it panics");
+        assert_eq!(
+            said(thrown(|| panic!("a unit that panics")).as_ref()),
+            "a unit that panics"
+        );
+        let number = 7;
+        let formatted = panic::catch_unwind(|| panic!("number {number}")).expect_err("panics");
+        assert_eq!(said(formatted.as_ref()), "number 7", "a String");
+        let other = panic::catch_unwind(|| std::panic::panic_any(7_u8)).expect_err("panics");
+        assert_eq!(said(other.as_ref()), "it said nothing readable");
     }
 }

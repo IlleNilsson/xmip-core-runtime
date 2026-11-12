@@ -28,6 +28,7 @@
 //! send_idle = "1m"                            # send_step::SEND_IDLE
 //! send_lease = "30s"                          # send_step::SEND_LEASE
 //! send_scan = "1s"                            # send_step::SEND_SCAN
+//! work_threads_per_hardware_thread = 2        # work_step::WORK_THREADS_PER_HARDWARE_THREAD
 //! work_scan = "1s"                            # work_step::WORK_SCAN
 //! failed_window = 100                         # send_step::FAILED_WINDOW
 //! send_chunks_per_thread = 16                 # budget::SEND_CHUNKS_PER_THREAD
@@ -38,6 +39,7 @@
 //! storage_silence = "1s"                      # persist's standby::SILENCE
 //! storage_kept = 67108864                     # persist's standby::KEPT
 //! storage_wait = "1m"                         # persist's storage::HOLD
+//! storage_unwaited = 16384                    # persist's storage::UNWAITED
 //! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
 //! operate_connections = 256                   # plane::limits::CONNECTIONS
 //! operate_handshakes = 32                     # plane::limits::HANDSHAKES
@@ -79,6 +81,7 @@ pub struct Tuning {
     pub send_idle: Duration,
     pub send_lease: Duration,
     pub send_scan: Duration,
+    pub work_threads_per_hardware_thread: usize,
     pub work_scan: Duration,
     pub failed_window: usize,
     pub send_chunks_per_thread: usize,
@@ -89,6 +92,7 @@ pub struct Tuning {
     pub storage_silence: Duration,
     pub storage_kept: usize,
     pub storage_wait: Duration,
+    pub storage_unwaited: usize,
     pub local_timeout: Duration,
     pub operate_connections: usize,
     pub operate_handshakes: usize,
@@ -150,6 +154,7 @@ impl Tuning {
             send_idle: duration("send_idle"),
             send_lease: duration("send_lease"),
             send_scan: duration("send_scan"),
+            work_threads_per_hardware_thread: count("work_threads_per_hardware_thread"),
             work_scan: duration("work_scan"),
             failed_window: count("failed_window"),
             send_chunks_per_thread: count("send_chunks_per_thread"),
@@ -160,6 +165,7 @@ impl Tuning {
             storage_silence: duration("storage_silence"),
             storage_kept: count("storage_kept"),
             storage_wait: duration("storage_wait"),
+            storage_unwaited: count("storage_unwaited"),
             local_timeout: duration("local_timeout"),
             operate_connections: count("operate_connections"),
             operate_handshakes: count("operate_handshakes"),
@@ -173,7 +179,8 @@ impl Tuning {
     }
 
     /// What bounds a node's dealings with Storage nodes, and a Storage
-    /// node's with the others (`persist::storage::standby`).
+    /// node's with the others, what it keeps of their waits as their
+    /// primary among them (`persist::storage::standby`).
     #[must_use]
     pub const fn storage(&self) -> Timings {
         Timings {
@@ -182,6 +189,7 @@ impl Tuning {
             timeout: self.storage_timeout,
             pass_over: self.storage_pass_over,
             kept: self.storage_kept,
+            unwaited: self.storage_unwaited,
         }
     }
 
@@ -227,11 +235,15 @@ impl Tuning {
         Limits::per_hardware_thread(self.send_threads_per_hardware_thread, self.send_idle)
     }
 
-    /// The node's Work pool on this machine, sized as its Send pool, and
-    /// how often its Work Process step reads every queue it runs.
+    /// The node's Work pool on this machine — its threads its own, each
+    /// idle for a send thread's idle time before it ends — and how often
+    /// its Work Process step reads every queue it runs. The pool's most
+    /// bounds the turns the step holds too (ADR-0066, amendment 2026-11-12).
     #[must_use]
     pub fn work(&self) -> (Limits, Duration) {
-        (self.send(), self.work_scan)
+        let pool =
+            Limits::per_hardware_thread(self.work_threads_per_hardware_thread, self.send_idle);
+        (pool, self.work_scan)
     }
 
     /// What bounds each of the node's operate listeners.
@@ -280,6 +292,7 @@ mod tests {
             (standby::BEAT, standby::SILENCE, standby::KEPT)
         );
         assert_eq!(tuning.storage_wait, persist::storage::HOLD);
+        assert_eq!(tuning.storage_unwaited, persist::storage::UNWAITED);
         assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
         assert_eq!(tuning.operate(), crate::plane::Limits::default());
         assert_eq!(tuning.receive_handshake, transport::guard::HANDSHAKE);
@@ -294,6 +307,10 @@ mod tests {
         assert_eq!(
             (tuning.send_idle, tuning.send_lease, tuning.send_scan),
             (SEND_IDLE, SEND_LEASE, SEND_SCAN)
+        );
+        assert_eq!(
+            tuning.work().0.most,
+            crate::work_step::WORK_THREADS_PER_HARDWARE_THREAD * crate::pool::hardware_threads()
         );
         assert_eq!(tuning.work(), (tuning.send(), crate::work_step::WORK_SCAN));
         assert_eq!(tuning.failed_window, FAILED_WINDOW);
@@ -318,15 +335,21 @@ mod tests {
              receive_idle = \"30s\"\nstorage_timeout = \"250ms\"\nstorage_pass_over = \"2s\"\n\
              send_threads_per_hardware_thread = 3\nsend_idle = \"20s\"\nsend_lease = \"5s\"\n\
              send_scan = \"200ms\"\nwork_scan = \"300ms\"\nreceive_poll = \"100ms\"\n\
+             work_threads_per_hardware_thread = 5\n\
              receive_backoff = \"2s\"\n\
              receive_sweep = \"3s\"\n\
              receive_drain = \"250ms\"\nlocal_timeout = \"500ms\"\nfailed_window = 12\n\
              node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
              send_chunks_per_thread = 9\nstream_stall = \"40ms\"\noperate_connections = 8\n\
-             operate_handshakes = 2\noperate_handshake = \"750ms\"\nstorage_wait = \"10s\"\n",
+             operate_handshakes = 2\noperate_handshake = \"750ms\"\nstorage_wait = \"10s\"\n\
+             storage_unwaited = 64\n",
         )
         .expect("reads");
         assert_eq!(tuning.storage_wait, Duration::from_secs(10));
+        // Every Storage node's watch bound: the only one's, and a primary's
+        // among several, through what bounds its dealings with the others.
+        assert_eq!(tuning.storage_unwaited, 64);
+        assert_eq!(tuning.storage().unwaited, 64);
         assert_eq!(
             tuning.operate(),
             crate::plane::Limits {
@@ -352,6 +375,8 @@ mod tests {
         assert_eq!(tuning.send_lease, Duration::from_secs(5));
         assert_eq!(tuning.send_scan, Duration::from_millis(200));
         assert_eq!(tuning.work().1, Duration::from_millis(300));
+        // The Work pool's threads are its own, never the Send pool's.
+        assert_eq!(tuning.work().0.most, 5 * crate::pool::hardware_threads());
         assert_eq!(tuning.stream_stall, Duration::from_millis(40));
         assert_eq!(
             tuning.pace(),
@@ -373,11 +398,18 @@ mod tests {
     fn an_unknown_key_a_wrong_kind_and_a_value_out_of_bounds_are_refused_in_words() {
         let refused = read(
             "segments = 0\ntcp_segment = \"1460\"\ncolor = \"lime\"\nreceive_idle = \"0s\"\n\
-             storage_timeout = \"2h\"\n",
+             storage_timeout = \"2h\"\nwork_threads_per_hardware_thread = 65\n",
         )
         .expect_err("refused");
         let said = refused.join("\n");
-        for word in ["segments", "tcp_segment", "color", "[tuning]"] {
+        let words = [
+            "segments",
+            "tcp_segment",
+            "color",
+            "work_threads_per_hardware_thread",
+            "[tuning]",
+        ];
+        for word in words {
             assert!(said.contains(word), "names {word}: {said}");
         }
         let durations = read("receive_idle = \"0s\"\nstorage_timeout = \"2h\"\n")

@@ -5,8 +5,11 @@
 //!
 //! ```text
 //! Publication   the Message waits in its Work Process's queue in the Ledger
-//! -> scan       oldest first; one whose key is behind an earlier one of the
-//!               same key waits, so a key's Messages never overtake
+//! -> admit      a page a round from where its pass stands, oldest first,
+//!               each Work Process a share of the Work pool's threads, the
+//!               rest left in the Ledger (`admission`, `reading`); one whose
+//!               key is behind an earlier one of the same key waits, so a
+//!               key's Messages never overtake
 //! -> claim      through Xmip Storage
 //! -> turn       its Instance read from the Ledger, found by its key in a
 //!               Correlation, or a new one; the unit advanced, its acts
@@ -30,15 +33,23 @@
 //! sequence's head — and is taken up the moment any node moves one
 //! ([`Turned::Waits`]; 2026-11-12).
 //!
+//! **A turn that panics ends Failed with what it said** (2026-11-12): caught
+//! under its claim and written as a flow's uncaught error is, and its place
+//! and its ownership on this node given back however it ends
+//! (`admission::Owning`), so no panic strands its Journey or ends the
+//! dispatching.
+//!
 //! **The engine never knows the design.** A unit is opened as
 //! `process::Flow`, linked or loaded through the C ABI
 //! (`crate::ffi::loaded_work_process`), and nothing here reads a design.
 
 mod acts;
+mod admission;
 mod dispatch;
 mod keys;
 #[cfg(feature = "dynamic-loading")]
 mod opened;
+mod reading;
 mod running;
 mod turning;
 
@@ -54,6 +65,7 @@ use xcore::wake::Wake;
 
 use crate::pool::Limits;
 use crate::queue_watch::{QueueWatch, Woken};
+use reading::Reading;
 
 pub use dispatch::{dispatch, turn_due};
 pub use keys::{KeyWord, ResolvedSet};
@@ -66,6 +78,13 @@ pub use turning::Turned;
 /// lapses: a turn is short, and one longer than this is still never
 /// written twice, its Instance written only over the turn it read.
 pub const WORK_LEASE: Duration = Duration::from_secs(30);
+
+/// The Work pool's threads for each of the machine's hardware threads,
+/// where the node's `[tuning] work_threads_per_hardware_thread` does not
+/// say: two, as the Send pool's, since a turn waits on the Ledger and on
+/// the units it calls. Its most bounds the turns the step holds too
+/// (`admission`).
+pub const WORK_THREADS_PER_HARDWARE_THREAD: usize = 2;
 
 /// How often the queues of the Work Processes this node runs are read for
 /// what no live claim holds, and for a timer due, where `[tuning]
@@ -91,19 +110,23 @@ pub struct WorkStep {
 
 #[derive(Default)]
 struct State {
-    /// The Messages, by Journey, claimed and in a turn on this node.
+    /// The Messages, by Journey, admitted for a turn on this node: queued in
+    /// the Work pool or running (`admission`).
     owned: HashSet<JourneyId>,
-    /// Queues to read now.
-    asked: Vec<u128>,
-    /// Of those, what is due in each as a wake brought it: read from there.
-    woken: Vec<(u128, persist::storage::DueQueue)>,
+    /// How the read of each Work Process's queue stands, by its place in
+    /// `WorkStep::running`.
+    readings: Vec<Reading>,
+    /// The Work Process that goes first in the next round: each in turn.
+    first: usize,
     /// When each queue next has a timer due, as its last read showed.
     due: Vec<(u128, Instant)>,
     /// How many turns this node wrote: what tells a turn that waited
     /// whether another was written while it was held.
     written: u64,
-    /// How many scans of every queue it made.
+    /// How many scans of every queue it began.
     scans: u64,
+    /// How many turns unwound past their own catch.
+    unwound: u64,
     closed: bool,
 }
 
@@ -119,6 +142,10 @@ impl WorkStep {
         audit: Option<ProgramAudit>,
         running: Vec<Running>,
     ) -> Self {
+        let state = State {
+            readings: running.iter().map(|_| Reading::default()).collect(),
+            ..State::default()
+        };
         Self {
             cluster: cluster.to_string(),
             node: node.to_string(),
@@ -128,7 +155,7 @@ impl WorkStep {
             limits,
             audit,
             running,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(state),
             wake: Wake::new(),
             watch: QueueWatch::of(node),
         }
@@ -148,36 +175,36 @@ impl WorkStep {
 
     /// Read `queue` now, where it is one of a Work Process this node runs.
     pub fn ask(&self, queue: u128) {
-        if !self.running.iter().any(|running| running.queue == queue) {
-            return;
-        }
-        let mut state = self.lock();
-        if !state.asked.contains(&queue) {
-            state.asked.push(queue);
-        }
-        drop(state);
-        self.wake.notify_all();
+        self.asked(queue, None);
     }
 
     /// Read `queue` now from what `woken` brought of it: a write on any
     /// node put a Message in it, or moved what a turn it gave back waits on
     /// (`crate::queue_watch`).
     pub(crate) fn woken(&self, queue: u128, woken: Woken) {
-        if let Some(due) = woken.due {
-            let mut state = self.lock();
-            state.woken.retain(|(kept, _)| *kept != queue);
-            state.woken.push((queue, due));
-        }
-        self.ask(queue);
+        self.asked(queue, woken.due);
+    }
+
+    /// `queue`'s reading asked, from `first` where a wake brought it.
+    fn asked(&self, queue: u128, first: Option<persist::storage::DueQueue>) {
+        let mut state = self.lock();
+        let at = self
+            .running
+            .iter()
+            .position(|running| running.queue == queue);
+        let Some(reading) = at.and_then(|at| state.readings.get_mut(at)) else {
+            return;
+        };
+        reading.asked(first);
+        drop(state);
+        self.wake.notify_all();
     }
 
     /// Read every queue it runs now: a Stream ahead in a sequence has ended.
     pub fn ask_every(&self) {
         let mut state = self.lock();
-        for running in &self.running {
-            if !state.asked.contains(&running.queue) {
-                state.asked.push(running.queue);
-            }
+        for reading in &mut state.readings {
+            reading.asked(None);
         }
         drop(state);
         self.wake.notify_all();
@@ -192,34 +219,6 @@ impl WorkStep {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.locked()
-    }
-
-    /// `journey` taken for a turn on this node, and how many turns it had
-    /// written as it was; `None` where it holds it in one already.
-    fn own(&self, journey: JourneyId) -> Option<u64> {
-        let mut state = self.lock();
-        state.owned.insert(journey).then_some(state.written)
-    }
-
-    /// `journey` let go of after its turn, `done` where it was written,
-    /// owned since this node had written `since` turns.
-    fn disown(&self, journey: JourneyId, queue: u128, (done, since): (bool, u64)) {
-        let mut state = self.lock();
-        state.owned.remove(&journey);
-        if done {
-            state.written += 1;
-        }
-        // After a written turn the next of its queue may go on now. One
-        // that waits is read again only where another turn was written
-        // while it was held — what it waited for may have moved on, and the
-        // read that turn asked passed over it while held here (found
-        // 2026-11-12, once a scan no longer came every second); else the
-        // next written turn's read finds it: never a loop of reads.
-        if (done || state.written != since) && !state.asked.contains(&queue) {
-            state.asked.push(queue);
-        }
-        drop(state);
-        self.wake.notify_all();
     }
 
     fn failed(&self, problem: &str) {
@@ -242,5 +241,18 @@ impl WorkStep {
     #[must_use]
     pub fn scans(&self) -> u64 {
         self.lock().scans
+    }
+
+    /// How many turns it holds now, queued in the Work pool or running.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.lock().owned.len()
+    }
+
+    /// How many turns unwound past their own catch, let go of and left to
+    /// their claims' lapse.
+    #[must_use]
+    pub fn unwound(&self) -> u64 {
+        self.lock().unwound
     }
 }

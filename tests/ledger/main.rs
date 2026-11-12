@@ -57,8 +57,16 @@
 //! `audited.rs` a Publication's audit record carrying its Message and its
 //! Stream's bytes, verified when read (ADR-0070); `work_process.rs` a Work
 //! Process's Instances correlated, batched and finished after a kill;
-//! `work_design.rs` that Work Process's design and the node it runs on;
+//! `work_design.rs` that Work Process's design and the node it runs on, and
+//! the designs and routes the other Work Process tests run;
+//! `work_turning.rs` the flows and units they record, hold or panic with,
+//! the node whose Work pool they count, and its step dispatching;
 //! `work_debatch.rs` its Debatch through the one splitting implementation;
+//! `work_panicked.rs` a turn that panics written Failed with what it said,
+//! its place and ownership given back on every path, the dispatching going
+//! on; `work_bounded.rs` turns admitted under a place in the Work pool, each
+//! Work Process its share, a queue read a page a round, in memory a page
+//! bounds;
 //! `woken.rs` a Journey another node published taken up at once, by the
 //! send step and by the Work Process step, neither waiting for its scan,
 //! and what is due coming with the wake; `woken_behind.rs` a Journey
@@ -105,9 +113,12 @@ mod unsynced;
 mod untold;
 mod woken;
 mod woken_behind;
+mod work_bounded;
 mod work_debatch;
 mod work_design;
+mod work_panicked;
 mod work_process;
+mod work_turning;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

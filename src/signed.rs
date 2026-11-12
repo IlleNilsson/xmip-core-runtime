@@ -1,33 +1,28 @@
-//! A node's slice signed by its cluster's authority, and a node running
-//! only a slice that verifies (ADR-0031, amendments 2026-11-06 and
-//! 2026-11-07).
+//! A node's slice signed by its cluster's authority, and a node trusting
+//! only a slice that verifies (ADR-0031, amendments 2026-11-06, 2026-11-07
+//! and 2026-11-12).
 //!
 //! The authority's certificate travels beside the node's configuration, in
 //! [`AUTHORITY`], and is never read from the file it checks. What the node
-//! trusts it by is held where whoever writes the configuration folder does
-//! not write: the node's accepted slice ([`kept_at`]), in the default data
-//! directory beside the configuration folder, a private file the node
-//! itself writes. Its signature pins the authority (`by`), the node
-//! (`node`) and the last serial accepted (`serial`). A slice that verifies
-//! against a certificate of that fingerprint, names that node and carries a
-//! higher serial is kept in its place; any other is refused, and the node
-//! runs its accepted slice instead. The first slice a node accepts pins all
-//! three.
+//! trusts a slice by, and what it last ran, are held where whoever writes
+//! the configuration folder does not write: its pin and its active
+//! configuration, private files the node itself writes in the default data
+//! directory beside the configuration folder ([`admission`]). Signing is
+//! here; trusting is [`admission`]'s.
 
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use configure::signed::{self, Signature};
 use provision::Issuer;
 
+mod admission;
+
+pub use admission::{Admitted, Slice, Which, activated, admitted, checked};
+
 /// The folder beside a node's configuration that holds its cluster
 /// authority's certificate, and its key on the node that keeps it.
 pub const AUTHORITY: &str = "authority";
-
-/// The node's accepted slice, after its configuration file's stem in the
-/// default data directory: the last one that verified.
-pub const ACCEPTED: &str = "accepted.xmip";
 
 /// `sha256:` and the hexadecimal SHA-256 of `bytes`.
 fn digest(bytes: &[u8]) -> String {
@@ -68,10 +63,19 @@ fn serial() -> (u64, i64) {
 /// The slice's signature table does not read, it names no node, or
 /// signing fails.
 pub fn sign(authority: &Issuer, cluster: &str, slice: &str) -> Result<String, String> {
+    signed_as(authority, cluster, slice, serial())
+}
+
+/// [`sign`], under the serial and the time `(serial, issued)` give.
+fn signed_as(
+    authority: &Issuer,
+    cluster: &str,
+    slice: &str,
+    (serial, issued): (u64, i64),
+) -> Result<String, String> {
     let (text, _) = signed::split(slice)?;
     let node = signed::named(text)
         .ok_or("the slice names no node under [service], and a slice is signed for its node")?;
-    let (serial, issued) = serial();
     let mut signature = Signature {
         cluster: digest(cluster.as_bytes()),
         node,
@@ -192,162 +196,6 @@ pub fn anchor(path: &Path) -> Result<String, String> {
             at.display()
         )
     })
-}
-
-/// Where the node whose configuration is at `path` keeps its accepted
-/// slice: `<stem>.accepted.xmip` in the default data directory, found from
-/// the configuration's place alone and never from what a slice says.
-#[must_use]
-pub fn kept_at(path: &Path) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .map_or_else(|| "node".into(), |stem| stem.to_string_lossy());
-    configure::service::data_directory(None, path).join(format!("{stem}.{ACCEPTED}"))
-}
-
-/// Whether a check keeps what it accepts: the running node does; a plan,
-/// an install and a surface only read.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Keep {
-    Yes,
-    No,
-}
-
-/// The text a node whose configuration is at `path`, holding `file`, runs:
-/// `file`'s own where it verifies, kept as the node's accepted slice; else
-/// its accepted slice, and why `file` was refused.
-///
-/// # Errors
-/// No anchor beside the configuration, one other than the node pinned, an
-/// accepted slice that cannot be read or kept, or a refused file and no
-/// accepted slice to run instead; each in words.
-pub fn accepted(path: &Path, file: &str) -> Result<(String, Option<String>), String> {
-    admitted(path, file, Keep::Yes)
-}
-
-/// [`accepted`], keeping nothing: what the node would run, for whoever
-/// reads its configuration without running it. An accepted slice this
-/// reader may not read pins nothing for it.
-///
-/// # Errors
-/// As [`accepted`].
-pub fn checked(path: &Path, file: &str) -> Result<(String, Option<String>), String> {
-    admitted(path, file, Keep::No)
-}
-
-/// [`accepted`] and [`checked`], once.
-fn admitted(path: &Path, file: &str, keep: Keep) -> Result<(String, Option<String>), String> {
-    let at = kept_at(path);
-    let kept = match std::fs::read_to_string(&at) {
-        Ok(kept) => Some(kept),
-        Err(error) if error.kind() == ErrorKind::NotFound || keep == Keep::No => None,
-        Err(error) => {
-            return Err(format!(
-                "cannot read the accepted slice at {}: {error}",
-                at.display()
-            ));
-        }
-    };
-    let pin = kept.as_deref().map(|kept| pinned(kept, &at)).transpose()?;
-    let anchor = anchor(path)?;
-    if let Some(pin) = &pin
-        && pin.by != digest(&der(&anchor)?)
-    {
-        return Err(format!(
-            "the cluster authority's certificate beside {} is not the one this node pinned, \
-             {}, by its accepted slice at {}; where the authority was replaced, an \
-             administrator removes that slice",
-            path.display(),
-            pin.by,
-            at.display()
-        ));
-    }
-    let admitted = verified(file, &anchor).and_then(|(text, signature)| {
-        admits(pin.as_ref(), kept.as_deref(), file, &signature).map(|()| text)
-    });
-    match admitted {
-        Ok(text) => {
-            if keep == Keep::Yes && kept.as_deref() != Some(file) {
-                kept_in(&at, file)?;
-            }
-            Ok((text.to_string(), None))
-        }
-        Err(why) => {
-            let refused = format!("{} is refused: {why}", path.display());
-            match kept
-                .as_deref()
-                .and_then(|kept| verified(kept, &anchor).ok())
-            {
-                Some((text, _)) => Ok((
-                    text.to_string(),
-                    Some(format!(
-                        "{refused}; the node runs its accepted slice, {}",
-                        at.display()
-                    )),
-                )),
-                None => Err(format!(
-                    "{refused}, and the node has no accepted slice to run"
-                )),
-            }
-        }
-    }
-}
-
-/// The signature of the accepted slice `kept`, kept at `at`: the node's pin.
-fn pinned(kept: &str, at: &Path) -> Result<Signature, String> {
-    match signed::split(kept) {
-        Ok((_, Some(signature))) => Ok(signature),
-        Ok((_, None)) => Err(format!(
-            "the accepted slice at {} is not signed",
-            at.display()
-        )),
-        Err(why) => Err(format!("the accepted slice at {}: {why}", at.display())),
-    }
-}
-
-/// Whether a slice signed `signature`, the file `file`, may follow the
-/// accepted slice `kept` the node pinned as `pin`: the same node, and a
-/// higher serial, or the accepted slice itself again.
-///
-/// # Errors
-/// Why not, completing "the slice is refused: ".
-fn admits(
-    pin: Option<&Signature>,
-    kept: Option<&str>,
-    file: &str,
-    signature: &Signature,
-) -> Result<(), String> {
-    let Some(pin) = pin else {
-        return Ok(());
-    };
-    if signature.node != pin.node {
-        return Err(format!(
-            "it is the slice of the node {}, and this node is {}",
-            signature.node, pin.node
-        ));
-    }
-    let again = signature.serial == pin.serial && kept == Some(file);
-    if signature.serial <= pin.serial && !again {
-        return Err(format!(
-            "its serial {} is not above {}, the accepted slice's: it is older, or replayed",
-            signature.serial, pin.serial
-        ));
-    }
-    Ok(())
-}
-
-/// `file` kept at `at` as the node's accepted slice, a private file in a
-/// directory made private where it is absent.
-fn kept_in(at: &Path, file: &str) -> Result<(), String> {
-    let place = at.parent().unwrap_or_else(|| Path::new("."));
-    secret::private_file::directory(place)
-        .and_then(|()| secret::private_file::replace(at, file.as_bytes()))
-        .map_err(|error| {
-            format!(
-                "cannot keep the accepted slice at {}: {error}",
-                at.display()
-            )
-        })
 }
 
 #[cfg(test)]

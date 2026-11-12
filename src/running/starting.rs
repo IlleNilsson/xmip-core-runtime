@@ -1,6 +1,8 @@
-//! [`Running::start`]: ADR-0018's nine startup phases over a node's
-//! configuration and the technologies its program linked, each phase that
-//! can refuse doing so before anything serves (`super`'s table).
+//! [`Running::start`]: ADR-0018's nine startup phases over one slice of a
+//! node's configuration and the technologies its program linked, each phase
+//! that can refuse doing so before anything serves (`super`'s table). What
+//! would serve is built and held; serving begins at the node's activation
+//! (`super::activation`; ADR-0031, amendment 2026-11-12).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -10,7 +12,8 @@ use configure::{ConfiguredLocation, XmipApplication, XmipConfigurationDocument};
 use node::Stage;
 use transport::{Guard, Pinned};
 
-use super::serving::{Served, serve};
+use super::activation::Attempt;
+use super::serving::Served;
 use super::{Refusal, Running, certificate_standing, origin, publication};
 use crate::budget::NodeBudget;
 use crate::configured_subscription::ConfiguredSubscription;
@@ -24,7 +27,6 @@ use crate::receiving::{ReceiveGate, Receiving};
 use crate::send_step::SendStep;
 use crate::sending::Sends;
 use crate::service::StartupPhase;
-use crate::start::read_accepted;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
 use crate::storage::Reached;
@@ -41,23 +43,28 @@ struct Validated {
 }
 
 impl Running {
-    /// Start the node configured at `path`, with the technologies `linked`.
+    /// Start the node configured at `path` by the slice `attempt` tries,
+    /// with the technologies `linked`, serving nothing until
+    /// [`Running::activate`].
     ///
     /// Everything that can refuse does so before anything serves: a
     /// configuration that names what the program was not built with, a
     /// Location its technology's declaration refuses, a filter that does not
-    /// compile, a Module that will not load. What serves then carries every
-    /// Stream through arrival, routing and departure.
+    /// compile, a Module that will not load, a Storage node that does not
+    /// open. What serves, once activated, carries every Stream through
+    /// arrival, routing and departure. Dropped unactivated, it lets go of
+    /// everything it opened.
     ///
     /// # Errors
-    /// The phase that refused the node, and every problem it found there.
-    pub fn start(path: &str, mut linked: Linked) -> Result<Self, Refusal> {
+    /// The phase that refused the slice, and every problem it found there.
+    pub fn start(path: &str, attempt: Attempt, mut linked: Linked) -> Result<Self, Refusal> {
         // The rate a thread's processor time is read at, measured now, so
         // it never lands in a Message's own share (`xcore::spent`).
         xcore::processor_time::ProcessorTime::calibrate();
-        let ((document, applications, files), refused) = read_accepted(path)
+        let (document, applications, files) = crate::start::parsed(path, &attempt.slice.text)
             .map_err(|unread| Refusal::at(StartupPhase::ReadConfiguration, vec![unread.reason]))?;
         let data = document.service.data_directory(Path::new(path));
+        let provision = document.provision.clone();
         let base = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
         let certificates = certificate_standing::CertificateStanding::configured(&document, base);
         let operate = document.operate.clone();
@@ -128,7 +135,6 @@ impl Running {
             budget: NodeBudget::of(&tree.tuning),
             receiving,
         };
-        let serving = serve(served, Arc::clone(&stopping), Arc::clone(&tally));
 
         Ok(Self {
             online: tree.service.online,
@@ -140,13 +146,16 @@ impl Running {
             locations,
             not_started,
             stopping,
-            serving: Some(serving),
+            served: Some(served),
+            serving: None,
             tally,
             routes,
             pickup,
             send,
             data,
-            refused,
+            attempt,
+            standing: None,
+            provision,
             storage,
             operate,
             certificates,

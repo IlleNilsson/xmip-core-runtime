@@ -17,62 +17,27 @@
 //! node moves it, and that no second scan came before it was taken up: so
 //! only the wait can have taken it up.
 
-use std::io::Cursor;
 use std::sync::Arc;
-use std::time::Duration;
 
 use journey::JourneyState;
 use path::expression::Expression;
 use persist::storage::{Position, Watched, XmipStorage};
-use process::{Compiled, DesignFormat, NoResources};
-use process_bpmn::Bpmn;
-use receive::ReceivedStream;
 use route::{Subscriber, Subscription};
-use xcore::ScalarValue;
 use xmip_core_runtime::fixture::FarEnd;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{Carried, ReceiveCycle, carry};
 use xmip_core_runtime::tuning::Tuning;
-use xmip_core_runtime::work_step::{NoUnits, Running, Turned, WorkStep, dispatch, turn_due};
+use xmip_core_runtime::work_step::{Turned, dispatch, turn_due};
 
 use super::receive_cycle::{Sender, on_working_node};
 use super::sending::{dispatching, journey, memory_node, out, sender, taking, took, until};
-use super::work_design::{from_client, per_client, sending_nothing};
-
-/// An hour: no scan comes while a test runs.
-const HOUR: Duration = Duration::from_secs(3600);
+use super::work_design::{ABSORB, from_client, route_header, running, sending_nothing, stream};
+use super::work_turning::{Closing, HOUR};
 
 /// The test cluster's second node: the one waiting on what another moves.
 fn other() -> String {
     configure::fixture::test_cluster().node_scope(1)
 }
-
-/// A Work Process `name` of the design `design`, following the cluster's
-/// Correlation by client.
-fn running(name: &str, design: &str) -> Running {
-    let program = Bpmn.compile(design, &NoResources).expect("compiles");
-    let flow = Compiled::new(program).expect("opens");
-    let cluster = configure::fixture::test_cluster().scope();
-    Running::new(
-        (&cluster, name),
-        Box::new(flow),
-        &[per_client()],
-        &[],
-        Arc::new(NoUnits),
-    )
-    .expect("it runs")
-}
-
-/// A Message taken in and ended there.
-const ABSORB: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-    id="D" targetNamespace="urn:example:orders">
-  <bpmn:process id="Absorb" isExecutable="true">
-    <bpmn:startEvent id="Arrived"/>
-    <bpmn:endEvent id="Done"/>
-    <bpmn:sequenceFlow id="F1" sourceRef="Arrived" targetRef="Done"/>
-  </bpmn:process>
-</bpmn:definitions>"#;
 
 /// A client's first Message starts its Instance, which waits an hour, then
 /// for the client's next.
@@ -96,10 +61,6 @@ const LATER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>"#;
 
-fn route_header() -> String {
-    context::property::header("http", "x-route")
-}
-
 /// Into `Absorb` where the Stream says `process`, to `Out` where it says
 /// `direct`.
 fn absorbed_or_direct() -> Vec<Subscription> {
@@ -112,14 +73,6 @@ fn absorbed_or_direct() -> Vec<Subscription> {
         route("work", Subscriber::WorkProcess("Absorb".into()), "process"),
         route("direct", Subscriber::SendPort("Out".into()), "direct"),
     ]
-}
-
-fn stream(text: &str, route: &str) -> ReceivedStream {
-    ReceivedStream::new(Cursor::new(text.as_bytes().to_vec()), "tcp://127.0.0.1:1").with_header(
-        "http",
-        "x-route",
-        ScalarValue::Text(route.to_string()),
-    )
 }
 
 /// The sequence the Stream of what `carried` opened first holds a place in
@@ -276,14 +229,4 @@ fn a_turn_its_instance_does_not_take_waits_on_the_instance_as_it_read_it() {
         };
         assert_eq!(on, &[at_its_first_turn], "the Instance, waiting an hour");
     });
-}
-
-/// A Work Process step closed when this is dropped, however the test got
-/// there, so a failing test fails rather than waits.
-struct Closing<'a>(&'a WorkStep);
-
-impl Drop for Closing<'_> {
-    fn drop(&mut self) {
-        self.0.close();
-    }
 }

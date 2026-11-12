@@ -6,9 +6,12 @@
 //! received moving its published drawing (`drawing.rs`), what the program
 //! was not built with refused at start, a library module refused or opened
 //! once, and a paused Subscription holding and sending in order on its
-//! resume. How long a node takes to carry a Message is the module's timing
-//! program's (`tests/measured`).
+//! resume. Which slice a node runs, and that a correctly signed one it
+//! cannot start leaves the last one that ran running, is `activated.rs`'s
+//! (ADR-0031, amendment 2026-11-12). How long a node takes to carry a
+//! Message is the module's timing program's (`tests/measured`).
 
+mod activated;
 mod drawing;
 mod node;
 
@@ -19,9 +22,9 @@ use std::time::{Duration, Instant};
 use net::fixture::unheld;
 use observe::Health;
 use tcp::TcpTransport;
+use xmip_core_runtime::fixture::started;
 #[cfg(feature = "dynamic-loading")]
 use xmip_core_runtime::host::HostService;
-use xmip_core_runtime::running::Running;
 use xmip_core_runtime::service::StartupPhase;
 
 use node::{
@@ -34,12 +37,18 @@ fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
         .replace("timeout = \"100ms\"", "timeout = 5\ncolor = \"lime\"");
     let path = written("declared", &unsound);
 
-    let refused = Running::start(path_text(&path), linked(&path))
+    let refused = started(path_text(&path), || linked(&path))
         .err()
         .expect("refused");
 
     assert_eq!(refused.phase, StartupPhase::ValidateStartup);
-    assert_eq!(refused.problems.len(), 2, "{:?}", refused.problems);
+    // Both settings, and that nothing else ran: no slice ever activated here.
+    assert_eq!(refused.problems.len(), 3, "{:?}", refused.problems);
+    assert!(
+        refused
+            .to_string()
+            .ends_with("no active configuration to run")
+    );
     for setting in ["\"timeout\"", "\"color\""] {
         assert!(
             refused
@@ -57,7 +66,7 @@ fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
         "declared-sound",
         &node(&unheld().to_string(), &unheld().to_string()),
     );
-    Running::start(path_text(&sound), linked(&sound))
+    started(path_text(&sound), || linked(&sound))
         .expect("the node starts")
         .stop();
     let problems = xmip_core_runtime::start::validate(&unsound);
@@ -74,7 +83,7 @@ fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
 fn every_transport_is_given_its_nodes_location_as_it_is_built() {
     let path = written("given", &node(&unheld().to_string(), &unheld().to_string()));
     count_anew();
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     let given = given();
     assert_eq!(
         given.len(),
@@ -96,7 +105,7 @@ fn a_node_stops_cleanly_and_lets_its_listener_go() {
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
     let path = written("stops", &node(&receive, &far_address));
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     deliver(&TcpTransport::loopback(), &receive, b"before the stop");
     far.accept_one(&listener)
         .expect("it reaches the far end")
@@ -124,7 +133,7 @@ fn a_node_stops_cleanly_and_lets_its_listener_go() {
     );
 
     // Dropped without a stop, a node stops all the same.
-    let again = Running::start(path_text(&path), linked(&path)).expect("starts again");
+    let again = started(path_text(&path), || linked(&path)).expect("starts again");
     deliver(&TcpTransport::loopback(), &receive, b"after");
     far.accept_one(&listener)
         .expect("it reaches the far end")
@@ -158,7 +167,7 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
 
     for (configuration, reason) in cases {
         let path = written("unlinked", &configuration);
-        let refused = Running::start(path_text(&path), linked(&path))
+        let refused = started(path_text(&path), || linked(&path))
             .err()
             .expect("refused");
         assert_eq!(refused.phase, StartupPhase::ValidateStartup);
@@ -176,7 +185,7 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
         "unread",
         &base.replace("xmip.transport.mechanism", "party:sender"),
     );
-    let refused = Running::start(path_text(&directory), linked(&directory))
+    let refused = started(path_text(&directory), || linked(&directory))
         .err()
         .expect("refused");
     assert_eq!(refused.phase, StartupPhase::ValidateStartup);
@@ -221,7 +230,7 @@ fn a_library_module_is_refused_where_the_runtime_opens_none() {
     );
     let path = written("library", &configuration);
 
-    let refused = Running::start(path_text(&path), linked(&path))
+    let refused = started(path_text(&path), || linked(&path))
         .err()
         .expect("refused");
 
@@ -263,7 +272,7 @@ fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
     );
     let path = written("opened", &configuration);
 
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
     let contract = running
         .capabilities()
@@ -292,7 +301,7 @@ fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_
         node_sending(&receive, &far_address, sequential)
     );
     let path = written("paused", &configured);
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     deliver(&TcpTransport::loopback(), &receive, b"before the pause");
     far.accept_one(&listener)
         .expect("it reaches the far end")

@@ -7,7 +7,7 @@ use net::fixture::unheld;
 use observe::topology::party::ANY_PARTY;
 use observe::topology::window::Window;
 use tcp::TcpTransport;
-use xmip_core_runtime::running::Running;
+use xmip_core_runtime::fixture::started;
 
 use crate::node::{deliver, first, linked, node, path_text, written};
 
@@ -21,7 +21,7 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
     let path = written("moves", &node(&receive, &far_address));
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     let (name, _) = first();
     let into = format!("party/sending/{ANY_PARTY}/{name}");
     let mut window = Window::new();
@@ -78,7 +78,7 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
     let far = unheld().to_string();
     let configuration = node(&receive, &far).replacen("start = true", "start = false", 1);
     let path = written("sends-only", &configuration);
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
     let snapshot = running.snapshot();
     assert_eq!(snapshot.subscriptions().count(), 0, "none published");

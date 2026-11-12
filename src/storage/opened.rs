@@ -99,6 +99,7 @@ impl Planned {
                         let opened =
                             Embedded::open(runtime, administration, audit, keys.as_ref(), &kek)
                                 .map_err(|problem| did_not_open(problem.to_string()))?;
+                        opened.keep_unwaited(tuning.storage_unwaited);
                         let versions = *opened.versions();
                         let opened: Arc<dyn XmipStorage> = Arc::new(opened);
                         let server = match (serving, bound) {

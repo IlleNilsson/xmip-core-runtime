@@ -7,7 +7,9 @@
 //! [`crate::running::Running::start`], called by the program that links the
 //! technologies the node needs (ADR-0018, amendment 2026-09-26); a surface's
 //! process links none, and whether it may run a node at all is open problem
-//! 20. Both read a configuration through [`read`], one reading.
+//! 20. Both read a slice's text through [`parsed`], one reading: a surface
+//! through [`read`], the slice its node would try first, and the running
+//! node through each slice its trust admits (`running::activation`).
 //!
 //! Its two exports, `xmip_start_v1` and `xmip_validate_v1`, are the
 //! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
@@ -73,55 +75,51 @@ pub struct ApplicationFile {
     pub text: String,
 }
 
-/// Startup phase 1: the node configuration at `path`, and every Xmip
-/// Application it binds, each its section of the configuration
-/// (`configure::section`, ADR-0064 amendment 2026-10-03).
+/// Startup phase 1 as whoever reads a node's configuration without running
+/// it reads it: the slice the node at `path` would try first, as its trust
+/// admits it and writing nothing (`signed::checked`), [`parsed`]. A plan,
+/// an install and a surface read this way.
 ///
 /// # Errors
-/// The file cannot be read or does not parse, or a bound Application is not
-/// held or does not read. What the node would run, read and never kept
-/// (`signed::checked`): a plan, an install and a surface read this way.
+/// The file cannot be read, trust admits nothing to run, or as [`parsed`].
 pub fn read(path: &str) -> Result<Read, Unread> {
-    read_admitted(path, crate::signed::checked).map(|(read, _)| read)
+    let file = std::fs::read_to_string(path)
+        .map_err(|error| unread(format!("cannot read {path}: {error}")))?;
+    let source = crate::signed::checked(std::path::Path::new(path), &file).map_err(unread)?;
+    parsed(path, &source)
 }
 
-/// [`read`] as the running node reads, keeping the slice it accepts, and
-/// why the file at `path` was refused where the node runs its accepted
-/// slice instead: a node runs only the slice its cluster's authority signed
-/// (`signed::accepted`; ADR-0031, amendments 2026-11-06 and 2026-11-07).
+/// Startup phase 1 over `source`, the text of a slice of the node
+/// configured at `path` that its trust admitted: the node's configuration,
+/// and every Xmip Application it binds, each its section of the
+/// configuration (`configure::section`, ADR-0064 amendment 2026-10-03). The
+/// one reading of a slice's text, the running node's attempts included
+/// (`running::activation`).
 ///
 /// # Errors
-/// As [`read`], and a slice refused with no accepted slice to run.
-pub fn read_accepted(path: &str) -> Result<(Read, Option<String>), Unread> {
-    read_admitted(path, crate::signed::accepted)
-}
-
-/// What [`signed`](crate::signed) admits of a file: its text, and why it
-/// was refused where an accepted slice runs instead.
-type Admit = fn(&std::path::Path, &str) -> Result<(String, Option<String>), String>;
-
-/// [`read`] and [`read_accepted`], by `admit`.
-fn read_admitted(path: &str, admit: Admit) -> Result<(Read, Option<String>), Unread> {
-    let root = |reason: String| Unread {
-        scope: "xmip:///".to_string(),
-        reason,
-    };
-    let file = std::fs::read_to_string(path)
-        .map_err(|error| root(format!("cannot read {path}: {error}")))?;
-    let (source, refused) = admit(std::path::Path::new(path), &file).map_err(root)?;
-    let document = read_node(&source).map_err(|report| {
-        root(format!(
+/// The text does not parse, or a bound Application is not held or does not
+/// read.
+pub fn parsed(path: &str, source: &str) -> Result<Read, Unread> {
+    let document = read_node(source).map_err(|report| {
+        unread(format!(
             "{path} does not parse: {}",
             report.errors.join("; ")
         ))
     })?;
     let (applications, files) =
-        bound_applications(path, &source, &document).map_err(|reason| Unread {
+        bound_applications(path, source, &document).map_err(|reason| Unread {
             scope: format!("xmip:///{}", document.service.node_name),
             reason: format!("configuration refused: {reason}"),
         })?;
+    Ok((document, applications, files))
+}
 
-    Ok(((document, applications, files), refused))
+/// A configuration not read, said at the root: no node is named yet.
+fn unread(reason: String) -> Unread {
+    Unread {
+        scope: "xmip:///".to_string(),
+        reason,
+    }
 }
 
 /// Plan a node from its configuration file, as a surface asks: read it, build
