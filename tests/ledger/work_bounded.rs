@@ -134,7 +134,13 @@ fn a_backlog_in_one_work_process_holds_back_no_turn_of_another() {
     let record: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     let recorded = |name: &'static str| {
         let record = Arc::clone(&record);
-        let flow = Hooked::of(ABSORB, Box::new(move || record.locked().push(name)));
+        let flow = Hooked::of(
+            ABSORB,
+            Box::new(move || {
+                record.locked().push(name);
+                Ok(())
+            }),
+        );
         running_as(name, flow, Arc::new(NoUnits))
     };
     let routes = routes_to(&["First", "Second"]);

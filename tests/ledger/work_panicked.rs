@@ -23,6 +23,7 @@ use journey::JourneyState;
 use persist::storage::XmipStorage;
 use xmip_core_runtime::fixture::{Failing, Operation};
 use xmip_core_runtime::ledger::CHUNK;
+use xmip_core_runtime::sequence::OnFailure;
 use xmip_core_runtime::work_step::{NoUnits, Running, Turned, turn_due};
 
 use super::receive_cycle::{Sender, on_working_node};
@@ -104,7 +105,7 @@ fn a_sequenced_turn_whose_flow_panics_keeps_the_dispatching_going() {
     let panics = Hooked::of(CALLS, Box::new(|| panic!("a flow that panics")));
     let calls = running_as("Calls", panics, Arc::new(NoUnits));
     let runs = (
-        sequenced(counted_node(), "Calls"),
+        sequenced(counted_node(), "Calls", OnFailure::Skip),
         vec![calls, running("Absorb", ABSORB)],
     );
     on_working_node(&storage, (CHUNK, &routes), runs, |works, pickup, gate| {
@@ -136,7 +137,7 @@ fn a_claim_that_panics_is_let_go_of_and_taken_up_again(in_order: bool) {
     failing.before(Operation::Claim, Box::new(|| panic!("a claim that panics")));
     let routes = routes_to(&["Absorb"]);
     let node: Sender = if in_order {
-        sequenced(counted_node(), "Absorb")
+        sequenced(counted_node(), "Absorb", OnFailure::Skip)
     } else {
         counted_node()
     };
