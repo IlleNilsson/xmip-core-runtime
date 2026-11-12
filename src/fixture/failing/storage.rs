@@ -165,6 +165,19 @@ impl XmipStorage for Failing {
         self.answered(Operation::Claim, asked, answer)
     }
 
+    /// Asked, counted and timed as a claim: its answer, never its sync.
+    fn claim_ahead(
+        &self,
+        journey: JourneyId,
+        holder: &str,
+        token: u128,
+        lease: Duration,
+    ) -> Result<(Option<Claim>, Durable), PersistError> {
+        let asked = self.asked(Operation::Claim)?;
+        let answer = self.beneath.claim_ahead(journey, holder, token, lease);
+        self.answered(Operation::Claim, asked, answer)
+    }
+
     fn renew(&self, claims: &[Claim], lease: Duration) -> Result<Vec<Claim>, PersistError> {
         let asked = self.asked(Operation::Renew)?;
         let answer = self.beneath.renew(claims, lease);

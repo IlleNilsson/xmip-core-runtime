@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use context::IdentityFacts;
-use persist::storage::Claim;
+use persist::storage::{Claim, Durable};
 use route::Subscriber;
 use xcore::JourneyId;
 
@@ -226,7 +226,7 @@ fn owned(
     queue: u128,
     (one, steps): (Took, Steps),
 ) -> Departure {
-    let (work, facts, claim, asked) = one;
+    let (work, facts, (claim, durable), asked) = one;
     let departure = Departure {
         progress: Progress::of(work.journey.attempts),
         work,
@@ -235,7 +235,8 @@ fn owned(
         queue,
         claim,
         until: asked + step.lease,
-        durable: None,
+        durable: Some(durable),
+        handed: false,
         spent: None,
         measured: None,
         steps,
@@ -245,8 +246,8 @@ fn owned(
 }
 
 /// What a claim took: the Journey and its Message, the identity it arrived
-/// with, the claim, and when the claim was asked.
-type Took = (ReceivedWork, IdentityFacts, Claim, Instant);
+/// with, the claim with when it is durable, and when the claim was asked.
+type Took = (ReceivedWork, IdentityFacts, (Claim, Durable), Instant);
 
 impl super::SendStep {
     /// The Message at `place` in `queue` passed over by every scan after.
@@ -264,8 +265,11 @@ enum Taken {
     Unanswered,
 }
 
-/// An entry of a queue, at its `place`, bound for `to`: claimed, then read
-/// with its place ([`under_claim`]), each timed in `steps`.
+/// An entry of a queue, at its `place`, bound for `to`: claimed ahead of
+/// its sync, then read with its place under the readable claim
+/// ([`under_claim`]), each timed in `steps`: the claim's answer, never its
+/// sync, which the send waits on before its far end sees anything (ADR-0018,
+/// amendment 2026-11-12).
 fn claimed_first(
     runtime: &Runtime<'_>,
     (to, queue): (&Subscriber, u128),
@@ -276,18 +280,20 @@ fn claimed_first(
     let id = place.0;
     let token = runtime.ids.next_u128();
     let asked = Instant::now();
-    let claimed = step.storage.claim(id, &step.node, token, step.lease);
+    let claimed = step.storage.claim_ahead(id, &step.node, token, step.lease);
     steps.set(Step::Claim, asked.elapsed());
-    let claim = match claimed {
-        Ok(Some(claim)) => claim,
-        Ok(None) => return Taken::Passed,
+    let (claim, durable) = match claimed {
+        Ok((Some(claim), durable)) => (claim, durable),
+        Ok((None, _)) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
     let under = under_claim(runtime, queue, place, (body, steps));
     if let Under::Waiting(found) = under {
         let (work, facts) = *found;
-        return Taken::One(Box::new((work, facts, claim, asked)));
+        return Taken::One(Box::new((work, facts, (claim, durable), asked)));
     }
+    // Given back once durable, so the claim's word is read, never dropped.
+    let _ = durable.wait();
     let _ = step.storage.release(&claim);
     match under {
         Under::Waiting(_) | Under::Moved => Taken::Passed,

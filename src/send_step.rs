@@ -49,6 +49,16 @@
 //! passed over behind another Stream of its sequence is read again the
 //! moment any node moves that sequence's head (`crate::queue_watch`).
 //!
+//! **A claim taken from a queue is sent under once readable** (ADR-0018,
+//! amendment 2026-11-12). Xmip Storage answers it before its sync, with
+//! when it is durable (`XmipStorage::claim_ahead`), so the Message's read,
+//! its sequences and its send are prepared while the claim syncs; a
+//! technology that holds its delivery back lets its far end see it only
+//! once the claim is durable and still this node's, and every other sends
+//! its first byte only then. A claim whose sync failed, or whose word never
+//! came, abandons what was prepared: no far end saw it, no try is counted,
+//! and the claim is given back where Xmip Storage still answers.
+//!
 //! **Each send is timed step by step** ([`Steps`]), and each Send Port's
 //! snapshot says the median of each step over its latest sends, handed in
 //! memory and taken from its queue apart (2026-11-12).
@@ -173,10 +183,15 @@ pub struct Departure {
     /// lease from when the request that last confirmed the claim was asked,
     /// so no two clocks are ever compared.
     pub until: Instant,
-    /// When its Publication is durable, where its receive cycle handed it
-    /// on before the Ledger synced it: the far end sees it only then.
-    /// `None` where it was read from the Ledger, durable already.
+    /// When what it is sent under is durable: its Publication, where its
+    /// receive cycle handed it on before the Ledger synced it, or its claim,
+    /// where a scan took it ahead of its sync (ADR-0018, amendment
+    /// 2026-11-12). The far end sees it only then, and nothing of it where it
+    /// never is. `None` where nothing it is sent under waits for a sync.
     pub durable: Option<Durable>,
+    /// Handed in memory by its node's own Publication, which claimed it in
+    /// the same write; else taken from its queue: how its steps are kept.
+    pub handed: bool,
     /// Its Message's account, the processor time worked for it since its
     /// transport handed it over, where its receive cycle handed it on
     /// (`xcore::spent`); `None` where it was read from the Ledger.
@@ -189,6 +204,19 @@ pub struct Departure {
     pub measured: Option<Measured>,
     /// What its send took on this node so far, step by step.
     pub steps: Steps,
+}
+
+impl Departure {
+    /// What it is sent under waited on until durable, or until its sync
+    /// failed, before a write that ends its claim: that write says what came
+    /// of it, and a claim's word read over the wire frees its connection for
+    /// the next request, never left for its drop to close (ADR-0018,
+    /// amendment 2026-11-12). At once where it was waited on already.
+    pub(crate) fn settled(&self) {
+        if let Some(durable) = &self.durable {
+            let _ = durable.wait();
+        }
+    }
 }
 
 /// What a Publication writes for the Messages that go on to be sent: each
@@ -406,6 +434,7 @@ impl SendStep {
                 progress: Progress::of(journey.attempts),
                 until,
                 durable: Some(durable.clone()),
+                handed: true,
                 spent: spent.clone(),
                 measured: None,
                 steps: Steps::default(),

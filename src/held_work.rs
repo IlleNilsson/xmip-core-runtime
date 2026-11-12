@@ -154,6 +154,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             claim,
             until: asked + step.lease(),
             durable: None,
+            handed: false,
             spent: None,
             measured: None,
             steps: send_step::Steps::default(),

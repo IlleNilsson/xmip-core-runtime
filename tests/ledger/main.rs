@@ -64,7 +64,10 @@
 //! and what is due coming with the wake; `woken_behind.rs` a Journey
 //! behind another Stream of its sequence taken up at once where another
 //! node ends that Stream, by either step, and what a turn its Instance did
-//! not take waits on;
+//! not take waits on; `claim_ahead.rs` a Message taken from its queue sent
+//! under a claim answered once readable, its far end seeing it only once
+//! the claim is durable, in process and over the wire, and a send whose
+//! claim never is abandoned unseen, counting no try;
 //! `said.rs` a line said at once. `receive_cycle.rs`, `sending.rs`,
 //! `work_design.rs` and `said.rs` are the timing program's too
 //! (`tests/measured`), where what a hop's sequence check and a Work
@@ -73,6 +76,7 @@
 mod audited;
 mod bounded;
 mod child_process;
+mod claim_ahead;
 mod dead_message_queue;
 mod drained;
 mod fenced;

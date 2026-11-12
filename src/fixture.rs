@@ -73,12 +73,14 @@ pub type Answer = Box<dyn Fn(&[u8]) -> transport::Result<()> + Send + Sync>;
 
 /// A Send Location's far end in a test: every Stream it took, in the order
 /// it took them, the deduplication key and the fence every send carried,
-/// and the answer it gives each send.
+/// and the answer it gives each send; and, where it holds its delivery
+/// back, what is written and not yet let out ([`FarEnd::holding`]).
 pub struct FarEnd {
     taken: Arc<Mutex<Vec<Vec<u8>>>>,
     keys: Arc<Mutex<Vec<String>>>,
     fences: Arc<Mutex<Vec<u64>>>,
     answer: Answer,
+    prepared: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
 }
 
 impl FarEnd {
@@ -91,8 +93,21 @@ impl FarEnd {
             keys: Arc::default(),
             fences: Arc::default(),
             answer,
+            prepared: None,
         };
         (far, taken)
+    }
+
+    /// It holds its delivery back (`transport::Transport::holds_back`), as
+    /// the file transport does: each send written where no reader of the
+    /// far end sees it, in `prepared`, until its Message is kept
+    /// (`transport::Outgoing::kept`), then taken — or abandoned, never
+    /// taken, where it is not.
+    #[must_use]
+    pub fn holding(mut self) -> (Self, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let prepared = Arc::new(Mutex::new(Vec::new()));
+        self.prepared = Some(Arc::clone(&prepared));
+        (self, prepared)
     }
 
     /// The deduplication key of every send it was asked, taken or not, in
@@ -169,6 +184,12 @@ impl transport::Transport for FarEnd {
         transport::Sending::Gathered("a test's far end keeps every body it takes whole")
     }
 
+    fn holds_back(&self) -> Option<&'static str> {
+        self.prepared
+            .as_ref()
+            .map(|_| "a test's far end takes what it was written only once it is kept")
+    }
+
     fn send_from(&self, _target: &str, outgoing: transport::Outgoing<'_>) -> transport::Result<()> {
         self.keys
             .locked()
@@ -176,6 +197,19 @@ impl transport::Transport for FarEnd {
         self.fences.locked().push(outgoing.fence());
         let bytes: &[u8] = &outgoing.gather()?;
         (self.answer)(bytes)?;
+        if let Some(prepared) = &self.prepared {
+            // Written where no reader sees it, let out once kept: its last step.
+            prepared.locked().push(bytes.to_vec());
+            let kept = outgoing.kept();
+            // Moved, or abandoned, at once: never seen in both or in neither.
+            let mut held = prepared.locked();
+            if let Some(at) = held.iter().position(|one| one.as_slice() == bytes) {
+                held.remove(at);
+            }
+            kept?;
+            self.taken.locked().push(bytes.to_vec());
+            return Ok(());
+        }
         self.taken.locked().push(bytes.to_vec());
         Ok(())
     }

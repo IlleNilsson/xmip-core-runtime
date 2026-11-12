@@ -158,6 +158,8 @@ impl SendStep {
     /// for a retry holds no claim and no place.
     fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
         let id = departure.work.journey.journey_id();
+        // Before its claim is given back: what it is sent under, waited on.
+        departure.settled();
         let mut state = self.lock();
         match &ended {
             Ended::Waiting { after, .. } => {
@@ -201,9 +203,8 @@ impl SendStep {
             Ended::Completed(_) => {
                 let port = departure.to.name().to_string();
                 state.figures.entry(port.clone()).or_default().sent += 1;
-                let handed = departure.durable.is_some();
                 let timed = state.timed.entry(port).or_default();
-                timed.sent(departure.steps.clone(), handed);
+                timed.sent(departure.steps.clone(), departure.handed);
             }
             Ended::Failed { reason, .. } => {
                 let port = departure.to.name().to_string();

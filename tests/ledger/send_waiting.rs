@@ -234,6 +234,7 @@ fn a_pass_whose_claim_is_not_surely_held_writes_nothing_and_is_taken_up_again() 
                 claim,
                 until: Instant::now(),
                 durable: None,
+                handed: false,
                 spent: None,
                 measured: None,
                 steps: Steps::default(),
