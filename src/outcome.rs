@@ -34,6 +34,11 @@ use context::IdentityFacts;
 use identify::Presented;
 use route::{Promoted, Routing, SourceError};
 
+mod placed;
+
+use placed::Placed;
+pub(crate) use placed::PlacedCounts;
+
 /// Why a Stream never began a Journey.
 #[derive(Clone, Debug)]
 pub enum Refused {
@@ -188,6 +193,9 @@ pub(crate) struct Tally {
     /// The own share and the disk's time of each Message sent, the last
     /// [`OWN_SHARE_FIVES`] fives of each kept.
     measured: Mutex<Option<[FastestOfFive; 2]>>,
+    /// Streams per Receive Location and per (Location, Subscription), each
+    /// counter resolved as the node starts (`placed`).
+    placed: Placed,
 }
 
 /// How many fives of sent Messages' own shares, and of their disk's times,
@@ -196,8 +204,31 @@ pub(crate) struct Tally {
 pub const OWN_SHARE_FIVES: usize = 1000;
 
 impl Tally {
-    /// Count what became of one Stream.
-    pub(crate) fn record(&self, carried: &Carried) {
+    /// A tally for a node starting the Receive Locations `receiving` and
+    /// routing by the Subscriptions `subscriptions`: what it counts at each,
+    /// resolved now (ADR-0018, amendment 2026-11-11).
+    pub(crate) fn of<'a>(
+        receiving: impl Iterator<Item = &'a str>,
+        subscriptions: &[route::Subscription],
+    ) -> Self {
+        let locations = receiving.map(str::to_string).collect();
+        let routed_by = subscriptions.iter().map(|one| one.id.clone()).collect();
+        Self {
+            placed: Placed::of(locations, routed_by),
+            ..Self::default()
+        }
+    }
+
+    /// The place of the Receive Location `name`, which its serving thread
+    /// counts at: resolved once, as it starts.
+    pub(crate) fn place(&self, name: &str) -> Option<usize> {
+        self.placed.place(name)
+    }
+
+    /// Count what became of one Stream, taken off the Receive Location at
+    /// `place`: at the node, at that Location, and along each Subscription
+    /// it was routed by.
+    pub(crate) fn record(&self, place: Option<usize>, carried: &Carried) {
         let count = |counter: &AtomicU64| {
             counter.fetch_add(1, Ordering::Relaxed);
         };
@@ -209,6 +240,19 @@ impl Tally {
             Arrived::Failed { .. } => &self.failed,
         });
         self.held.fetch_add(carried.held as u64, Ordering::Relaxed);
+        if let Some(place) = place {
+            let routed = match &carried.arrived {
+                Arrived::Routed { routing, .. } => Some(routing),
+                _ => None,
+            };
+            self.placed.record(place, routed);
+        }
+    }
+
+    /// The Streams each Receive Location took, and the Streams routed
+    /// along each (Location, Subscription) that routed any, by name.
+    pub(crate) fn placed_counts(&self) -> PlacedCounts {
+        self.placed.counts()
     }
 
     /// Count a Message the send step wrote Completed, with Xmip's own share

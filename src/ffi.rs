@@ -36,6 +36,8 @@ pub(crate) mod directory_watch;
 #[cfg(feature = "remote")]
 pub mod event;
 #[cfg(feature = "remote")]
+pub mod from_to;
+#[cfg(feature = "remote")]
 pub mod keeper;
 /// The contract trait of a loaded module (ADR-0057 clause 8 step 2).
 #[cfg(feature = "dynamic-loading")]

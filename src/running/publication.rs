@@ -49,35 +49,33 @@
 //! endpoint per Location, and the Party on each side (ADR-0052, amendment
 //! 2026-09-29). A node's configuration names its Parties (`[[parties]]`),
 //! and a Receive Location the Parties it takes (`accept.party`), but its
-//! publication does not yet say which a Location takes and an endpoint is
-//! labeled by its transport alone, so whoever its Receive Locations accept
-//! and its Send Ports deliver to is drawn as one Party per side, over every
-//! endpoint, [`ANY_PARTY`] (open problem 33). What moved over it — each
-//! link's rate, each drawn thing's activity — is stated by the window its
-//! publisher keeps (`observe::topology::window`; ADR-0018, amendment
-//! 2026-11-10); a stopped node is drawn still.
+//! publication does not yet say which a Location takes, so whoever its
+//! Receive Locations accept and its Send Ports deliver to is drawn as one
+//! Party per side, over every endpoint, `observe::topology::party::ANY_PARTY`
+//! (open problem 33), each link saying the transport its Locations'
+//! addresses chose, never a Location's name (ADR-0018, amendment
+//! 2026-11-11). What moved over it — each link's rate, each drawn thing's
+//! activity — is stated by the window its publisher keeps
+//! (`observe::topology::window`; ADR-0018, amendment 2026-11-10); a stopped
+//! node is drawn still.
 
 use node::{Capability, Stage};
+use observe::topology::draw;
 use observe::topology::window::Window;
-use observe::topology::{draw, party};
 use observe::{
-    Count, Counted, FailedMessages, Health, HealthRecord, PauseState, Publication, Snapshot,
-    Topology, now_unix_nanos,
+    Count, FailedMessages, Health, HealthRecord, PauseState, Publication, Snapshot, now_unix_nanos,
 };
 
 use std::collections::BTreeMap;
 
 use super::Running;
 
+mod drawn;
 mod stopped;
 
-use crate::{
-    capability_registry::Load, outcome::Outcomes, pickup::PUBLISHED, send_step::PortFigures,
-};
+use crate::{capability_registry::Load, pickup::PUBLISHED, send_step::PortFigures};
+use drawn::{Seen, counts, drawn};
 pub use stopped::stopped;
-
-/// The Party a node draws on each side while its configuration can name none.
-pub const ANY_PARTY: &str = "any-party";
 
 /// The location of the node `node` of `cluster`: the scope it declares and
 /// publishes beneath (ADR-0027 clause 4, ADR-0053).
@@ -152,6 +150,8 @@ impl Running {
         let staged = not_started_records(&node, &self.not_started)
             .into_iter()
             .chain(stage_records(&node, &self.locations, &failures, &figures));
+        // Its Subscriptions: none where it routes by none
+        // (`Pickup::routing_none`; ADR-0018, amendment 2026-11-11).
         let subscriptions = self.pickup.standing();
         for subscription in &subscriptions {
             let scope = format!("{node}/{}/{}", Stage::Process.name(), subscription.name);
@@ -203,22 +203,41 @@ impl Running {
     #[must_use]
     pub fn publication(&self, source: &str, window: &mut Window) -> Publication {
         let snapshot = self.snapshot();
-        let mut topology = drawn(&self.cluster, &self.node, &snapshot);
+        let placed = self.tally.placed_counts();
+        let peers = self.storage.peers();
+        // Each Location by the endpoint it is drawn as — a Send Location
+        // beneath its Port, as its Port — and the transport its address
+        // chose: what its Party's link says it runs over.
+        let transports: Vec<(String, String)> = self
+            .locations
+            .iter()
+            .map(|(_, beneath, configured)| {
+                let endpoint = beneath.split('/').next().unwrap_or(beneath);
+                (endpoint.to_string(), configured.scheme())
+            })
+            .collect();
+        let seen = Seen {
+            placed: Some(&placed),
+            peers: &peers,
+            bound: &self.bound,
+            transports: &transports,
+        };
+        let mut topology = drawn(&self.cluster, &self.node, &snapshot, seen);
         window.state(&mut topology, &snapshot);
         Publication::whole(source, &self.location(), &snapshot).with_topology(Some(topology))
     }
 
     /// The roles the node's configuration gives it — receiving where a
-    /// Receive Location starts, processing where a Subscription routes,
-    /// sending where a Send Port starts, executing where all three do — and
-    /// whether its configuration says it is online (ADR-0045; ADR-0056,
-    /// amendment 2026-10-01).
+    /// Receive Location starts, processing where it routes, sending where a
+    /// Send Port starts, executing where all three do — and whether its
+    /// configuration says it is online (ADR-0045; ADR-0056, amendment
+    /// 2026-10-01).
     fn declared(&self) -> Capability {
-        let serves = |stage: &str| self.locations.iter().any(|(at, _)| *at == stage);
+        let serves = |stage: Stage| self.locations.iter().any(|(at, ..)| *at == stage);
         let stages: Vec<Stage> = [
-            (Stage::Receive, serves(Stage::Receive.name())),
-            (Stage::Process, !self.pickup.standing().is_empty()),
-            (Stage::Send, serves(Stage::Send.name())),
+            (Stage::Receive, serves(Stage::Receive)),
+            (Stage::Process, self.routes),
+            (Stage::Send, serves(Stage::Send)),
         ]
         .into_iter()
         .filter_map(|(stage, served)| served.then_some(stage))
@@ -229,7 +248,8 @@ impl Running {
     /// What [`counts`] says the node counted, recorded at `now`.
     fn count(&self, snapshot: &mut Snapshot, node: &str, now: i64) {
         let figures = self.send.figures();
-        for (scope, counted, value) in counts(node, self.tally.outcomes(), figures) {
+        let placed = self.tally.placed_counts();
+        for (scope, counted, value) in counts(node, self.tally.outcomes(), figures, &placed) {
             snapshot.record_count(Count {
                 scope,
                 counted,
@@ -270,15 +290,17 @@ impl Running {
 /// 2026-10-08 a failed read left such a Port Fine.
 fn stage_records(
     node: &str,
-    locations: &[(&'static str, configure::ConfiguredLocation)],
+    locations: &[(Stage, String, configure::ConfiguredLocation)],
     failures: &[(String, String)],
     figures: &BTreeMap<String, PortFigures>,
 ) -> Vec<StageRecord> {
     let fine = (Health::Fine, severity(Health::Fine));
     let mut records: Vec<StageRecord> = locations
         .iter()
-        .map(|(stage, location)| {
-            let scope = format!("{node}/{stage}/{}", location.name);
+        .map(|(stage, beneath, location)| {
+            // A Send Location tried for a Port named apart from it is
+            // beneath that Port (`ExecutionTree::beneath`).
+            let scope = format!("{node}/{}/{beneath}", stage.name());
             match failures.iter().find(|(name, _)| name == &location.name) {
                 Some((_, why)) => (scope, (Health::Done, severity(Health::Done)), why.clone()),
                 None => (scope, fine, format!("started at {}", location.address)),
@@ -347,58 +369,12 @@ fn failed_messages(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<F
     published.collect()
 }
 
-/// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself,
-/// its stages and their endpoints, and [`ANY_PARTY`] on each side a stage
-/// faces.
-fn drawn(cluster: &str, node: &str, snapshot: &Snapshot) -> Topology {
-    let root = format!("xmip:///{cluster}");
-    let names = [node];
-    let mut topology = Topology {
-        source: format!("{root} — node {node}"),
-        observed_unix_nanos: now_unix_nanos(),
-        nodes: draw::members(snapshot, &root, &names),
-        links: Vec::new(),
-    };
-    let parties = [party::Party::everywhere(ANY_PARTY)];
-    party::draw(snapshot, &root, &names, &parties, &mut topology);
-    topology
-}
-
-/// What the tally counted, each kind at the stage that counts it, and what
-/// the send step counted at each Send Port: sent, failed, and waiting for a
-/// retry's due time. A scope's measure is the sum of every count within
-/// it, so the send stage and the node keep only what no Send Port counted:
-/// one file sent is one Message, never two.
-fn counts(
-    node: &str,
-    outcomes: Outcomes,
-    ports: BTreeMap<String, PortFigures>,
-) -> Vec<(String, Counted, u64)> {
-    let sent = outcomes
-        .sent
-        .saturating_sub(ports.values().map(|port| port.sent).sum());
-    let failed = (outcomes.refused + outcomes.failed + outcomes.not_sent)
-        .saturating_sub(ports.values().map(|port| port.failed).sum());
-    let at = |stage: Stage| format!("{node}/{}", stage.name());
-    let mut counts = vec![
-        (at(Stage::Receive), Counted::Streams, outcomes.received),
-        (at(Stage::Process), Counted::Journeys, outcomes.routed),
-        (at(Stage::Send), Counted::Messages, sent),
-        (node.to_string(), Counted::Failed, failed),
-    ];
-    for (port, figures) in ports {
-        let scope = format!("{}/{port}", at(Stage::Send));
-        counts.push((scope.clone(), Counted::Messages, figures.sent));
-        counts.push((scope.clone(), Counted::Failed, figures.failed));
-        counts.push((scope, Counted::Retrying, figures.waiting));
-    }
-    counts
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observe::FailedMessage;
+    use crate::outcome::Outcomes;
+    use observe::topology::party::ANY_PARTY;
+    use observe::{Counted, FailedMessage, Topology};
 
     #[test]
     fn one_message_sent_through_a_send_port_measures_one_at_the_node() {
@@ -416,7 +392,12 @@ mod tests {
             ..PortFigures::default()
         };
         let mut snapshot = Snapshot::new();
-        for (scope, counted, value) in counts(&node, outcomes, [("Out".into(), figures)].into()) {
+        for (scope, counted, value) in counts(
+            &node,
+            outcomes,
+            [("Out".into(), figures)].into(),
+            &Default::default(),
+        ) {
             snapshot.record_count(Count {
                 scope,
                 counted,
@@ -435,6 +416,11 @@ mod tests {
             let measured = snapshot.measure(&node, counted).expect("counted");
             assert_eq!(measured.value, 1, "{counted:?} at the node");
         }
+    }
+
+    /// A Location started at `stage`, published beneath it by its name.
+    fn at(stage: Stage, name: &str) -> (Stage, String, configure::ConfiguredLocation) {
+        (stage, name.to_string(), configured(name))
     }
 
     fn configured(name: &str) -> configure::ConfiguredLocation {
@@ -585,10 +571,7 @@ mod tests {
     fn a_send_port_of_several_locations_publishes_its_figures_at_its_own_scope() {
         let cluster = configure::fixture::test_cluster();
         let node = cluster.node_scope(0);
-        let locations = [
-            ("send", configured("Primary")),
-            ("send", configured("Backup")),
-        ];
+        let locations = [at(Stage::Send, "Primary"), at(Stage::Send, "Backup")];
         let figures = BTreeMap::from([(
             "Out".to_string(),
             PortFigures {
@@ -629,7 +612,7 @@ mod tests {
     #[test]
     fn a_location_not_started_is_published_saying_the_configuration_does_not_say_true() {
         let node = configure::fixture::test_cluster().node_scope(0);
-        let locations = [("receive", configured("In"))];
+        let locations = [at(Stage::Receive, "In")];
         let not_started = [("receive", "Off".to_string()), ("send", "Out".to_string())];
 
         let records = not_started_records(&node, &not_started)
@@ -662,7 +645,7 @@ mod tests {
     fn drawn_at(second: i64, received: u64, sent: u64) -> (Topology, Snapshot) {
         let cluster = configure::fixture::test_cluster();
         let (name, node) = (&cluster.node(0).name, cluster.node_scope(0));
-        let locations = [("receive", configured("In")), ("send", configured("Out"))];
+        let locations = [at(Stage::Receive, "In"), at(Stage::Send, "Out")];
         let mut snapshot = Snapshot::new();
         for (scope, (health, severity), evidence) in
             stage_records(&node, &locations, &[], &BTreeMap::new())
@@ -684,7 +667,12 @@ mod tests {
             sent,
             ..PortFigures::default()
         };
-        for (scope, counted, value) in counts(&node, outcomes, [("Out".into(), figures)].into()) {
+        for (scope, counted, value) in counts(
+            &node,
+            outcomes,
+            [("Out".into(), figures)].into(),
+            &Default::default(),
+        ) {
             snapshot.record_count(Count {
                 scope,
                 counted,
@@ -694,7 +682,7 @@ mod tests {
                 observed_unix_nanos: 0,
             });
         }
-        let mut topology = drawn(&cluster.name, name, &snapshot);
+        let mut topology = drawn(&cluster.name, name, &snapshot, Seen::default());
         topology.observed_unix_nanos = second * 1_000_000_000;
         (topology, snapshot)
     }

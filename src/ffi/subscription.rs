@@ -35,6 +35,7 @@ fn listed<'a>(orders: &str, subscriptions: impl Iterator<Item = &'a Subscription
                 "application": subscription.application,
                 "filter": subscription.filter,
                 "destination": subscription.destination,
+                "send_ports": subscription.send_ports,
                 "file": subscription.file,
                 "configuration": subscription.configuration,
                 "state": subscription.state.word(),
@@ -274,6 +275,7 @@ mod tests {
         assert_eq!(entry["name"], "billing");
         assert_eq!(entry["state"], "active");
         assert_eq!(entry["destination"], "the Send Port 'Out'");
+        assert_eq!(entry["send_ports"], json!(["Out"]), "where its work goes");
 
         assert_eq!(act("billing", "pause").0, status::OK);
         let held = published(&pickup, storage.as_ref(), &[billing], "held");
@@ -300,6 +302,51 @@ mod tests {
             (entry["held"].clone(), entry["picked_up"].clone()),
             (0.into(), 1.into())
         );
+    }
+
+    /// ADR-0018, amendment 2026-11-11: a node that routes by none — it
+    /// starts no Receive Location and runs no Work Process — lists none in
+    /// section 14, and an act on one is refused in words, as its
+    /// publication publishes none (`Pickup::routing_none`).
+    #[test]
+    fn a_node_that_routes_by_none_lists_none_and_refuses_an_act_in_words() {
+        let node = format!(
+            "{}-ffi-routing-none",
+            configure::fixture::test_cluster().node_scope(1)
+        );
+        let storage = crate::ledger::in_memory();
+        let _pickup = Pickup::routing_none(&node, Arc::clone(storage), None).expect("opened");
+
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut length = 0usize;
+        // SAFETY: every pointer is this test's own string or buffer, alive for the call.
+        let code = unsafe {
+            xmip_subscriptions_v1(
+                borrow(&node),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &raw mut length,
+            )
+        };
+        assert_eq!(code, status::OK);
+        let listed: Value = serde_json::from_slice(&buffer[..length]).expect("JSON");
+        assert_eq!(listed["subscriptions"], json!([]), "{listed}");
+
+        // SAFETY: every pointer is this test's own string or buffer, alive for the call.
+        let code = unsafe {
+            xmip_subscription_act_v1(
+                borrow(&node),
+                borrow("onward"),
+                borrow("pause"),
+                borrow("ilian"),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &raw mut length,
+            )
+        };
+        let said = String::from_utf8_lossy(&buffer[..length]).into_owned();
+        assert_eq!(code, status::NOT_FOUND, "{said}");
+        assert!(said.contains("routes by no Subscription"), "{said}");
     }
 
     #[test]

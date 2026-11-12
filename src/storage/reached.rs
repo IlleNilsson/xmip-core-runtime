@@ -53,6 +53,21 @@ impl Reached {
         serving.as_ref().map(StorageServer::address)
     }
 
+    /// What each node that called the Storage node it serves wrote and took
+    /// on, by the node its certificate was issued for (`StorageServer::peers`):
+    /// none where it serves no Storage node.
+    #[must_use]
+    pub fn peers(&self) -> Vec<(String, u64, u64)> {
+        let serving = self.serving.locked();
+        serving.as_ref().map_or_else(Vec::new, |server| {
+            server
+                .peers()
+                .into_iter()
+                .map(|peer| (peer.node, peer.published, peer.taken))
+                .collect()
+        })
+    }
+
     /// What it reaches and how it stands, in words, and the chunk: what
     /// the node says as it starts and publishes at `<node>/storage`.
     #[must_use]
