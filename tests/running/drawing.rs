@@ -4,10 +4,10 @@
 use std::time::{Duration, Instant};
 
 use net::fixture::unheld;
+use observe::topology::party::ANY_PARTY;
 use observe::topology::window::Window;
 use tcp::TcpTransport;
 use xmip_core_runtime::running::Running;
-use xmip_core_runtime::running::publication::ANY_PARTY;
 
 use crate::node::{deliver, first, linked, node, path_text, written};
 
@@ -64,6 +64,47 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
             .iter()
             .any(|node| node.id == at && node.activity > 0.0),
         "{moved:?}"
+    );
+    running.stop();
+    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
+}
+
+/// ADR-0018, amendment 2026-11-11: a node processes where it routes. One
+/// that starts no Receive Location and runs no Work Process declares no
+/// processing and publishes no Subscription, though its slice carries one.
+#[test]
+fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_no_subscription() {
+    let receive = unheld().to_string();
+    let far = unheld().to_string();
+    let configuration = node(&receive, &far).replacen("start = true", "start = false", 1);
+    let path = written("sends-only", &configuration);
+    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+
+    let snapshot = running.snapshot();
+    assert_eq!(snapshot.subscriptions().count(), 0, "none published");
+    let scope = observe::capability::scope(&running.location());
+    let evidence = snapshot
+        .health(&scope)
+        .into_iter()
+        .find(|record| record.scope == scope)
+        .expect("it declares")
+        .evidence;
+    let (_, declared) = observe::capability::declared(&scope, &evidence).expect("a capability");
+    let declared = declared.expect("read");
+    assert!(!declared.can(node::Stage::Process), "{evidence}");
+    assert!(declared.can(node::Stage::Send), "{evidence}");
+
+    // Its pickup routes by none (`Pickup::routing_none`), which section 14
+    // lists as none and refuses an act on in words (`ffi::subscription`):
+    // the publication, section 14 and an order agree.
+    assert!(running.pickup().standing().is_empty(), "it takes none up");
+    let refused = running
+        .pickup()
+        .act("onward", observe::Act::Pause, "ilian")
+        .expect_err("it routes by none");
+    assert!(
+        refused.starts_with("REFUSED") && refused.contains("routes by no Subscription"),
+        "{refused}"
     );
     running.stop();
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));

@@ -69,6 +69,8 @@ const AGAIN: Duration = Duration::from_millis(50);
 /// hold.
 pub struct Pickup {
     node: String,
+    /// Whether its node routes by any Subscription ([`Pickup::routing_none`]).
+    routes: bool,
     storage: Arc<dyn XmipStorage>,
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
@@ -97,6 +99,32 @@ impl Pickup {
         configured: Vec<ConfiguredSubscription>,
         storage: Arc<dyn XmipStorage>,
         audit: Option<ProgramAudit>,
+    ) -> Result<Arc<Self>, String> {
+        Self::opening(node, configured, storage, audit, true)
+    }
+
+    /// The pickup of a node at `node` that routes by no Subscription: one
+    /// that starts no Receive Location and runs no Work Process, though its
+    /// slice carries the cluster's Subscriptions. It publishes none, and an
+    /// act on one is refused in words; registered for the runtime's library
+    /// as every node's is (ADR-0018 and ADR-0056, amendments 2026-11-11).
+    ///
+    /// # Errors
+    /// As [`Pickup::open`]; it reads nothing, so none today.
+    pub fn routing_none(
+        node: &str,
+        storage: Arc<dyn XmipStorage>,
+        audit: Option<ProgramAudit>,
+    ) -> Result<Arc<Self>, String> {
+        Self::opening(node, Vec::new(), storage, audit, false)
+    }
+
+    fn opening(
+        node: &str,
+        configured: Vec<ConfiguredSubscription>,
+        storage: Arc<dyn XmipStorage>,
+        audit: Option<ProgramAudit>,
+        routes: bool,
     ) -> Result<Arc<Self>, String> {
         let now = now_unix_nanos();
         let mut entries = Vec::new();
@@ -133,6 +161,7 @@ impl Pickup {
         }
         let pickup = Arc::new(Self {
             node: node.to_string(),
+            routes,
             storage,
             audit,
             state: Mutex::new(State { entries }),
@@ -172,11 +201,19 @@ impl Pickup {
     ///
     /// # Errors
     /// REFUSED, in words, for an act a Subscription does not take — remove
-    /// among them: a Subscription is removed in the TOML configuration — and
-    /// for a Subscription this node is not configured with; FAILED where
+    /// among them: a Subscription is removed in the TOML configuration — for
+    /// a Subscription this node is not configured with, and for any on a
+    /// node that routes by none ([`Pickup::routing_none`]); FAILED where
     /// Xmip Storage did not take its standing, and nothing changed.
     pub fn act(&self, name: &str, act: Act, who: &str) -> Result<String, String> {
         let act = Noun::Subscription.act(act.word())?;
+        if !self.routes {
+            return Err(format!(
+                "REFUSED: {} routes by no Subscription: it starts no Receive Location and runs \
+                 no Work Process, so '{name}' is paused and resumed on a node that routes",
+                self.node
+            ));
+        }
         let mut state = self.lock();
         let Some(index) = state.index(name) else {
             return Err(format!(

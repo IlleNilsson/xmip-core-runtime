@@ -118,6 +118,7 @@ impl State {
                 application: entry.configured.application.clone(),
                 filter: entry.configured.subscription.filter.text().to_string(),
                 destination: entry.configured.destination(),
+                send_ports: entry.configured.ports.clone(),
                 file: entry.configured.file.clone(),
                 configuration: entry.configured.entry.clone(),
                 state: if entry.standing.paused {

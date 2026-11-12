@@ -14,6 +14,7 @@
 //! they do is here.
 
 use configure::{DocumentKind, XmipApplication, XmipConfigurationDocument, document_kind};
+use node::Stage;
 use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 
 use crate::catalogue;
@@ -205,12 +206,13 @@ pub fn start(path: &str) -> Snapshot {
     // is what the GUI groups by, and Receive and Send are what an operator
     // runs — a node with only Process on the page is two thirds empty.
     for (stage, locations) in [
-        ("receive", &tree.receive_locations_to_start),
-        ("send", &tree.send_locations_to_start),
+        (Stage::Receive, &tree.receive_locations_to_start),
+        (Stage::Send, &tree.send_locations_to_start),
     ] {
         for location in locations {
+            let beneath = tree.beneath(stage, &location.name);
             snapshot.record_health(HealthRecord {
-                scope: format!("{node}/{stage}/{}", location.name),
+                scope: format!("{node}/{}/{beneath}", stage.name()),
                 health: Health::Stressed,
                 severity: 50,
                 evidence: format!("planned, not started at {}", location.address),
@@ -628,6 +630,45 @@ filter = "true"
             "{}",
             refused.evidence
         );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// ADR-0027, amendment 2026-11-11: a Subscription routes to a Send
+    /// Port, never a Send Location, so the send stage's children are its
+    /// Send Ports: a failover Location of a Port named apart from it is
+    /// published beneath that Port, started or not.
+    #[test]
+    fn a_failover_location_sits_beneath_its_send_port() {
+        let (text, node) = orders();
+        let with_failover = text
+            .replace(
+                "[[xmip_applications]]",
+                "[[applications.send_ports]]\nname = \"Billing\"\nnode = \"{node}\"\n\
+                 start = true\naddress = \"/var/xmip/out/billing\"\n\n\
+                 [[send_locations]]\nname = \"Billing, failover\"\nstart = false\n\
+                 address = \"/var/xmip/out/billing-failover\"\n\n[[xmip_applications]]",
+            )
+            .replace("{node}", &node)
+            .replace(
+                "[[xmip_applications.send_ports]]\nname = \"Billing\"\n",
+                "[[xmip_applications.send_ports]]\nname = \"Billing\"\n\
+                 send_locations = [\"Billing\", \"Billing, failover\"]\nfailover = \"next\"\n",
+            );
+        let (directory, path) = written(&with_failover, "failover");
+
+        let snapshot = start(&path);
+        let at = format!("xmip:///{node}");
+        let scopes: Vec<String> = snapshot
+            .health(&at)
+            .into_iter()
+            .map(|record| record.scope)
+            .collect();
+        for beneath in ["send/Billing", "send/Billing/Billing, failover"] {
+            let scope = format!("{at}/{beneath}");
+            assert!(scopes.contains(&scope), "{scope}: {scopes:?}");
+        }
+        let astray = format!("{at}/send/Billing, failover");
+        assert!(!scopes.contains(&astray), "{scopes:?}");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

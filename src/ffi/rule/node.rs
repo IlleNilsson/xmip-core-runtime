@@ -182,6 +182,23 @@ pub unsafe extern "C" fn xmip_stage_location_v1(stage: Str, out: *mut Str) -> i3
     })
 }
 
+/// `node::Stage::title`, forwarded. Static.
+///
+/// # Safety
+/// `stage` points at its stated length of readable bytes; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_stage_title_v1(stage: Str, out: *mut Str) -> i32 {
+    // SAFETY: per the contract above.
+    abi::guarded(status::PANIC, || match unsafe { named(stage) } {
+        Ok(stage) => {
+            // SAFETY: `out` is writable per the contract.
+            unsafe { out.write(borrow(stage.title())) };
+            status::OK
+        }
+        Err(code) => code,
+    })
+}
+
 /// `node::Capability::from_entry`, forwarded: the name borrowed from
 /// `entry`, and the roles or the refusal.
 ///
@@ -352,6 +369,7 @@ mod tests {
         let _: rule::RoleStagesFn = xmip_role_stages_v1;
         let _: rule::StagePausableFn = xmip_stage_pausable_v1;
         let _: rule::StageLocationFn = xmip_stage_location_v1;
+        let _: rule::StageTitleFn = xmip_stage_title_v1;
         let _: rule::CapabilityEntryFn = xmip_capability_entry_v1;
     }
 
@@ -424,7 +442,7 @@ mod tests {
     #[test]
     fn every_stage_crosses_with_the_facts_node_gives_it() {
         for stage in Stage::ALL {
-            let (mut pausable, mut location) = (9u8, Str::empty());
+            let (mut pausable, mut location, mut title) = (9u8, Str::empty(), Str::empty());
             // SAFETY: the word is static; every out is writable.
             unsafe {
                 assert_eq!(
@@ -435,10 +453,19 @@ mod tests {
                     xmip_stage_location_v1(borrow(stage.name()), &raw mut location),
                     status::OK
                 );
+                assert_eq!(
+                    xmip_stage_title_v1(borrow(stage.name()), &raw mut title),
+                    status::OK
+                );
             }
             assert_eq!(pausable, u8::from(stage.pausable()));
             assert_eq!(text(location), stage.location());
+            assert_eq!(text(title), stage.title());
         }
+        let mut title = Str::empty();
+        // SAFETY: the word is static; `title` is writable.
+        let code = unsafe { xmip_stage_title_v1(borrow("process"), &raw mut title) };
+        assert_eq!((code, text(title).as_str()), (status::OK, "Work Process"));
         let mut out = 9u8;
         // SAFETY: as above.
         let code = unsafe { xmip_stage_pausable_v1(borrow("Receive"), &raw mut out) };

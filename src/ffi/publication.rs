@@ -35,6 +35,9 @@ pub(crate) struct Read {
     counts: Vec<Measurement>,
     nodes: Vec<Node>,
     links: Vec<Link>,
+    /// Its records and tables as one snapshot, made once, on first asking
+    /// (`ffi::from_to`).
+    snapshot: std::sync::OnceLock<observe::Snapshot>,
 }
 
 impl Read {
@@ -102,7 +105,13 @@ impl Read {
             counts,
             nodes,
             links,
+            snapshot: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The publication as one snapshot, made once.
+    pub(crate) fn snapshot(&self) -> &observe::Snapshot {
+        self.snapshot.get_or_init(|| self.publication.snapshot())
     }
 
     fn head(&self) -> PublicationHead {

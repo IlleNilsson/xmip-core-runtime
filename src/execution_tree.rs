@@ -18,7 +18,6 @@ use configure::{
     SendPortGroup, ServiceConfiguration, WorkProcessConfiguration, XmipApplication,
     XmipConfigurationDocument,
 };
-use node::Stage;
 use route::Subscription;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -72,22 +71,7 @@ pub struct ExecutionTree {
     pub work_process_sets: Vec<(String, String)>,
 }
 
-impl ExecutionTree {
-    /// Each Location the node knows and does not start, by the stage it
-    /// would serve — `receive` or `send` — and its name.
-    #[must_use]
-    pub fn not_started(&self) -> Vec<(&'static str, String)> {
-        let at = |stage: Stage, names: &[String]| {
-            names
-                .iter()
-                .map(move |name| (stage.name(), name.clone()))
-                .collect::<Vec<_>>()
-        };
-        let mut known = at(Stage::Receive, &self.receive_locations_not_started);
-        known.extend(at(Stage::Send, &self.send_locations_not_started));
-        known
-    }
-}
+mod located;
 
 /// An extension the runtime checked at startup, and whether it loaded it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

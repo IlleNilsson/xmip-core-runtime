@@ -4,7 +4,7 @@
 use node::Stage;
 use observe::{Health, HealthRecord, Publication, now_unix_nanos};
 
-use super::{drawn, location};
+use super::{Seen, drawn, location};
 
 /// What the node `node` of `cluster` leaves published once it has stopped:
 /// `last`, its last publication while it ran, with the node, its System
@@ -45,7 +45,7 @@ pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Pub
             observed_unix_nanos: now,
         });
     }
-    let topology = drawn(cluster, node, &snapshot);
+    let topology = drawn(cluster, node, &snapshot, Seen::default());
     Publication::whole(&last.source, &last.node, &snapshot)
         .with_orders(last.orders.clone())
         .with_topology(Some(topology))

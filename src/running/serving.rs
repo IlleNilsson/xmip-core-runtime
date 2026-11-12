@@ -118,10 +118,12 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             std::thread::scope(|serving| {
                 for location in &receiving {
                     let (pickup, stopping) = (&*pickup, &*stopping);
+                    // Where it counts, resolved once as it starts.
+                    let place = tally.place(&location.configured.name);
                     serving.spawn(move || {
                         let served =
                             location.serve(serving, runtime, pickup, stopping, |carried| {
-                                tally.record(carried);
+                                tally.record(place, carried);
                             });
                         if let Err(why) = served {
                             tally.fail(&location.configured.name, why);
