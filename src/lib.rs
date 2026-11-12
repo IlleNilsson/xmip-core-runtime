@@ -73,6 +73,7 @@ pub mod presented;
 #[cfg(feature = "node")]
 mod protection;
 #[cfg(feature = "node")]
+mod queue_watch;
 #[cfg(feature = "node")]
 pub mod receive_certificate;
 #[cfg(feature = "node")]

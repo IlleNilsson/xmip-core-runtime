@@ -33,6 +33,12 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A test Storage node in memory.
 pub fn memory() -> Arc<dyn XmipStorage> {
+    memory_node()
+}
+
+/// [`memory`] as the Storage node it is, for a test that asks it who waits
+/// on a queue (`Embedded::waiting_on`).
+pub fn memory_node() -> Arc<Embedded<Memory, Memory>> {
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");
     Arc::new(

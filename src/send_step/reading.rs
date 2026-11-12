@@ -64,7 +64,7 @@ impl<'a> Reading<'a> {
         }
         let next = self.read.pop_front();
         if next.is_none() {
-            waits.waiting = self.retrying.saturating_sub(self.due_retries);
+            waits.waiting = left(self.retrying, self.due_retries);
         }
         Ok(next)
     }
@@ -101,6 +101,38 @@ impl<'a> Reading<'a> {
         }
         Ok((asked, page))
     }
+}
+
+/// How many Messages of `queue` wait for a retry not yet due, as Xmip Storage
+/// holds them now: every retry it counts, less those due, read past every
+/// Message due since it was held, a page at a time — so no more is read
+/// than the retries due (`super::due`, counted by the newest read).
+///
+/// # Errors
+///
+/// Where Xmip Storage did not answer.
+pub(super) fn waiting(step: &SendStep, queue: u128) -> Result<u64, PersistError> {
+    // A Message due since it was held is due at the epoch: past them all.
+    let mut from = (1, 0);
+    let mut due = 0;
+    loop {
+        let page = step.storage.read_due(queue, DuePart::Due, from, PAGE)?;
+        due += due_retries(&page);
+        match page
+            .held
+            .last()
+            .filter(|_| page.held.len() == PAGE as usize)
+        {
+            Some(last) => from = DueQueue::after(last),
+            None => return Ok(left(page.retrying, due)),
+        }
+    }
+}
+
+/// How many of `retrying`, every retry Xmip Storage counts in a queue, wait
+/// for their due time, `due` of them being due.
+const fn left(retrying: u64, due: u64) -> u64 {
+    retrying.saturating_sub(due)
 }
 
 /// How many of `page` keep a retry's due time.

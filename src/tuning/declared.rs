@@ -17,6 +17,7 @@ use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
 };
 use crate::stream_share::STREAM_STALL;
+use crate::work_step::WORK_SCAN;
 
 /// What `[tuning]` may say, each key's kind, bounds and default.
 pub const TUNING: &Settings = &Settings {
@@ -153,7 +154,16 @@ pub const TUNING: &Settings = &Settings {
             name: "send_scan",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(SEND_SCAN)),
-            meaning: "How often the queues this node sends are read for unclaimed Messages.",
+            meaning: "How often the queues this node sends are read for unclaimed Messages, \
+                      apart from as soon as another node puts one in: the bound on one wait.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "work_scan",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(WORK_SCAN)),
+            meaning: "How often the queues of the Work Processes this node runs are read, apart \
+                      from as soon as another node puts a Message in one: the bound on one wait.",
             applies: Applies::Both,
         },
         Setting {
@@ -222,6 +232,14 @@ pub const TUNING: &Settings = &Settings {
             },
             presence: Presence::Default(Fixed::Integer(as_integer(standby::KEPT))),
             meaning: "The bytes of each database's writes a primary keeps for a standby behind it.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "storage_wait",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(persist::storage::HOLD)),
+            meaning: "The longest a Storage node holds one node's wait on its queues before it \
+                      answers that nothing moved.",
             applies: Applies::Both,
         },
         Setting {

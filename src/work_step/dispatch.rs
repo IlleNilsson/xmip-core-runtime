@@ -20,8 +20,9 @@ use crate::pool::Pool;
 const PAGE: u32 = 64;
 
 /// The Work Process step of `runtime` dispatching on its Work pool in
-/// `scope` until it is closed: every queue read as it starts, at each
-/// `[tuning]` scan, when asked, and when its earliest timer is due.
+/// `scope` until it is closed: every queue read as it starts and at each
+/// `[tuning] work_scan`, one read when asked — another node put a Message
+/// in it among them — and when its earliest timer is due.
 pub fn dispatch<'scope, 'env>(
     scope: &'scope Scope<'scope, 'env>,
     runtime: &'env Runtime<'env>,
@@ -32,6 +33,19 @@ pub fn dispatch<'scope, 'env>(
         return;
     }
     let pool = Pool::new(scope, step.limits);
+    // Each queue another node puts a Message in, read at once; the scan of
+    // them all stays, at its interval, the bound on one wait.
+    let queues: Vec<u128> = step.running.iter().map(|running| running.queue).collect();
+    scope.spawn(move || {
+        let ask = |queue| step.ask(queue);
+        crate::queue_watch::watch(
+            step.storage.as_ref(),
+            &queues,
+            step.scan,
+            &step.waiter,
+            &ask,
+        );
+    });
     let mut next_scan = Instant::now();
     loop {
         let (closed, asked) = step.next(next_scan);
@@ -47,6 +61,7 @@ pub fn dispatch<'scope, 'env>(
         }
         if all {
             next_scan = now + step.scan;
+            step.lock().scans += 1;
         }
     }
 }
@@ -109,13 +124,16 @@ fn scan<'env>(
     let sequenced = !crate::sequence::points_of(runtime.sends, &to).is_empty();
     let mut seen = HashSet::new();
     for held in due(step, running.queue) {
-        if held.failed || !seen.insert(held.hold.journey) || !step.own(held.hold.journey) {
+        if held.failed || !seen.insert(held.hold.journey) {
             continue;
         }
+        let Some(since) = step.own(held.hold.journey) else {
+            continue;
+        };
         if sequenced {
-            settled(runtime, pickup, running, &held);
+            settled(runtime, pickup, running, (&held, since));
         } else {
-            take(pool, runtime, pickup, running, held);
+            take(pool, runtime, pickup, running, (held, since));
         }
     }
 }
@@ -167,13 +185,16 @@ fn take<'env>(
     runtime: &'env Runtime<'env>,
     pickup: &'env Pickup,
     running: &'env Running,
-    held: Held,
+    (held, since): (Held, u64),
 ) {
-    pool.run(Box::new(move || settled(runtime, pickup, running, &held)));
+    pool.run(Box::new(move || {
+        settled(runtime, pickup, running, (&held, since));
+    }));
 }
 
-/// A turn of the Message `held` names taken, and what it ended as told.
-fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, held: &Held) {
+/// A turn of the Message `held` names taken, owned since this node had
+/// written `since` turns, and what it ended as told.
+fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, (held, since): (&Held, u64)) {
     let step = runtime.work;
     let journey: JourneyId = held.hold.journey;
     let turned = turn(runtime, pickup, running, held);
@@ -183,7 +204,7 @@ fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, held: &Hel
         _ => {}
     }
     let done = matches!(turned, Turned::Done);
-    step.disown(journey, running.queue, done);
+    step.disown(journey, running.queue, (done, since));
     // A turn may have ended what a Stream held a sequence for: what waits
     // behind it in either step may go on now.
     if done {

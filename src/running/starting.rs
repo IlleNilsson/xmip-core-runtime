@@ -253,7 +253,7 @@ fn steps(
     let work = Arc::new(WorkStep::new(
         (&cluster, scope),
         Arc::clone(storage.storage()),
-        tree.tuning.send(),
+        tree.tuning.work(),
         linked.audit.clone(),
         running,
     ));

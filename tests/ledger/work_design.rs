@@ -141,12 +141,22 @@ pub(super) fn working<T>(
     storage: &Arc<dyn XmipStorage>,
     run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
 ) -> T {
-    on_working_node(
-        storage,
-        (CHUNK, &routes()),
-        (sending_nothing(), vec![batches()]),
-        |r, p, g| run(r, p, &opened(g)),
-    )
+    routing(storage, (true, sending_nothing()), run)
+}
+
+/// On a node over `storage` routing as [`working`] does, sending as
+/// `sender` says, and running the Work Process only where it `runs`: one
+/// node routing a client's Messages to the Work Process another runs
+/// (`woken.rs`).
+pub(super) fn routing<T>(
+    storage: &Arc<dyn XmipStorage>,
+    (runs, sender): (bool, Sender),
+    run: impl FnOnce(&Runtime<'_>, &Pickup, &ReceiveGate) -> T,
+) -> T {
+    let running = if runs { vec![batches()] } else { Vec::new() };
+    on_working_node(storage, (CHUNK, &routes()), (sender, running), |r, p, g| {
+        run(r, p, &opened(g))
+    })
 }
 
 /// Each batch published to `Out`.

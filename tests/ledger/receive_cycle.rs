@@ -147,7 +147,7 @@ pub fn on_working_node<T>(
     let work = WorkStep::new(
         (&configure::fixture::test_cluster().scope(), &node),
         Arc::clone(storage),
-        tuning.send(),
+        tuning.work(),
         None,
         running,
     );

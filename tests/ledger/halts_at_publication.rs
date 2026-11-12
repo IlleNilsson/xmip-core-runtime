@@ -8,7 +8,7 @@ use persist::PersistError;
 use persist::storage::{
     AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
     DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord,
-    Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, XmipStorage,
+    Position, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Waiter, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -76,6 +76,15 @@ impl XmipStorage for HaltsAtPublication {
         m: u32,
     ) -> Result<DueQueue, PersistError> {
         self.0.read_due(q, p, f, m)
+    }
+
+    fn wait_queues(
+        &self,
+        seen: &[Position],
+        bound: Duration,
+        waiter: &Arc<Waiter>,
+    ) -> Result<Vec<Position>, PersistError> {
+        self.0.wait_queues(seen, bound, waiter)
     }
 
     fn read_dead(&self, queue: u128, from: u64, most: u32) -> Result<DeadQueue, PersistError> {
