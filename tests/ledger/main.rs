@@ -60,7 +60,11 @@
 //! `work_design.rs` that Work Process's design and the node it runs on;
 //! `work_debatch.rs` its Debatch through the one splitting implementation;
 //! `woken.rs` a Journey another node published taken up at once, by the
-//! send step and by the Work Process step, neither waiting for its scan;
+//! send step and by the Work Process step, neither waiting for its scan,
+//! and what is due coming with the wake; `woken_behind.rs` a Journey
+//! behind another Stream of its sequence taken up at once where another
+//! node ends that Stream, by either step, and what a turn its Instance did
+//! not take waits on;
 //! `said.rs` a line said at once. `receive_cycle.rs`, `sending.rs`,
 //! `work_design.rs` and `said.rs` are the timing program's too
 //! (`tests/measured`), where what a hop's sequence check and a Work
@@ -96,6 +100,7 @@ mod stream_order;
 mod unsynced;
 mod untold;
 mod woken;
+mod woken_behind;
 mod work_debatch;
 mod work_design;
 mod work_process;

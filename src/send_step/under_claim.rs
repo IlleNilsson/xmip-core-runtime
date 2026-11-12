@@ -1,14 +1,18 @@
 //! A Message a scan claimed, read again under its claim with its place in
 //! its queue (`runtime-model.md` section 10, *A read is acted on only under
 //! its claim*, corrected 2026-10-17): the page the scan read may be older
-//! than the claim, read before another pass's hand-on landed.
+//! than the claim, read before another pass's hand-on landed. Its place,
+//! its Journey, its Message and its Stream's record are one request
+//! (`XmipStorage::read_claimed`; open problem 46, 2026-11-12: until then
+//! four, one after another, 0.9 ms in the Essentials).
 
 use std::time::Instant;
 
 use context::IdentityFacts;
 use xcore::JourneyId;
 
-use super::pass::{Found, read};
+use super::found::{Found, found};
+use super::steps::{Step, Steps};
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
 
@@ -29,19 +33,23 @@ pub(super) enum Under {
     Unanswered,
 }
 
-/// The Message at `place` in `queue`, read under this node's claim: its
-/// place first — still there, still this Message's, and due — then its
-/// Journey and the Message, with `body`, what its queue keeps beside it.
+/// The Message at `place` in `queue`, read under this node's claim with
+/// its Journey and its Message in one request, its place checked first —
+/// still there, still this Message's, and due — then read as `body`, what
+/// its queue keeps beside it, says; the read timed in `steps`.
 pub(super) fn under_claim(
     runtime: &Runtime<'_>,
     queue: u128,
     (id, at): (JourneyId, u64),
-    body: &[u8],
+    (body, steps): (&[u8], &mut Steps),
 ) -> Under {
     let asked = Instant::now();
-    let Ok(page) = runtime.send.storage.read_held(queue, at, 1) else {
+    let claimed = runtime.send.storage.read_claimed(queue, at, id);
+    steps.set(Step::Read, asked.elapsed());
+    let Ok(claimed) = claimed else {
         return Under::Unanswered;
     };
+    let page = &claimed.place;
     let Some(held) = page
         .held
         .first()
@@ -52,7 +60,7 @@ pub(super) fn under_claim(
     if let Some(left) = page.due_in(held) {
         return Under::NotDue(asked + left);
     }
-    match read(runtime, id, body) {
+    match found(runtime, claimed, body, steps) {
         Ok(Found::Waiting(found)) => Under::Waiting(found),
         Ok(found) => Under::Not(found),
         Err(_) => Under::Unanswered,

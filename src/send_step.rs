@@ -44,7 +44,14 @@
 //! **Another node's Publication wakes it** (open problem 46, built
 //! 2026-11-12): the step waits on the queues it sends in Xmip Storage, and
 //! reads each one the moment a Publication, a hand-on, a turn or a Replay
-//! on any node puts a Message in it (`crate::queue_watch`).
+//! on any node puts a Message in it, what is due there coming with the
+//! wake, so it claims without a read of its own first; and a Message it
+//! passed over behind another Stream of its sequence is read again the
+//! moment any node moves that sequence's head (`crate::queue_watch`).
+//!
+//! **Each send is timed step by step** ([`Steps`]), and each Send Port's
+//! snapshot says the median of each step over its latest sends, handed in
+//! memory and taken from its queue apart (2026-11-12).
 //!
 //! **Recovery is a scan.** As the node starts, and every `[tuning]
 //! send_scan` after, each queue this node sends is read oldest first, and
@@ -88,7 +95,7 @@ use xcore::lock::Locked;
 
 use context::IdentityFacts;
 use journey::Journey;
-use persist::storage::{Claim, Durable, Hold, Waiter, XmipStorage};
+use persist::storage::{Claim, Durable, Hold, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::spent::Spent;
@@ -99,6 +106,7 @@ use crate::departure::Progress;
 use crate::generation::ReceivedWork;
 use crate::outcome::Measured;
 use crate::pool::Limits;
+use crate::queue_watch::{QueueWatch, Woken};
 use crate::sending::{Destination, Sends, queue};
 use crate::stream_share::StreamShare;
 use crate::tuning::Tuning;
@@ -110,19 +118,23 @@ mod failed;
 mod figures;
 #[cfg(test)]
 mod fixture;
+mod found;
 mod message_act;
 mod pass;
 mod reading;
 mod registered;
 mod renewal;
 mod scan;
+mod steps;
 mod under_claim;
 
 use admission::Owned;
 pub use dispatch::dispatch;
 pub use failed::FailedPage;
 pub use figures::{FAILED_WINDOW, FailedMessage, PortFigures};
-pub use pass::{Ended, Found, read, send};
+pub use found::{Found, read};
+pub use pass::{Ended, send};
+pub use steps::{STEPS_KEPT, Step, Steps};
 
 /// The Send pool's threads for each of the machine's hardware threads,
 /// where the node's `[tuning] send_threads_per_hardware_thread` does not
@@ -175,6 +187,8 @@ pub struct Departure {
     /// beside it, its waits for a storage device to sync
     /// ([`Spent::disk_sync`]).
     pub measured: Option<Measured>,
+    /// What its send took on this node so far, step by step.
+    pub steps: Steps,
 }
 
 /// What a Publication writes for the Messages that go on to be sent: each
@@ -211,9 +225,9 @@ pub struct SendStep {
     /// The Streams its departures read now, each chunk read once for every
     /// departure of a Stream keeping up.
     share: StreamShare,
-    /// What its watch on its queues waits as, stopped as it closes
-    /// (`crate::queue_watch`).
-    waiter: Arc<Waiter>,
+    /// Its watch on its queues, and on what a Message it passed over waits
+    /// on, stopped as it closes (`crate::queue_watch`).
+    watch: QueueWatch,
 }
 
 #[derive(Default)]
@@ -247,9 +261,11 @@ struct State {
     /// Queues to read now, beside the scan of them all.
     asked: Vec<u128>,
     /// Queues another node's write moved, to read now: what is due in each,
-    /// never its failed Messages, which no such write moves
-    /// (`crate::queue_watch`).
-    woken: Vec<u128>,
+    /// as the wake brought it where it did, never its failed Messages,
+    /// which no such write moves (`crate::queue_watch`).
+    woken: Vec<(u128, Woken)>,
+    /// By Send Port, what its latest sends took, step by step.
+    timed: BTreeMap<String, steps::Kept>,
     /// How many scans of every queue it made.
     scans: u64,
     figures: BTreeMap<String, PortFigures>,
@@ -291,7 +307,7 @@ impl SendStep {
             wake: Wake::new(),
             // Its own: a Publication this node claims every Message of in
             // the same write does not wake it (`persist::storage::Waiter`).
-            waiter: Arc::new(Waiter::of(node)),
+            watch: QueueWatch::of(node),
         }
     }
 
@@ -378,7 +394,7 @@ impl SendStep {
             let Some(journey) = journeys.iter().find(|j| j.journey_id() == id) else {
                 continue;
             };
-            let departure = Departure {
+            let mut departure = Departure {
                 work: ReceivedWork {
                     journey: journey.clone(),
                     message: work.message.clone(),
@@ -392,7 +408,9 @@ impl SendStep {
                 durable: Some(durable.clone()),
                 spent: spent.clone(),
                 measured: None,
+                steps: Steps::default(),
             };
+            departure.steps.ready();
             state.owned.insert(id, Owned::of(&departure));
             state.handed.push_back(departure);
         }
@@ -408,8 +426,9 @@ impl SendStep {
 
     /// `departure`, claimed by this node under a place the Send pool
     /// admitted for it ([`SendStep::admit`]), handed to the pool.
-    pub fn hand(&self, departure: Departure) {
+    pub fn hand(&self, mut departure: Departure) {
         self.own(departure.work.journey.journey_id(), Owned::of(&departure));
+        departure.steps.ready();
         self.lock().handed.push_back(departure);
         self.wake.notify_all();
     }
@@ -424,12 +443,16 @@ impl SendStep {
         self.wake.notify_all();
     }
 
-    /// Read what is due in `queue` now: a write, on any node, put a Message
-    /// in it (`crate::queue_watch`).
-    pub(crate) fn woken(&self, queue: u128) {
+    /// Read what is due in `queue` now, starting from what `woken` brought
+    /// of it: a write, on any node, put a Message in it, or moved what a
+    /// Message it passed over waits on (`crate::queue_watch`). Woken again
+    /// before it is read, what the latest wake brought is read, since the
+    /// earliest wake.
+    pub(crate) fn woken(&self, queue: u128, woken: Woken) {
         let mut state = self.lock();
-        if !state.woken.contains(&queue) {
-            state.woken.push(queue);
+        match state.woken.iter_mut().find(|(kept, _)| *kept == queue) {
+            Some((_, kept)) => kept.due = woken.due,
+            None => state.woken.push((queue, woken)),
         }
         drop(state);
         self.wake.notify_all();
@@ -446,7 +469,7 @@ impl SendStep {
     /// (ADR-0018 clause 12): it waits in its queue, its due time there.
     pub fn close(&self) {
         self.lock().closed = true;
-        self.waiter.stop();
+        self.watch.stop();
         self.wake.notify_all();
     }
 

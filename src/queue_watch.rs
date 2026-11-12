@@ -1,230 +1,201 @@
-//! A step's watch on its queues in Xmip Storage (open problem 46; ADR-0018,
-//! amendment 2026-11-12): what wakes the send step, and the Work Process
-//! step, for a Message another node put in a queue it takes from, at once,
-//! where until 2026-11-12 it was found at the step's next scan, a second by
-//! default.
+//! A step's watch in Xmip Storage (open problem 46; ADR-0018, amendments
+//! 2026-11-12): what wakes the send step, and the Work Process step, for a
+//! Message another node put in a queue it takes from, at once, where until
+//! 2026-11-12 it was found at the step's next scan, a second by default;
+//! and for what a Journey it passed over waits on — a sequence's head, an
+//! Instance, a key of the Instance Key table — once another node moves it.
 //!
 //! The watch waits on every queue of the step at once, each with where it
-//! saw it stand last (`persist::storage::Position`), and asks the step to
-//! read each one that moved; the step's scan of every queue stays, at its
-//! interval — `[tuning] send_scan` and `work_scan` — which is now only the
-//! bound on one wait: what no write tells, a claim that lapsed on a node
-//! that died, is found there. Three things keep it from asking without
-//! pause, each found 2026-11-12: a wait no Storage node answers — each that
-//! is stopping or the primary no more refuses it, and the next is asked at
-//! once — rests its bound before it is asked again; one answered with
-//! nothing before its bound — a Storage node holds none longer than its
-//! `[tuning] storage_wait` — rests the rest of it; and a bound of nothing
-//! is no watch at all, the configuration refusing one besides (`[tuning]`
-//! takes no duration of nothing). The step's stop ends the watch at once
+//! saw its tail stand last (`persist::storage::Position`), and on each more
+//! the step names ([`QueueWatch::wait_on`]), with where the step read it.
+//! Each queue that moved is handed to the step with the first of what is
+//! due in it, read by the Storage node as it answered
+//! (`persist::storage::Moved`), so the step claims without a read of its
+//! own first; each more that moved is let go of, and the queues named with
+//! it handed to the step to read. A more named while a wait is under way
+//! renews it ([`Waiter::renew`]), so it is waited on at once. The step's
+//! scan of every queue stays, at its interval — `[tuning] send_scan` and
+//! `work_scan` — which is now only the bound on one wait: what no write
+//! tells, a claim that lapsed on a node that died, is found there. Three
+//! things keep it from asking without pause, each found 2026-11-12: a wait
+//! no Storage node answers — each that is stopping or the primary no more
+//! refuses it, and the next is asked at once — rests its bound before it is
+//! asked again; one answered with nothing before its bound, and renewed by
+//! nothing — a Storage node holds none longer than its `[tuning]
+//! storage_wait` — rests the rest of it; and a bound of nothing is no watch
+//! at all, the configuration refusing one besides (`[tuning]` takes no
+//! duration of nothing). The step's stop ends the watch at once
 //! ([`Waiter::stop`]).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use persist::storage::{Position, Waiter, XmipStorage};
+use persist::storage::{DueQueue, Position, Waiter, Watched, XmipStorage};
+use xcore::lock::Locked;
 
-/// `queues` of `storage` watched as `waiter` until it is stopped, each wait
-/// for at most `bound`: each queue a write moved past where the watch saw
-/// it last handed to `ask`, at once. No queue, or a bound of nothing, no
-/// watch.
-pub(crate) fn watch(
-    storage: &dyn XmipStorage,
-    queues: &[u128],
-    bound: Duration,
-    waiter: &Arc<Waiter>,
-    ask: &dyn Fn(u128),
-) {
-    if queues.is_empty() || bound.is_zero() {
-        return;
+/// The most of what is due in a queue that moved a wait's answer carries:
+/// a page, as many as the steps read of a queue at once, which read on from
+/// it.
+pub(crate) const DUE: u32 = 64;
+
+/// What a step's watch waits as, and what more it waits on than the
+/// step's queues.
+#[derive(Debug)]
+pub(crate) struct QueueWatch {
+    waiter: Arc<Waiter>,
+    more: Mutex<More>,
+}
+
+/// Each more waited on, where the step read it, and the queues to read once
+/// it moves.
+#[derive(Debug, Default)]
+struct More {
+    waits: Vec<(Position, Vec<u128>)>,
+}
+
+/// A queue the watch hands its step: what is due in it, where the wait
+/// answered with that, and when the answer came.
+#[derive(Clone, Debug)]
+pub(crate) struct Woken {
+    pub(crate) due: Option<DueQueue>,
+    pub(crate) at: Instant,
+}
+
+impl QueueWatch {
+    /// The watch of the node whose claims name `node`: a Publication that
+    /// node claims every Message of in the same write does not wake it
+    /// (`persist::storage::Waiter`).
+    pub(crate) fn of(node: &str) -> Self {
+        Self {
+            waiter: Arc::new(Waiter::of(node)),
+            more: Mutex::default(),
+        }
     }
-    // Where each was seen last: nowhere yet, so the first wait answers at
-    // once with every queue that holds anything, read by the step's first
-    // scan as well.
-    let mut seen: Vec<Position> = queues
-        .iter()
-        .map(|&queue| Position { queue, next: 0 })
-        .collect();
-    while !waiter.is_stopped() {
-        let asked = Instant::now();
-        match storage.wait_queues(&seen, bound, waiter) {
-            Ok(moved) if moved.is_empty() => waiter.rest(bound.saturating_sub(asked.elapsed())),
-            Ok(moved) => {
-                for position in moved {
-                    for kept in seen.iter_mut().filter(|kept| kept.queue == position.queue) {
-                        kept.next = position.next;
+
+    /// Stopped: its wait ends now, and no other is asked.
+    pub(crate) fn stop(&self) {
+        self.waiter.stop();
+    }
+
+    /// Each of `positions` waited on as well, as the step read it, and
+    /// `queue` read once one moves: what a Journey of `queue` the step passed
+    /// over waits on. One newly named renews the wait under way, or the rest
+    /// after it, so it is waited on at once; a wait asked after it was named
+    /// names it, and is not renewed (`Waiter::asking`).
+    pub(crate) fn wait_on(&self, positions: &[Position], queue: u128) {
+        let mut more = self.more.locked();
+        let mut named = false;
+        for position in positions {
+            match more
+                .waits
+                .iter_mut()
+                .find(|(kept, _)| kept.watched == position.watched)
+            {
+                Some((kept, queues)) => {
+                    kept.at = position.at;
+                    if !queues.contains(&queue) {
+                        queues.push(queue);
                     }
-                    ask(position.queue);
+                }
+                None => {
+                    more.waits.push((*position, vec![queue]));
+                    named = true;
                 }
             }
-            Err(_) => waiter.rest(bound),
         }
+        drop(more);
+        if named {
+            self.waiter.renew();
+        }
+    }
+
+    /// `queues` of `storage` watched until it is stopped, each wait for at
+    /// most `bound`: each queue a write moved past where the watch saw it
+    /// last handed to `ask` at once, with what is due in it; each more that
+    /// moved let go of, and its queues handed to `ask`. No queue, or a
+    /// bound of nothing, no watch.
+    pub(crate) fn run(
+        &self,
+        storage: &dyn XmipStorage,
+        queues: &[u128],
+        bound: Duration,
+        ask: &dyn Fn(u128, Woken),
+    ) {
+        if queues.is_empty() || bound.is_zero() {
+            return;
+        }
+        // Where each was seen last: nowhere yet, so the first wait answers
+        // at once with every queue that holds anything, read by the step's
+        // first scan as well.
+        let mut tails: Vec<Position> = queues.iter().map(|&q| Position::queue(q, 0)).collect();
+        while !self.waiter.is_stopped() {
+            // What is named from here on renews this wait; what was named
+            // before it, it names.
+            self.waiter.asking();
+            let seen = self.seen(&tails);
+            let asked = Instant::now();
+            match storage.wait_queues(&seen, (bound, DUE), &self.waiter) {
+                // Renewed, the rest ends at once.
+                Ok(moved) if moved.is_empty() => {
+                    self.waiter.rest(bound.saturating_sub(asked.elapsed()));
+                }
+                Ok(moved) => {
+                    let at = Instant::now();
+                    for one in moved {
+                        let queue = match one.position.watched {
+                            Watched::Queue(queue) => queue,
+                            other => {
+                                for queue in self.moved(other) {
+                                    ask(queue, Woken { due: None, at });
+                                }
+                                continue;
+                            }
+                        };
+                        for kept in tails
+                            .iter_mut()
+                            .filter(|kept| kept.watched == one.position.watched)
+                        {
+                            kept.at = one.position.at;
+                        }
+                        ask(queue, Woken { due: one.due, at });
+                    }
+                }
+                Err(_) => self.waiter.rest(bound),
+            }
+        }
+    }
+
+    /// What a wait names now: the step's queues where `tails` saw them,
+    /// and each more as the step read it.
+    fn seen(&self, tails: &[Position]) -> Vec<Position> {
+        let more = self.more.locked();
+        tails
+            .iter()
+            .copied()
+            .chain(more.waits.iter().map(|(position, _)| *position))
+            .collect()
+    }
+
+    /// `watched` moved: let go of, and the queues to read now it has.
+    fn moved(&self, watched: Watched) -> Vec<u128> {
+        let mut more = self.more.locked();
+        let mut queues = Vec::new();
+        more.waits.retain(|(position, named)| {
+            let gone = position.watched == watched;
+            if gone {
+                queues.extend(named.iter().copied());
+            }
+            !gone
+        });
+        queues
+    }
+
+    /// How many more it waits on now: a test's.
+    #[cfg(test)]
+    fn waiting_on_more(&self) -> usize {
+        self.more.locked().waits.len()
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-    use std::time::Instant;
-
-    use persist::fixture::Memory;
-    use persist::storage::{
-        AuditEntry, AuditFacts, Embedded, Hold, JourneyFacts, JourneyRecord, MessageFacts,
-        MessageRecord, Publication,
-    };
-    use secret::{Held, KekName};
-    use xcore::lock::Locked;
-    use xcore::{AuditId, JourneyId, MessageId};
-
-    use super::*;
-    use crate::fixture::{Failing, Operation};
-
-    fn storage() -> Arc<dyn XmipStorage> {
-        let keys = Held::new(secret::fixture::Memory::default());
-        let kek = KekName::new("storage").expect("a name");
-        let node = Embedded::open(
-            Memory::default(),
-            Memory::default(),
-            Memory::default(),
-            &keys,
-            &kek,
-        );
-        Arc::new(node.expect("opened"))
-    }
-
-    /// The Message numbered `id` published, its Journey held in `queue`.
-    fn publish(storage: &dyn XmipStorage, queue: u128, id: u128) {
-        let journey = JourneyId::new(id);
-        let published = storage.publish(Publication {
-            message: MessageRecord {
-                message: MessageId::new(id),
-                body: Vec::new(),
-                facts: MessageFacts::default(),
-            },
-            journeys: vec![JourneyRecord {
-                journey,
-                body: Vec::new(),
-                facts: JourneyFacts::default(),
-            }],
-            held: vec![Hold {
-                queue,
-                journey,
-                body: Vec::new(),
-            }],
-            dead: None,
-            audit: AuditEntry {
-                id: AuditId::new(id),
-                body: Vec::new(),
-                audited: None,
-                facts: AuditFacts::default(),
-            },
-            claims: Vec::new(),
-            lease_nanos: 0,
-        });
-        published.expect("published");
-    }
-
-    /// Wait, bounded, until `holds`.
-    fn until(holds: impl Fn() -> bool, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !holds() {
-            assert!(Instant::now() < deadline, "never: {what}");
-            std::thread::yield_now();
-        }
-    }
-
-    #[test]
-    fn each_queue_another_writes_to_is_asked_at_once_and_a_stop_ends_the_watch() {
-        let storage = storage();
-        let asked = Mutex::new(Vec::new());
-        let waiter = Arc::new(Waiter::new());
-        // A bound of an hour: only a write wakes it.
-        let bound = Duration::from_secs(3600);
-        std::thread::scope(|scope| {
-            let (storage, asked, waiter) = (&storage, &asked, &waiter);
-            let watching = scope.spawn(move || {
-                let ask = |queue| asked.locked().push(queue);
-                watch(storage.as_ref(), &[7, 9], bound, waiter, &ask);
-            });
-            publish(storage.as_ref(), 9, 1);
-            until(|| asked.locked().contains(&9), "the queue written to asked");
-            publish(storage.as_ref(), 9, 2);
-            until(|| asked.locked().len() == 2, "asked again");
-            assert_eq!(*asked.locked(), [9, 9], "never the queue nothing moved");
-            let stopping = Instant::now();
-            waiter.stop();
-            watching.join().expect("watched");
-            assert!(
-                stopping.elapsed() < Duration::from_secs(30),
-                "not its bound"
-            );
-        });
-    }
-
-    #[test]
-    fn a_wait_storage_does_not_answer_rests_its_bound_and_is_asked_again() {
-        let failing = Failing::over(storage());
-        failing.fail(Operation::WaitQueues, 2);
-        let storage: Arc<dyn XmipStorage> = failing;
-        let asked = Mutex::new(Vec::new());
-        let waiter = Arc::new(Waiter::new());
-        let bound = Duration::from_millis(20);
-        publish(storage.as_ref(), 7, 1);
-        let began = Instant::now();
-        std::thread::scope(|scope| {
-            let (storage, asked, waiter) = (&storage, &asked, &waiter);
-            let watching = scope.spawn(move || {
-                let ask = |queue| asked.locked().push(queue);
-                watch(storage.as_ref(), &[7], bound, waiter, &ask);
-            });
-            until(|| !asked.locked().is_empty(), "asked once answered");
-            waiter.stop();
-            watching.join().expect("watched");
-        });
-        assert!(began.elapsed() >= bound * 2, "rested its bound twice");
-        assert_eq!(*asked.locked(), [7]);
-    }
-
-    #[test]
-    fn a_bound_of_nothing_asks_nothing_rather_than_without_pause() {
-        let failing = Failing::over(storage());
-        let waiter = Arc::new(Waiter::new());
-        std::thread::scope(|scope| {
-            let (failing, waiter) = (&failing, &waiter);
-            let watching = scope.spawn(move || {
-                watch(failing.as_ref(), &[7], Duration::ZERO, waiter, &|_| {});
-            });
-            until(
-                || watching.is_finished() || failing.asked_times(Operation::WaitQueues) > 0,
-                "returned or asked",
-            );
-            waiter.stop();
-            watching.join().expect("watched");
-        });
-        assert_eq!(failing.asked_times(Operation::WaitQueues), 0, "never asked");
-    }
-
-    #[test]
-    fn a_wait_answered_with_nothing_before_its_bound_rests_the_rest_of_it() {
-        let failing = Failing::over(storage());
-        failing.answer_waits_at_once();
-        let waiter = Arc::new(Waiter::new());
-        let bound = Duration::from_millis(50);
-        let began = Instant::now();
-        std::thread::scope(|scope| {
-            let (failing, waiter) = (&failing, &waiter);
-            let watching = scope.spawn(move || {
-                watch(failing.as_ref(), &[7], bound, waiter, &|_| {});
-            });
-            until(
-                || failing.asked_times(Operation::WaitQueues) >= 3,
-                "asked thrice",
-            );
-            waiter.stop();
-            watching.join().expect("watched");
-        });
-        // Asked again only once the rest of each bound had passed: never a
-        // loop of waits answered at once.
-        assert!(began.elapsed() >= bound * 2, "{:?}", began.elapsed());
-    }
-}
+mod tests;

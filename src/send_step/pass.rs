@@ -1,22 +1,20 @@
-//! One pass of a Message's send and its hand-on, and a Message read back
-//! from the Ledger to be sent: what the Send pool's threads run, and what a
-//! scan finds.
+//! One pass of a Message's send and its hand-on: what the Send pool's
+//! threads run. A Message read back from the Ledger to be sent is
+//! `super::found`'s.
 
-use std::time::Duration;
+use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 use configure::OnFailure;
-use context::IdentityFacts;
-use journey::{Journey, JourneyEntry, JourneyState};
-use message::Message;
+use journey::{JourneyEntry, JourneyState};
 use persist::storage::{Durable, Failure, HandOn, Wait};
 use route::Subscriber;
+use xcore::ExecutionId;
 use xcore::spent::Spent;
-use xcore::{ExecutionId, JourneyId, Mechanism, mechanism};
 
 use super::Departure;
+use super::steps::Step;
 use crate::departure::{Departed, depart_to, said};
-use crate::generation::ReceivedWork;
-use crate::ledger::Chunks;
 use crate::message_path::Runtime;
 use crate::outcome::Measured;
 use crate::sending::Destination;
@@ -77,7 +75,10 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     if crate::sequence::waits_for_places(runtime.sends, &departure.work.journey, &departure.to) {
         return Ended::Behind;
     }
-    match heads(runtime, departure) {
+    let began = Instant::now();
+    let headed = heads(runtime, departure);
+    departure.steps.set(Step::Sequences, began.elapsed());
+    match headed {
         Ok(true) => {}
         Ok(false) => return Ended::Behind,
         Err(why) => return Ended::Unwritten(why),
@@ -91,6 +92,7 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         claim,
         spent,
         measured,
+        steps,
         ..
     } = departure;
     // The send thread works for its Message now, its send apart as the
@@ -100,13 +102,29 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     progress.fence = claim.fence;
     let id = work.journey.journey_id();
     let owned = || step.holds(id);
+    // The wait for its Publication to be durable timed apart from the send.
+    let waited = Cell::new(None);
     let kept = || {
-        durable
-            .as_ref()
-            .map_or(Ok(()), Durable::wait)
+        let began = Instant::now();
+        let kept = durable.as_ref().map(Durable::wait);
+        if kept.is_some() {
+            waited.set(Some(began.elapsed()));
+        }
+        kept.unwrap_or(Ok(()))
             .map_err(|why| format!("its Publication was not kept in the Ledger: {why}"))
     };
+    let sending = Instant::now();
     let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
+    let durable_took = waited.get();
+    if let Some(took) = durable_took {
+        steps.set(Step::Durable, took);
+    }
+    steps.set(
+        Step::Send,
+        sending
+            .elapsed()
+            .saturating_sub(durable_took.unwrap_or_default()),
+    );
     drop(entered);
     // Sent, its far end has it: Xmip's own share of its Message is read
     // now, with its share of the Storage node's work on its Publication;
@@ -139,7 +157,10 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     if let Some(after) = kept {
         outcome = format!("{outcome}; tried again in {after:?}");
     }
-    match written(runtime, departure, state, outcome, kept) {
+    let handing = Instant::now();
+    let handed = written(runtime, departure, state, outcome, kept);
+    departure.steps.set(Step::HandOn, handing.elapsed());
+    match handed {
         Ok(true) => {}
         Ok(false) => return Ended::Lost(departed),
         Err(why) => return Ended::Unwritten(why),
@@ -306,86 +327,6 @@ fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
         }
     }
     Ok(true)
-}
-
-/// What the Ledger holds of a Message in a queue.
-#[derive(Debug)]
-pub enum Found {
-    /// Still to be sent: its Journey and Message, and the identity it
-    /// arrived with.
-    Waiting(Box<(ReceivedWork, IdentityFacts)>),
-    /// Failed, kept in its queue: its sequence blocks behind it.
-    Failed(Box<ReceivedWork>),
-    /// Completed or dismissed already.
-    Finished,
-    /// Not readable as a Message to send, in words: passed over, for an
-    /// operator.
-    Unreadable(String),
-}
-
-/// The Journey `journey` read back from the Ledger, its Message and its
-/// Message's Stream with it, and the identity it arrived with from `body`,
-/// what its queue keeps beside it (`context::facts_record`). A mechanism is
-/// never built from a record (`xcore::Mechanism`): the one a kept identity
-/// names is the one this node's authenticators declare under that name.
-///
-/// # Errors
-///
-/// In words, where Xmip Storage did not answer: read again later.
-pub fn read(runtime: &Runtime<'_>, journey: JourneyId, body: &[u8]) -> Result<Found, String> {
-    let storage = runtime.storage;
-    let Some(record) = storage.read_journey(journey).map_err(|e| e.to_string())? else {
-        return Ok(Found::Unreadable(
-            "its Journey is not in the Ledger".to_string(),
-        ));
-    };
-    let journey = match Journey::from_record(&record.body) {
-        Ok(journey) => journey,
-        Err(why) => return Ok(Found::Unreadable(why.to_string())),
-    };
-    if matches!(
-        journey.state,
-        JourneyState::Completed | JourneyState::Dismissed
-    ) {
-        return Ok(Found::Finished);
-    }
-    let Some(held) = journey.messages().last().copied() else {
-        return Ok(Found::Unreadable(
-            "its Journey holds no Message".to_string(),
-        ));
-    };
-    let Some(kept) = storage
-        .read_message(held.message_id)
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(Found::Unreadable(
-            "its Message is not in the Ledger".to_string(),
-        ));
-    };
-    let message = match Message::from_record(&kept.body, |stream| Chunks::referred(storage, stream))
-    {
-        Ok(message) => message,
-        Err(why) => return Ok(Found::Unreadable(why.to_string())),
-    };
-    let work = ReceivedWork { journey, message };
-    if work.journey.state == JourneyState::Failed {
-        return Ok(Found::Failed(Box::new(work)));
-    }
-    match IdentityFacts::from_record(body, |name| carried(runtime, name)) {
-        Ok(facts) => Ok(Found::Waiting(Box::new((work, facts)))),
-        Err(why) => Ok(Found::Unreadable(why.to_string())),
-    }
-}
-
-/// The mechanism of that name this node carries: one its authenticators
-/// declare, or the circumstance every node infers (ADR-0019 clause 7).
-fn carried(runtime: &Runtime<'_>, name: &str) -> Option<Mechanism> {
-    runtime
-        .authenticators
-        .iter()
-        .map(|authenticator| authenticator.mechanism())
-        .chain([mechanism::circumstance()])
-        .find(|mechanism| mechanism.name() == name)
 }
 
 /// A duration in nanoseconds, the most a `u64` holds at most.

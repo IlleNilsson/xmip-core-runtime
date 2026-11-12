@@ -688,10 +688,10 @@ mod tests {
         // The primary holds no wait on queues longer than its `[tuning]
         // storage_wait`, whatever bound the node waiting asks.
         let waiter = Arc::new(persist::storage::Waiter::new());
-        let seen = [persist::storage::Position { queue: 9, next: 0 }];
+        let seen = [persist::storage::Position::queue(9, 0)];
         let held = std::time::Instant::now();
         let long = std::time::Duration::from_secs(30);
-        let moved = reaching.storage().wait_queues(&seen, long, &waiter);
+        let moved = reaching.storage().wait_queues(&seen, (long, 0), &waiter);
         assert_eq!(moved.expect("answered"), []);
         assert!(held.elapsed() < long / 3, "held {:?}", held.elapsed());
 

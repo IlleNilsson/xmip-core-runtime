@@ -7,6 +7,14 @@
 //! and the reading stops where the Send pool is full. What goes one at a
 //! time per key is not this reading's: a Message that does not head its
 //! sequence is passed by its send (`crate::sequence`).
+//!
+//! **A wake brings its first page** (2026-11-12): where another node's write
+//! woke the queue, the wait's answer carried what is due in it, read by the
+//! Storage node as it answered (`persist::storage::Moved`), and the reading
+//! starts from that page instead of asking for it — a round trip less
+//! after every wake, 0.14 ms over loopback (open problem 46). What it read
+//! may be older than the claim taken on it, as any page may: each claim
+//! reads its Message's place again (`super::under_claim`).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -16,9 +24,10 @@ use persist::storage::{DuePart, DueQueue, Held};
 
 use super::SendStep;
 use super::due::Due;
+use crate::queue_watch::Woken;
 
-/// The most entries of a queue read at once.
-const PAGE: u32 = 64;
+/// The most entries of a queue read at once: as many as a wake brings.
+const PAGE: u32 = crate::queue_watch::DUE;
 
 /// One entry a scan read: the entry, how long it still waits for its due
 /// time where it is not due, and when the read of it was asked.
@@ -36,11 +45,16 @@ pub(super) struct Reading<'a> {
     /// due.
     retrying: u64,
     due_retries: u64,
+    /// Its first page as a wake brought it, read in place of asking.
+    first: Option<(DueQueue, Instant)>,
+    /// What the read of the latest page took: none where a wake brought it.
+    took: Option<Duration>,
 }
 
 impl<'a> Reading<'a> {
-    /// `queue` of `step` to read.
-    pub(super) fn of(step: &'a SendStep, queue: u128) -> Self {
+    /// `queue` of `step` to read, from what `woken` brought of it where a
+    /// wake brought what is due in it.
+    pub(super) fn of(step: &'a SendStep, queue: u128, woken: Option<Woken>) -> Self {
         Self {
             step,
             queue,
@@ -48,7 +62,14 @@ impl<'a> Reading<'a> {
             from: Some((0, 0)),
             retrying: 0,
             due_retries: 0,
+            first: woken.and_then(|woken| Some((woken.due?, woken.at))),
+            took: None,
         }
+    }
+
+    /// What the read of the latest page took: none where a wake brought it.
+    pub(super) const fn took(&self) -> Option<Duration> {
+        self.took
     }
 
     /// The next entry read, or `None` where the queue is read to its end;
@@ -85,16 +106,27 @@ impl<'a> Reading<'a> {
         Ok(())
     }
 
-    /// One page of `part` from `from`, and when it was asked; the earliest
-    /// retry not yet due noted in `waits`.
+    /// One page of `part` from `from` — the first as a wake brought it,
+    /// where one did — and when it was asked; the earliest retry not yet
+    /// due noted in `waits`.
     fn part(
         &mut self,
         part: DuePart,
         from: (u64, u64),
         waits: &mut Due,
     ) -> Result<(Instant, DueQueue), PersistError> {
-        let asked = Instant::now();
-        let page = self.step.storage.read_due(self.queue, part, from, PAGE)?;
+        let (asked, page) = match self.first.take() {
+            Some((page, answered)) => {
+                self.took = None;
+                (answered, page)
+            }
+            None => {
+                let asked = Instant::now();
+                let page = self.step.storage.read_due(self.queue, part, from, PAGE)?;
+                self.took = Some(asked.elapsed());
+                (asked, page)
+            }
+        };
         self.retrying = page.retrying;
         if let Some(left) = page.next_due_in() {
             waits.wakes_at(asked + left);

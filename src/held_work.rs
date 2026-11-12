@@ -156,6 +156,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             durable: None,
             spent: None,
             measured: None,
+            steps: send_step::Steps::default(),
         });
     } else {
         step.ask(queue);

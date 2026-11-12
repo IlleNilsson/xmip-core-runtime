@@ -124,8 +124,19 @@ impl Chunks {
             .read_stream(stream)
             .map_err(|failed| CodecError::new(format!("the Stream {stream}: {failed}")))?
             .ok_or_else(|| CodecError::new(format!("the Ledger holds no Stream {stream}")))?;
-        let chunks = Self::of(Arc::clone(storage), stream, record.length);
-        Ok((record.length, Arc::new(chunks)))
+        Ok(Self::kept(storage, &record))
+    }
+
+    /// The Stream `record` keeps, its record read already — with the
+    /// Message under a claim (`persist::storage::Claimed`) — its chunks
+    /// behind `storage`.
+    #[must_use]
+    pub fn kept(
+        storage: &Arc<dyn XmipStorage>,
+        record: &persist::storage::StreamRecord,
+    ) -> (u64, Arc<dyn Content>) {
+        let chunks = Self::of(Arc::clone(storage), record.stream, record.length);
+        (record.length, Arc::new(chunks))
     }
 }
 

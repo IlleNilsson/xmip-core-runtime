@@ -19,29 +19,37 @@ use route::Subscriber;
 use xcore::JourneyId;
 
 use super::due::Due;
-use super::pass::Found;
+use super::found::Found;
 use super::reading::Reading;
+use super::steps::{Step, Steps};
 use super::under_claim::{Under, under_claim};
 use super::{Departure, Owned};
 use crate::departure::Progress;
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
+use crate::queue_watch::Woken;
 
 /// What is due in `queue`, bound for `to`, that this node is to send now —
 /// each under a place its Send pool admits, and where none is left the
 /// queue starved until one frees — read in the order it fell due, only
-/// what is due ([`Reading`]), each that no live claim holds claimed. On a
-/// Sequential Send Port only the oldest of each sequence that nothing is in
-/// flight, waiting or blocked before it, read before it is claimed and
-/// again once it is, its queue read in its order with what waits for a
+/// what is due ([`Reading`]), from what a wake brought of it where `woken`
+/// says, with when its read began, each that no live claim holds claimed.
+/// On a Sequential Send Port only the oldest of each sequence that nothing
+/// is in flight, waiting or blocked before it, read before it is claimed
+/// and again once it is, its queue read in its order with what waits for a
 /// retry and, where it blocks, what failed. A retry not yet due is passed
 /// over unclaimed, the queue woken for its due time ([`Due`]); a read to
 /// the end of what is due forgets every place passed over that is gone
 /// from it.
-pub(super) fn scan(runtime: &Runtime<'_>, to: &Subscriber, queue: u128) -> Vec<Ready> {
+pub(super) fn scan(
+    runtime: &Runtime<'_>,
+    to: &Subscriber,
+    queue: u128,
+    woken: Option<(Woken, Instant)>,
+) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
     let began = runtime.send.reading(queue);
-    let (found, whole) = scanning(runtime, (to, queue), &mut waits);
+    let (found, whole) = scanning(runtime, (to, queue), &mut waits, woken);
     runtime.send.waited(queue, (waits, began), whole);
     found
 }
@@ -52,13 +60,19 @@ fn scanning(
     runtime: &Runtime<'_>,
     (to, queue): (&Subscriber, u128),
     waits: &mut Due,
+    woken: Option<(Woken, Instant)>,
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
     let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty()
         || crate::sequence::grouped(runtime.sends, to);
     let mut present = HashSet::new();
     let mut found = Vec::new();
-    let mut reading = Reading::of(step, queue);
+    // What each it finds took so far: the wake reaching this read.
+    let mut steps = Steps::default();
+    if let Some((woken, read)) = &woken {
+        steps.set(Step::Woken, read.saturating_duration_since(woken.at));
+    }
+    let mut reading = Reading::of(step, queue, woken.map(|(woken, _)| woken));
     let mut answered = false;
     loop {
         let next = match reading.next(waits) {
@@ -107,24 +121,32 @@ fn scanning(
             return (found, false);
         }
         step.lock().taking.insert(id);
-        let unclaimed = Unclaimed {
+        let mut unclaimed = Unclaimed {
             to: to.clone(),
             queue,
             place,
             body: held.hold.body.clone(),
+            steps: steps.clone(),
         };
+        if let Some(due) = reading.took() {
+            unclaimed.steps.set(Step::Due, due);
+        }
+        unclaimed.steps.ready();
         if sequenced {
             // Claimed here, in the queue's order, so the places a Message
             // takes once its Stream heads follow the Ledger's order: no
             // two send threads race for them (`crate::sequence::heading`).
             match placed(runtime, &unclaimed) {
-                Some(departure) => found.push(Ready::Claimed(Box::new(departure))),
+                Some(mut departure) => {
+                    departure.steps.ready();
+                    found.push(Ready::Claimed(Box::new(departure)));
+                }
                 None => step.untake(id),
             }
         } else {
             // Claimed on a send thread, so a backlog's claims share their
             // commits rather than wait one by one here.
-            found.push(Ready::Unclaimed(unclaimed));
+            found.push(Ready::Unclaimed(Box::new(unclaimed)));
         }
     }
 }
@@ -153,18 +175,19 @@ fn placed(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Departure> {
 /// What a scan found to send.
 pub(super) enum Ready {
     /// Under a place admitted, to be claimed and read on a send thread.
-    Unclaimed(Unclaimed),
+    Unclaimed(Box<Unclaimed>),
     /// Claimed already, in the queue's order, its places taken.
     Claimed(Box<Departure>),
 }
 
 /// A Message a scan found that no live claim holds: where it leads, its
-/// queue, its place and what is kept beside it.
+/// queue, its place, what is kept beside it, and what finding it took.
 pub(super) struct Unclaimed {
     to: Subscriber,
     queue: u128,
     place: (JourneyId, u64),
     body: Vec<u8>,
+    steps: Steps,
 }
 
 impl Unclaimed {
@@ -184,17 +207,25 @@ pub(super) fn take(runtime: &Runtime<'_>, unclaimed: &Unclaimed) -> Option<Depar
         queue,
         place,
         body,
+        steps,
     } = unclaimed;
-    match claimed_first(runtime, (to, *queue), *place, body) {
-        Taken::One(one) => Some(owned(runtime.send, to, *queue, *one)),
+    let mut steps = steps.clone();
+    steps.taken_up();
+    match claimed_first(runtime, (to, *queue), *place, (body, &mut steps)) {
+        Taken::One(one) => Some(owned(runtime.send, to, *queue, (*one, steps))),
         Taken::Passed | Taken::Unanswered => None,
     }
 }
 
 /// What a claim took, owned by this node in the place admitted for it, as
-/// the departure it is sent as: its claim surely held a lease from when it
-/// was asked.
-fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Departure {
+/// the departure it is sent as, with what its send took so far: its claim
+/// surely held a lease from when it was asked.
+fn owned(
+    step: &super::SendStep,
+    to: &Subscriber,
+    queue: u128,
+    (one, steps): (Took, Steps),
+) -> Departure {
     let (work, facts, claim, asked) = one;
     let departure = Departure {
         progress: Progress::of(work.journey.attempts),
@@ -207,6 +238,7 @@ fn owned(step: &super::SendStep, to: &Subscriber, queue: u128, one: Took) -> Dep
         durable: None,
         spent: None,
         measured: None,
+        steps,
     };
     step.own(departure.work.journey.journey_id(), Owned::of(&departure));
     departure
@@ -232,24 +264,26 @@ enum Taken {
     Unanswered,
 }
 
-/// An entry of a queue, at its `place`, bound for `to`:
-/// claimed, then read with its place ([`under_claim`]).
+/// An entry of a queue, at its `place`, bound for `to`: claimed, then read
+/// with its place ([`under_claim`]), each timed in `steps`.
 fn claimed_first(
     runtime: &Runtime<'_>,
     (to, queue): (&Subscriber, u128),
     place: (JourneyId, u64),
-    body: &[u8],
+    (body, steps): (&[u8], &mut Steps),
 ) -> Taken {
     let step = runtime.send;
     let id = place.0;
     let token = runtime.ids.next_u128();
     let asked = Instant::now();
-    let claim = match step.storage.claim(id, &step.node, token, step.lease) {
+    let claimed = step.storage.claim(id, &step.node, token, step.lease);
+    steps.set(Step::Claim, asked.elapsed());
+    let claim = match claimed {
         Ok(Some(claim)) => claim,
         Ok(None) => return Taken::Passed,
         Err(_) => return Taken::Unanswered,
     };
-    let under = under_claim(runtime, queue, place, body);
+    let under = under_claim(runtime, queue, place, (body, steps));
     if let Under::Waiting(found) = under {
         let (work, facts) = *found;
         return Taken::One(Box::new((work, facts, claim, asked)));

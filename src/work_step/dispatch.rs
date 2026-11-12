@@ -16,13 +16,14 @@ use crate::message_path::Runtime;
 use crate::pickup::Pickup;
 use crate::pool::Pool;
 
-/// The most entries of a queue read at once.
-const PAGE: u32 = 64;
+/// The most entries of a queue read at once: as many as a wake brings.
+const PAGE: u32 = crate::queue_watch::DUE;
 
 /// The Work Process step of `runtime` dispatching on its Work pool in
 /// `scope` until it is closed: every queue read as it starts and at each
 /// `[tuning] work_scan`, one read when asked — another node put a Message
-/// in it among them — and when its earliest timer is due.
+/// in it among them, read from what is due in it as the wake brought it —
+/// and when its earliest timer is due.
 pub fn dispatch<'scope, 'env>(
     scope: &'scope Scope<'scope, 'env>,
     runtime: &'env Runtime<'env>,
@@ -37,18 +38,13 @@ pub fn dispatch<'scope, 'env>(
     // them all stays, at its interval, the bound on one wait.
     let queues: Vec<u128> = step.running.iter().map(|running| running.queue).collect();
     scope.spawn(move || {
-        let ask = |queue| step.ask(queue);
-        crate::queue_watch::watch(
-            step.storage.as_ref(),
-            &queues,
-            step.scan,
-            &step.waiter,
-            &ask,
-        );
+        let woken = |queue, woken| step.woken(queue, woken);
+        step.watch
+            .run(step.storage.as_ref(), &queues, step.scan, &woken);
     });
     let mut next_scan = Instant::now();
     loop {
-        let (closed, asked) = step.next(next_scan);
+        let (closed, asked, mut woken) = step.next(next_scan);
         if closed {
             return;
         }
@@ -56,7 +52,13 @@ pub fn dispatch<'scope, 'env>(
         let all = next_scan <= now;
         for running in &step.running {
             if all || asked.contains(&running.queue) {
-                scan(&pool, runtime, pickup, running);
+                // Read wholly, a queue is read afresh, not from a wake.
+                let first = woken
+                    .iter()
+                    .position(|(queue, _)| *queue == running.queue)
+                    .map(|at| woken.swap_remove(at).1)
+                    .filter(|_| !all);
+                scan(&pool, runtime, pickup, (running, first));
             }
         }
         if all {
@@ -66,10 +68,14 @@ pub fn dispatch<'scope, 'env>(
     }
 }
 
+/// What a step's dispatching wakes to: whether closed, the queues to read,
+/// and what is due in those a wake brought it of.
+type Next = (bool, Vec<u128>, Vec<(u128, DueQueue)>);
+
 impl WorkStep {
     /// Wait until asked, a timer is due, closed or `until`: whether closed,
-    /// and the queues to read.
-    fn next(&self, until: Instant) -> (bool, Vec<u128>) {
+    /// the queues to read, and what a wake brought of them.
+    fn next(&self, until: Instant) -> Next {
         let mut state = self.lock();
         loop {
             let now = Instant::now();
@@ -94,7 +100,8 @@ impl WorkStep {
             }
             !due
         });
-        (state.closed, asked)
+        let woken = std::mem::take(&mut state.woken);
+        (state.closed, asked, woken)
     }
 
     fn noted(&self, queue: u128, after: Duration) {
@@ -107,14 +114,15 @@ impl WorkStep {
     }
 }
 
-/// `running`'s queue read to its end, what is due taken a turn of on `pool`, each
-/// Message claimed first; one this node holds in a turn already passed
+/// `running`'s queue read to its end — from `first`, what is due in it as a
+/// wake brought it, where one did — what is due taken a turn of on `pool`,
+/// each Message claimed first; one this node holds in a turn already passed
 /// over.
 fn scan<'env>(
     pool: &Pool<'_, 'env>,
     runtime: &'env Runtime<'env>,
     pickup: &'env Pickup,
-    running: &'env Running,
+    (running, first): (&'env Running, Option<DueQueue>),
 ) {
     let step = runtime.work;
     // A Work Process naming a Correlation takes its turns here, in its
@@ -123,7 +131,7 @@ fn scan<'env>(
     let to = route::Subscriber::WorkProcess(running.name.clone());
     let sequenced = !crate::sequence::points_of(runtime.sends, &to).is_empty();
     let mut seen = HashSet::new();
-    for held in due(step, running.queue) {
+    for held in due(step, running.queue, first) {
         if held.failed || !seen.insert(held.hold.journey) {
             continue;
         }
@@ -145,7 +153,7 @@ pub fn turn_due(runtime: &Runtime<'_>, pickup: &Pickup) -> Vec<Turned> {
     let step = runtime.work;
     let mut turned = Vec::new();
     for running in &step.running {
-        for held in due(step, running.queue)
+        for held in due(step, running.queue, None)
             .into_iter()
             .filter(|held| !held.failed)
         {
@@ -156,16 +164,21 @@ pub fn turn_due(runtime: &Runtime<'_>, pickup: &Pickup) -> Vec<Turned> {
 }
 
 /// What is due in `queue`, oldest first, read a page at a time to its end
-/// as the send step reads its own (`crate::send_step`): a page of Messages
-/// that wait on their Instances never hides one behind it that may go on.
-/// When the earliest retry not yet due is due noted; where Xmip Storage
-/// does not answer, what was read so far, the rest left for the next scan.
-fn due(step: &WorkStep, queue: u128) -> Vec<Held> {
+/// as the send step reads its own (`crate::send_step`) — its first `first`,
+/// as a wake brought it, where one did: a page of Messages that wait on
+/// their Instances never hides one behind it that may go on. When the
+/// earliest retry not yet due is due noted; where Xmip Storage does not
+/// answer, what was read so far, the rest left for the next scan.
+fn due(step: &WorkStep, queue: u128, mut first: Option<DueQueue>) -> Vec<Held> {
     let mut read = Vec::new();
     let mut from = Some((0, 0));
     while let Some(at) = from {
-        let Ok(page) = step.storage.read_due(queue, DuePart::Due, at, PAGE) else {
-            break;
+        let page = match first.take() {
+            Some(page) => page,
+            None => match step.storage.read_due(queue, DuePart::Due, at, PAGE) {
+                Ok(page) => page,
+                Err(_) => break,
+            },
         };
         if let Some(left) = page.next_due_in() {
             step.noted(queue, left);
@@ -201,6 +214,9 @@ fn settled(runtime: &Runtime<'_>, pickup: &Pickup, running: &Running, (held, sin
     match &turned {
         Turned::Failed(why) => step.failed(&format!("{}: {why}", running.name)),
         Turned::Unwritten(why) => step.failed(why),
+        // What it waits on, waited on: its queue read the moment any node
+        // moves one (open problem 46, 2026-11-12).
+        Turned::Waits { on, .. } if !on.is_empty() => step.watch.wait_on(on, running.queue),
         _ => {}
     }
     let done = matches!(turned, Turned::Done);
