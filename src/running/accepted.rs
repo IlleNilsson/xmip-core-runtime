@@ -21,8 +21,7 @@ use net::fixture::unheld;
 use tcp::TcpTransport;
 use xcore::{Layer, Mechanism, mechanism};
 
-use super::Running;
-use crate::fixture::{Always, Authority};
+use crate::fixture::{Always, Authority, started};
 use crate::linked::{Linked, LinkedTransport, Started};
 
 /// Claims the subject the handshake proved, as `mutual-tls`.
@@ -169,7 +168,7 @@ fn a_named_party_is_received_over_tls_and_any_other_refused_at_authentication() 
     let authority = Authority::new();
     let receive = unheld().to_string();
     let path = written(&authority, &receive);
-    let running = Running::start(path.to_str().expect("UTF-8"), linked()).expect("the node starts");
+    let running = started(path.to_str().expect("UTF-8"), linked).expect("the node starts");
 
     let registered: Vec<&str> = running
         .capabilities()
@@ -202,7 +201,7 @@ fn a_location_terminating_tls_on_a_node_with_no_receive_certificate_is_refused()
     let path = crate::fixture::configuration_folder(&authority.directory).join("node.xmip");
     crate::fixture::write_signed(&path, &node(&unheld().to_string(), ""));
 
-    let refused = Running::start(path.to_str().expect("UTF-8"), linked())
+    let refused = started(path.to_str().expect("UTF-8"), linked)
         .err()
         .expect("refused");
 

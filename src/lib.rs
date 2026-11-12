@@ -1,12 +1,13 @@
 //! The Xmip runtime: a node started from its configuration, the message path
 //! it runs, and the native library the operator surfaces load.
 //!
-//! [`running::Running::start`] runs ADR-0018's nine startup phases over a node's
-//! configuration and the technologies the process was built with
-//! ([`linked::Linked`]), loads each module the configuration needs once, and
-//! runs every Message that arrives through [`arrival`], routing and the
-//! Ledger, and [`send_step`] sends it from there through [`departure`], until
-//! it is stopped. [`start`] is the first three phases
+//! [`running::activation::started`] starts a node by the slices its trust
+//! admits ([`signed`]), in order: [`running::Running::start`] runs ADR-0018's
+//! nine startup phases over one slice and the technologies the process was
+//! built with ([`linked::Linked`]), loading each module the configuration
+//! needs once, and, once activated, the node runs every Message that arrives
+//! through [`arrival`], routing and the Ledger, and [`send_step`] sends it
+//! from there through [`departure`], until it is stopped. [`start`] is the first three phases
 //! alone, for a surface that validates and plans a node without running it.
 //!
 //! Two builds (ADR-0014, amendment 2026-10-14). The `node` feature, the

@@ -10,7 +10,7 @@ use tcp::TcpTransport;
 use transport::Transport;
 use transport::socket::connect_tcp;
 use xcore::latency::spread;
-use xmip_core_runtime::running::Running;
+use xmip_core_runtime::fixture::started;
 
 use super::node::{count_anew, deliver, given, linked, node, path_text, written};
 
@@ -89,7 +89,7 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
     let path = written("carries", &node(&receive, &far_address));
 
     count_anew();
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
     // One module per technology, however many Locations use it; one
     // transport instance per Location.
@@ -188,7 +188,7 @@ fn eight_senders_at_once_are_carried_side_by_side() {
         )
     );
     let path = written("eight", &spread);
-    let running = Running::start(path_text(&path), linked(&path)).expect("the node starts");
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     posted_as(
         &mut connect_tcp(&receive, Some(CONNECT)).expect("connects"),
         "warm",

@@ -12,15 +12,18 @@ use super::{Seen, drawn, location};
 /// the rest that they stopped with it — and drawn again. What it declared,
 /// its Subscriptions' standing and the Locations it never started stay as
 /// they were: a pause outlives the stop (ADR-0013, amendment 2026-09-30),
-/// and a Location the configuration does not start did not stop. Drawn
-/// with no window, nothing on it moves. A surface over the file shows a
-/// stopped node, never a running one that went quiet.
+/// a Location the configuration does not start did not stop, and which
+/// slice ran, and what of its candidate was refused, stays true (ADR-0031,
+/// amendment 2026-11-12). Drawn with no window, nothing on it moves. A
+/// surface over the file shows a stopped node, never a running one that
+/// went quiet.
 #[must_use]
 pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Publication {
     let at = location(cluster, node);
     let kept = [
         observe::capability::scope(&at),
         format!("{at}/{}/", Stage::Process.name()),
+        format!("{at}/{}", crate::running::activation::CONFIGURATION),
     ];
     let now = now_unix_nanos();
     let mut snapshot = last.snapshot();
@@ -80,6 +83,7 @@ mod tests {
             ("/receive/In", Health::Fine, "said"),
             ("/receive/Off", Health::Done, configure::NOT_STARTED),
             ("/process/onward", Health::Paused, "said"),
+            ("/configuration", Health::Stressed, "candidate refused"),
         ] {
             snapshot.record_health(record(&format!("{at}{leaf}"), health, evidence));
         }
@@ -97,6 +101,7 @@ mod tests {
             ("/receive/In", Health::Done),
             ("/capability", Health::Fine),
             ("/process/onward", Health::Paused),
+            ("/configuration", Health::Stressed),
         ] {
             let scope = format!("{at}{leaf}");
             assert!(
@@ -113,6 +118,8 @@ mod tests {
         assert_eq!(evidence(at), Some("stopped by the console"));
         let off = format!("{at}/receive/Off");
         assert_eq!(evidence(&off), Some(configure::NOT_STARTED));
+        let standing = format!("{at}/configuration");
+        assert_eq!(evidence(&standing), Some("candidate refused"), "kept");
         assert_eq!(left.orders, "orders");
         let drawn = left.topology.expect("drawn again");
         let id = format!("node/{node}");

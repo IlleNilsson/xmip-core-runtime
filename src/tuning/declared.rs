@@ -17,7 +17,7 @@ use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
 };
 use crate::stream_share::STREAM_STALL;
-use crate::work_step::WORK_SCAN;
+use crate::work_step::{WORK_SCAN, WORK_THREADS_PER_HARDWARE_THREAD};
 
 /// What `[tuning]` may say, each key's kind, bounds and default.
 pub const TUNING: &Settings = &Settings {
@@ -159,6 +159,19 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         Setting {
+            name: "work_threads_per_hardware_thread",
+            kind: Kind::Integer {
+                minimum: 1,
+                maximum: 64,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(
+                WORK_THREADS_PER_HARDWARE_THREAD,
+            ))),
+            meaning: "The most threads the Work pool runs per hardware thread, and so the most \
+                      turns the Work Process step holds at once.",
+            applies: Applies::Both,
+        },
+        Setting {
             name: "work_scan",
             kind: Kind::Duration,
             presence: Presence::Default(Fixed::Duration(WORK_SCAN)),
@@ -240,6 +253,18 @@ pub const TUNING: &Settings = &Settings {
             presence: Presence::Default(Fixed::Duration(persist::storage::HOLD)),
             meaning: "The longest a Storage node holds one node's wait on its queues before it \
                       answers that nothing moved.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "storage_unwaited",
+            kind: Kind::Integer {
+                minimum: 0,
+                maximum: 4_194_304,
+            },
+            presence: Presence::Default(Fixed::Integer(as_integer(persist::storage::UNWAITED))),
+            meaning: "How many of what no node waits on now a Storage node keeps where its writer \
+                      left it, so a wait on one again reads nothing; past it the longest unwaited \
+                      is let go and read again when next waited on.",
             applies: Applies::Both,
         },
         Setting {

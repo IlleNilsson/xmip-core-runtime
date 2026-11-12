@@ -24,13 +24,18 @@
 //! Phase 3 also holds how the node reaches Xmip Storage to what its program
 //! linked, and phase 9 reaches it (`crate::storage`): every Stream a
 //! Receive Location takes in is written to the Ledger through it.
+//!
+//! [`Running::start`] runs the phases over one slice and serves nothing;
+//! [`Running::activate`] begins serving. Which slices a node tries, and in
+//! what order, is [`activation`]'s (ADR-0031, amendment 2026-11-12).
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use configure::ConfiguredLocation;
+use configure::{ConfiguredLocation, LocationSettings};
 use xaudit::origin::Origin;
 use xaudit::program_audit::ProgramAudit;
 
@@ -43,6 +48,7 @@ use crate::service::StartupPhase;
 use crate::stopping::Stopping;
 use crate::storage::Reached;
 
+pub mod activation;
 mod certificate_standing;
 mod operate;
 pub mod publication;
@@ -59,7 +65,10 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    pub(crate) const fn at(phase: StartupPhase, problems: Vec<String>) -> Self {
+    /// Refused at `phase`, for `problems`: the runtime's phases, and the
+    /// program's own steps before the node accepts work (`activation`).
+    #[must_use]
+    pub const fn at(phase: StartupPhase, problems: Vec<String>) -> Self {
         Self { phase, problems }
     }
 }
@@ -70,8 +79,8 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// A node, started and serving until [`Running::stop`], or until it is
-/// dropped.
+/// A node, started, serving once activated, until [`Running::stop`], or
+/// until it is dropped.
 pub struct Running {
     cluster: String,
     node: String,
@@ -85,6 +94,8 @@ pub struct Running {
     /// Each Location it knows and did not start, by stage and name.
     not_started: Vec<(&'static str, String)>,
     stopping: Arc<Stopping>,
+    /// What the serving thread owns, held from the start to the activation.
+    served: Option<serving::Served>,
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
     /// Whether it routes, and so processes: a Receive Location starts or a
@@ -96,9 +107,13 @@ pub struct Running {
     pickup: Arc<Pickup>,
     send: Arc<SendStep>,
     data: PathBuf,
-    /// Why its configuration file was refused, where it runs its accepted
-    /// slice instead (`signed::accepted`).
-    refused: Option<String>,
+    /// The slice it runs and how it came to, and, once activated, what its
+    /// record at `<node>/configuration` says (`activation`).
+    attempt: activation::Attempt,
+    standing: Option<activation::Standing>,
+    /// `[provision]`, as the slice it runs says it: what its program serves
+    /// the cluster's authority from ([`Running::provision`]).
+    provision: BTreeMap<String, LocationSettings>,
     storage: Reached,
     /// `[operate]`, and the file it was read from ([`Running::operate`]).
     operate: Option<configure::OperateConfiguration>,
@@ -160,11 +175,12 @@ impl Running {
         &self.data
     }
 
-    /// Why its configuration file was refused, where it runs its accepted
-    /// slice instead: what the program running it audits.
+    /// `[provision]`, as the slice the node runs says it, never as the file
+    /// beside it says now: the purposes its certificates are issued for,
+    /// and the cluster's authority its program serves (ADR-0034).
     #[must_use]
-    pub fn refused(&self) -> Option<&str> {
-        self.refused.as_deref()
+    pub const fn provision(&self) -> &BTreeMap<String, LocationSettings> {
+        &self.provision
     }
 
     /// How the node reaches Xmip Storage, which its receives write the

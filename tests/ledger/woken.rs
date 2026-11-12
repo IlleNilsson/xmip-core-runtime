@@ -19,7 +19,6 @@
 //! and the test pass with no wait at all).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use persist::storage::{Watched, XmipStorage};
 use route::Subscriber;
@@ -27,16 +26,14 @@ use xmip_core_runtime::fixture::{Failing, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 use xmip_core_runtime::tuning::Tuning;
-use xmip_core_runtime::work_step::{WorkStep, dispatch};
+use xmip_core_runtime::work_step::dispatch;
 
 use super::receive_cycle::{Sender, on_node, on_runtime};
 use super::sending::{
     dispatching, memory, memory_node, onward, order, out, sender, taking, took, until,
 };
 use super::work_design::{carried, published, routing, sending_nothing};
-
-/// An hour: no scan comes while a test runs.
-const HOUR: Duration = Duration::from_secs(3600);
+use super::work_turning::{Closing, HOUR};
 
 /// The test cluster's second node: the one that takes up what the first
 /// published.
@@ -144,14 +141,4 @@ fn a_clients_messages_another_node_publishes_take_their_turns_at_once_where_it_r
         });
     });
     assert_eq!(published(&storage), vec![vec!["A 1", "A 2", "A 3"]]);
-}
-
-/// A Work Process step closed when this is dropped, however the test got
-/// there, so a failing test fails rather than waits.
-struct Closing<'a>(&'a WorkStep);
-
-impl Drop for Closing<'_> {
-    fn drop(&mut self) {
-        self.0.close();
-    }
 }

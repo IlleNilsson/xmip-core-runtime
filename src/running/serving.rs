@@ -1,6 +1,8 @@
-//! Startup phase 9's second half: what the serving thread owns for the
-//! node's life, the Runtime built once from it, every Receive Location
-//! serving, the pickup, and the send step dispatching until they stop.
+//! Startup phase 9's second half, begun at the node's activation
+//! (`super::activation`; ADR-0031, amendment 2026-11-12): what the serving
+//! thread owns for the node's life, the Runtime built once from it, every
+//! Receive Location serving, the pickup, and the send step dispatching
+//! until they stop.
 
 use std::sync::Arc;
 use std::thread::JoinHandle;

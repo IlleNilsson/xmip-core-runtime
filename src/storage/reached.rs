@@ -139,7 +139,7 @@ impl Reached {
 
     /// Serve no other node any more, and, one Storage node of several, hand
     /// its standbys what it wrote first: after the node's own work has
-    /// stopped.
+    /// stopped. Once is enough; again does nothing more.
     pub fn stop(&self) {
         if let Behind::Several(node) = &self.behind {
             node.stop();
@@ -148,6 +148,15 @@ impl Reached {
         if let Some(serving) = serving {
             serving.stop();
         }
+    }
+}
+
+impl Drop for Reached {
+    /// Stopped as it is let go: an attempt refused after it reached Xmip
+    /// Storage leaves the node's own Storage node free for the next attempt
+    /// in the same process (ADR-0031, amendment 2026-11-12).
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

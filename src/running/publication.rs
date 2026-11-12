@@ -14,6 +14,8 @@
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/storage             its Storage: Fine, or Done where none answers
 //! <node>/storage/<domain>    each database it keeps: its schema version
+//! <node>/configuration       which slice it runs: Fine, or Stressed with
+//!                            why its candidate was refused (`activation`)
 //! <node>/certificate/<use>  each certificate it presents: renewal due, Stressed
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
 //! <node>/send/<Location>     Done with the reason once it stopped, and
@@ -76,6 +78,11 @@ mod stopped;
 use crate::{capability_registry::Load, pickup::PUBLISHED, send_step::PortFigures};
 use drawn::{Seen, counts, drawn};
 pub use stopped::stopped;
+
+/// The file a node's program writes its publication to, in the node's data
+/// directory, where a surface reads it, and where `--activation` reads what
+/// the node runs (`activation::activation`).
+pub const SNAPSHOT: &str = "snapshot.xmip";
 
 /// The location of the node `node` of `cluster`: the scope it declares and
 /// publishes beneath (ADR-0027 clause 4, ADR-0053).
@@ -145,6 +152,9 @@ impl Running {
             );
         }
         self.storage.publish(&node, &mut record);
+        if let Some(standing) = &self.standing {
+            standing.publish(&node, &mut record);
+        }
         self.certificates.publish(&node, now, &mut record);
         let figures = self.send.figures();
         let staged = not_started_records(&node, &self.not_started)
