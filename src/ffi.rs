@@ -39,6 +39,8 @@ pub mod event;
 pub mod from_to;
 #[cfg(feature = "remote")]
 pub mod keeper;
+#[cfg(feature = "remote")]
+pub mod layout;
 /// The contract trait of a loaded module (ADR-0057 clause 8 step 2).
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_contract;

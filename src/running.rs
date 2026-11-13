@@ -104,6 +104,10 @@ pub struct Running {
     /// The nodes the cluster's bindings place a Location on: the only ones
     /// its Storage node draws traffic from and to (`starting::bound_nodes`).
     bound: Vec<String>,
+    /// The roles its configuration declares, `[nodes.<name>] roles`: what
+    /// its drawing says it is related, stands and is for by (ADR-0052 and
+    /// ADR-0056, amendments 2026-11-13).
+    roles: Vec<node::NodeRole>,
     pickup: Arc<Pickup>,
     send: Arc<SendStep>,
     data: PathBuf,

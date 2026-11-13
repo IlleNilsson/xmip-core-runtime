@@ -86,8 +86,10 @@ mod tests {
              [topology]\nsource = \"a roll\"\nobserved_unix_nanos = 1\n\
              [[topology.links]]\nid = \"in\"\nfrom = \"node/{receiving}/receive/In\"\n\
              to = \"node/{receiving}/process/onward\"\n\
+             [[topology.nodes]]\nid = \"party/receiving/node/{sending}\"\n\
+             label = \"RX-Party 1\"\nkind = \"party\"\n\
              [[topology.links]]\nid = \"out\"\nfrom = \"node/{sending}/send\"\n\
-             to = \"party/receiving/any-party\"\nprotocol = \"file\"\n",
+             to = \"party/receiving/node/{sending}\"\nprotocol = \"file\"\n",
             root = cluster.scope(),
             r = cluster.node_scope(0),
             s = cluster.node_scope(2),
@@ -127,7 +129,7 @@ mod tests {
         assert_eq!(code, status::OK);
         let found: Value = serde_json::from_slice(&buffer[..length]).expect("JSON");
         assert_eq!(found["from"], "In [".to_string() + &receiving + "]");
-        assert_eq!(found["to"], "any-party over file");
+        assert_eq!(found["to"], "RX-Party 1 over file");
         assert_eq!(found["unrouted"], "no Subscription");
         let kinds: Vec<&str> = found["hops"]
             .as_array()

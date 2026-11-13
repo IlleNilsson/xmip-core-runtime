@@ -25,7 +25,7 @@ use observe::{Publication, RunList};
 
 use crate::ffi::rule::{fill, refuse};
 use crate::ffi::text::{borrow, scope_text};
-use crate::wire::{wire_counted, wire_health, wire_kind, wire_origin, wire_pattern};
+use crate::wire::{wire_counted, wire_health, wire_kind, wire_origin, wire_pattern, wire_relation};
 
 /// A read publication and its values laid out as the header's, each string
 /// borrowed from `publication`, whose buffers do not move while it lives.
@@ -33,11 +33,16 @@ pub(crate) struct Read {
     pub(crate) publication: Publication,
     records: Vec<HealthEntry>,
     counts: Vec<Measurement>,
-    nodes: Vec<Node>,
+    pub(crate) nodes: Vec<Node>,
     links: Vec<Link>,
     /// Its records and tables as one snapshot, made once, on first asking
     /// (`ffi::from_to`).
     snapshot: std::sync::OnceLock<observe::Snapshot>,
+    /// Where each drawn thing is among its nodes, by its id, and where it
+    /// stands beneath every focus, each made once, on first asking
+    /// (`ffi::layout`).
+    pub(crate) drawn: std::sync::OnceLock<std::collections::HashMap<String, usize>>,
+    pub(crate) laid: std::sync::OnceLock<crate::ffi::layout::Laid>,
 }
 
 impl Read {
@@ -79,6 +84,10 @@ impl Read {
                     load: node.load,
                     activity: node.activity,
                     evidence: borrow(&node.evidence),
+                    roles: borrow(&node.roles),
+                    place: node
+                        .place
+                        .map_or(-1, |at| i32::try_from(at).unwrap_or(i32::MAX)),
                 });
                 let links = topology.links.iter().map(|link| Link {
                     id: borrow(&link.id),
@@ -86,6 +95,7 @@ impl Read {
                     to: borrow(&link.to),
                     pattern: wire_pattern(link.pattern),
                     origin: wire_origin(link.origin),
+                    relation: wire_relation(link.relation),
                     protocol: borrow(&link.protocol),
                     health: wire_health(link.state),
                     volume: link.volume,
@@ -106,6 +116,8 @@ impl Read {
             nodes,
             links,
             snapshot: std::sync::OnceLock::new(),
+            drawn: std::sync::OnceLock::new(),
+            laid: std::sync::OnceLock::new(),
         }
     }
 
@@ -374,7 +386,7 @@ unsafe fn publication_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abi::operate::publication::{self, kind, origin, pattern};
+    use abi::operate::publication::{self, kind, origin, pattern, relation};
     use abi::operate::{counted, health};
 
     /// A roll of the test cluster, its first two nodes by place.
@@ -429,12 +441,20 @@ state = "fine"
 origin = "configured"
 activity = 0.5
 
+[[topology.nodes]]
+id = "node/{second}"
+parent = "cluster"
+kind = "node"
+roles = "storage"
+place = 1
+
 [[topology.links]]
 id = "handoff/{first}/{second}"
 from = "node/{first}/receive"
 to = "node/{second}/process"
 pattern = "retry"
 origin = "observed"
+relation = "hands-work-to"
 state = "stressed"
 volume = 3
 attempts = 2
@@ -570,6 +590,8 @@ attempts = 2
             load: 0.0,
             activity: 0.0,
             evidence: Str::empty(),
+            roles: Str::empty(),
+            place: -9,
         };
         let nodes = listed(handle, xmip_publication_nodes_v1, blank);
         assert_eq!(
@@ -577,6 +599,12 @@ attempts = 2
             (kind::CLUSTER, origin::CONFIGURED)
         );
         assert_eq!(text(nodes[0].label), "cluster", "a missing label is the id");
+        assert_eq!((text(nodes[0].roles), nodes[0].place), (String::new(), -1));
+        assert_eq!(
+            (text(nodes[1].roles), nodes[1].place),
+            ("storage".to_string(), 1),
+            "a Storage node says its roles and its place in [storage] nodes"
+        );
 
         let unlinked = Link {
             id: Str::empty(),
@@ -584,6 +612,7 @@ attempts = 2
             to: Str::empty(),
             pattern: -1,
             origin: -1,
+            relation: -1,
             protocol: Str::empty(),
             health: -1,
             volume: 0,
@@ -595,6 +624,7 @@ attempts = 2
         };
         let links = listed(handle, xmip_publication_links_v1, unlinked);
         assert_eq!((links[0].pattern, links[0].attempts), (pattern::RETRY, 2));
+        assert_eq!(links[0].relation, relation::HANDS_WORK_TO);
 
         let mut words = [Str::empty(); 2];
         let mut len = 0usize;

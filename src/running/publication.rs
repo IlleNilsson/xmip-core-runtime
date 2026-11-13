@@ -48,19 +48,25 @@
 //! those retrying; the stage and the node keep only what no Port counted.
 //!
 //! **The topology** is `observe::topology::draw`'s and `party`'s, the one
-//! drawing every publisher calls: the cluster, the node, its stages with an
+//! drawing every publisher calls: the cluster, the node — saying the roles
+//! its configuration declares, what it is related, stands and is for by
+//! (ADR-0052 and ADR-0056, amendments 2026-11-13) — its stages with an
 //! endpoint per Location, and the Party on each side (ADR-0052, amendment
 //! 2026-09-29). A node's configuration names its Parties (`[[parties]]`),
 //! and a Receive Location the Parties it takes (`accept.party`), but its
 //! publication does not yet say which a Location takes, so whoever its
-//! Receive Locations accept and its Send Ports deliver to is drawn as one
-//! Party per side, over every endpoint, `observe::topology::party::ANY_PARTY`
-//! (open problem 33), each link saying the transport its Locations'
-//! addresses chose, never a Location's name (ADR-0018, amendment
-//! 2026-11-11). What moved over it — each link's rate, each drawn thing's
-//! activity — is stated by the window its publisher keeps
-//! (`observe::topology::window`; ADR-0018, amendment 2026-11-10); a stopped
-//! node is drawn still.
+//! Receive Locations accept and its Send Ports deliver to is drawn as the
+//! one Party facing the node on each side, over every endpoint,
+//! `observe::topology::party::facing`'s `TX-Party 1` and `RX-Party 1` (open
+//! problem 33), each link saying the transport its Locations' addresses
+//! chose, never a Location's name (ADR-0018, amendment 2026-11-11); a
+//! cluster's drawing numbers them across its nodes. Its own publication
+//! relates it to no other node: relations are the cluster's
+//! (`observe::topology::relate`); a Storage node draws the traffic it
+//! measured, named as the relation it crosses. What moved over it — each
+//! link's rate, each drawn thing's activity — is stated by the window its
+//! publisher keeps (`observe::topology::window`; ADR-0018, amendment
+//! 2026-11-10); a stopped node is drawn still.
 
 use node::{Capability, Stage};
 use observe::topology::draw;
@@ -234,6 +240,7 @@ impl Running {
             bound: &self.bound,
             copied: &copied,
             transports: &transports,
+            roles: &self.roles,
         };
         let mut topology = drawn(&self.cluster, &self.node, &snapshot, seen);
         window.state(&mut topology, &snapshot);
@@ -388,8 +395,8 @@ fn failed_messages(node: &str, figures: &BTreeMap<String, PortFigures>) -> Vec<F
 mod tests {
     use super::*;
     use crate::outcome::Outcomes;
-    use observe::topology::party::ANY_PARTY;
-    use observe::{Counted, FailedMessage, Topology};
+    use observe::topology::link_id;
+    use observe::{Counted, FailedMessage, Relation, Topology};
 
     #[test]
     fn one_message_sent_through_a_send_port_measures_one_at_the_node() {
@@ -733,8 +740,17 @@ mod tests {
                 .find(|node| node.id == id)
                 .map(|node| node.activity)
         };
-        let into = format!("party/sending/{ANY_PARTY}/{name}");
-        let out = format!("party/receiving/{ANY_PARTY}/{name}");
+        let (node, receive, send) = (
+            format!("node/{name}"),
+            format!("node/{name}/receive"),
+            format!("node/{name}/send"),
+        );
+        let into = link_id(
+            &format!("party/sending/{node}"),
+            &receive,
+            Relation::Traffic,
+        );
+        let out = link_id(&send, &format!("party/receiving/{node}"), Relation::Traffic);
         assert_eq!(
             rate(&later, &into),
             Some(4.0),

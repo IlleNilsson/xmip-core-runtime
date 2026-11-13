@@ -4,7 +4,8 @@
 use std::time::{Duration, Instant};
 
 use net::fixture::unheld;
-use observe::topology::party::ANY_PARTY;
+use observe::Relation;
+use observe::topology::link_id;
 use observe::topology::window::Window;
 use tcp::TcpTransport;
 use xmip_core_runtime::fixture::started;
@@ -23,7 +24,11 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
     let path = written("moves", &node(&receive, &far_address));
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     let (name, _) = first();
-    let into = format!("party/sending/{ANY_PARTY}/{name}");
+    let into = link_id(
+        &format!("party/sending/node/{name}"),
+        &format!("node/{name}/receive"),
+        Relation::Traffic,
+    );
     let mut window = Window::new();
     let drawn = |window: &mut Window| {
         running

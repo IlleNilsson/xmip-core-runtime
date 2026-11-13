@@ -1,4 +1,5 @@
-//! `xmip_operate.h` section 8: what a topology value is called.
+//! `xmip_operate.h` section 8: what a topology value is called — a kind, an
+//! origin, a pattern and a relation.
 //!
 //! A publication carries a topology's kind, origin and pattern as the
 //! header's integers, and a surface drawing them needs the word each is
@@ -15,7 +16,7 @@
 use abi::ffi::{Str, status};
 
 use crate::ffi::text::borrow;
-use crate::wire::{from_wire_kind, from_wire_origin, from_wire_pattern};
+use crate::wire::{from_wire_kind, from_wire_origin, from_wire_pattern, from_wire_relation};
 
 /// The word and the name of whatever `value` reads as, both static.
 ///
@@ -92,12 +93,30 @@ pub unsafe extern "C" fn xmip_topology_pattern_words_v1(
     })
 }
 
+/// `observe::Relation::word` and `name`, forwarded. Static.
+///
+/// # Safety
+/// `out_word` and `out_name` are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_topology_relation_words_v1(
+    relation: i32,
+    out_word: *mut Str,
+    out_name: *mut Str,
+) -> i32 {
+    abi::guarded(status::PANIC, || {
+        let said = from_wire_relation(relation).map(|relation| (relation.word(), relation.name()));
+
+        // SAFETY: per the contract above.
+        unsafe { words(said, out_word, out_name) }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{wire_kind, wire_origin, wire_pattern};
+    use crate::wire::{wire_kind, wire_origin, wire_pattern, wire_relation};
     use abi::operate::publication::TopologyWordsFn;
-    use observe::{NodeKind, Origin, Pattern};
+    use observe::{NodeKind, Origin, Pattern, Relation};
 
     /// What one export says of one value: its status, word and name.
     fn said(export: TopologyWordsFn, value: i32) -> (i32, String, String) {
@@ -140,6 +159,13 @@ mod tests {
                 expected
             );
         }
+        for relation in Relation::ALL {
+            let expected = (status::OK, relation.word().into(), relation.name().into());
+            assert_eq!(
+                said(xmip_topology_relation_words_v1, wire_relation(*relation)),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -148,6 +174,7 @@ mod tests {
             xmip_topology_kind_words_v1 as TopologyWordsFn,
             xmip_topology_origin_words_v1,
             xmip_topology_pattern_words_v1,
+            xmip_topology_relation_words_v1,
         ] {
             assert_eq!(said(export, 99).0, status::INVALID);
             assert_eq!(said(export, -1).0, status::INVALID);
