@@ -12,7 +12,8 @@
 //! <node>/system-process      alive, and the process it runs in (ADR-0053)
 //! <node>/capability          the stages it declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
-//! <node>/storage             its Storage: Fine, or Done where none answers
+//! <node>/storage             its Storage: Fine, Working while a standby is
+//!                            not ready yet, or Done where none answers
 //! <node>/storage/<domain>    each database it keeps: its schema version
 //! <node>/configuration       which slice it runs: Fine, or Stressed with
 //!                            why its candidate was refused (`activation`)
@@ -215,6 +216,7 @@ impl Running {
         let snapshot = self.snapshot();
         let placed = self.tally.placed_counts();
         let peers = self.storage.peers();
+        let copied = self.storage.followers();
         // Each Location by the endpoint it is drawn as — a Send Location
         // beneath its Port, as its Port — and the transport its address
         // chose: what its Party's link says it runs over.
@@ -230,6 +232,7 @@ impl Running {
             placed: Some(&placed),
             peers: &peers,
             bound: &self.bound,
+            copied: &copied,
             transports: &transports,
         };
         let mut topology = drawn(&self.cluster, &self.node, &snapshot, seen);
@@ -352,11 +355,13 @@ fn not_started_records(node: &str, known: &[(&'static str, String)]) -> Vec<Stag
     known.iter().map(record).collect()
 }
 
-/// The severity a record of `health` carries: none while Fine, a deliberate
-/// hold's, and the pain's.
+/// The severity a record of `health` carries: none while Fine, a start's
+/// under way — a standby copying or catching up — a deliberate hold's, and
+/// the pain's.
 const fn severity(health: Health) -> u8 {
     match health {
         Health::Fine => 0,
+        Health::Working => 20,
         Health::Paused => 30,
         _ => 90,
     }
