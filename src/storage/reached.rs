@@ -7,6 +7,7 @@ use xcore::lock::Locked;
 
 use observe::Health;
 use persist::storage::schema::DatabaseVersion;
+use persist::storage::standby::{Bootstrap, Follower};
 use persist::storage::{StorageClient, StorageNode, StorageServer, XmipStorage};
 
 use super::DATABASES;
@@ -68,6 +69,18 @@ impl Reached {
         })
     }
 
+    /// Each standby its own Storage node hands its writes to, while it is
+    /// the primary of several, by the node the standby's certificate names,
+    /// with what it handed each (`StorageNode::followers`): what the node
+    /// draws as *copies to*. None where it is no primary of several.
+    #[must_use]
+    pub fn followers(&self) -> Vec<Follower> {
+        match &self.behind {
+            Behind::Several(node) => node.followers(),
+            Behind::Given | Behind::Alone(..) | Behind::Reaching(_) => Vec::new(),
+        }
+    }
+
     /// What it reaches and how it stands, in words, and the chunk: what
     /// the node says as it starts and publishes at `<node>/storage`.
     #[must_use]
@@ -92,11 +105,7 @@ impl Reached {
             ),
             Behind::Alone(said, _) => (Health::Fine, said.clone()),
             Behind::Several(node) => {
-                let health = if node.is_finding() {
-                    Health::Done
-                } else {
-                    Health::Fine
-                };
+                let health = stands(node.is_finding(), node.bootstrap());
                 (health, format!("its own Storage node, {}", node.said()))
             }
             Behind::Reaching(client) => reached(client),
@@ -160,6 +169,24 @@ impl Drop for Reached {
     }
 }
 
+/// How a Storage node of several stands, as its node publishes it at
+/// `<node>/storage`: Done while it finds its primary, Working while it is a
+/// standby copied whole and not ready yet — copying, or catching up, never
+/// promoted meanwhile (ADR-0056, amendments 2026-11-12 and 2026-11-13) —
+/// and Fine otherwise. A standby not ready is drawn so by its own record,
+/// not by its primary's link to it: only the standby knows how far its
+/// bootstrap is, kept durable across its restarts, while its primary knows
+/// only what it handed it.
+fn stands(finding: bool, bootstrap: Bootstrap) -> Health {
+    if finding {
+        Health::Done
+    } else if bootstrap.is_ready() {
+        Health::Fine
+    } else {
+        Health::Working
+    }
+}
+
 /// What the client last came to with each Storage node it lists: Fine
 /// where one answered as the primary on its last ask, Done where every one
 /// asked failed — *Storage is not here is a flat-out error* (the owner,
@@ -192,4 +219,28 @@ fn reached(client: &StorageClient) -> (Health, String) {
         said.join("; ")
     );
     (health, what)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A standby copied whole is drawn as it stands by its own record, which
+    /// its node's drawing takes as its mood (`observe::topology::draw`):
+    /// Working while copying or catching up, Fine once ready.
+    #[test]
+    fn a_standby_copying_or_catching_up_stands_working_and_one_ready_fine() {
+        let catching_up = Bootstrap::CatchingUp {
+            epoch: 2,
+            through: [9, 1, 1],
+        };
+        for (bootstrap, health) in [
+            (Bootstrap::Copying, Health::Working),
+            (catching_up, Health::Working),
+            (Bootstrap::Ready, Health::Fine),
+        ] {
+            assert_eq!(stands(false, bootstrap), health, "{bootstrap:?}");
+            assert_eq!(stands(true, bootstrap), Health::Done, "finding its primary");
+        }
+    }
 }

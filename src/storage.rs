@@ -620,13 +620,32 @@ mod tests {
              [store]\nkey_store = \"xmip-core-secret-memory\"\n\
              [tuning]\nstorage_silence = \"300ms\"\nstorage_beat = \"20ms\"\n\
              storage_wait = \"20ms\"\n\
-             [storage]\nnodes = [{}]\n{listen}certificate = \"tls/node.pem\"\n\
-             key = \"tls/node.key\"\nanchors = \"tls/anchors.pem\"\n",
+             [storage]\nnodes = [{}]\n{listen}certificate = \"tls/{node}.pem\"\n\
+             key = \"tls/{node}.key\"\nanchors = \"tls/anchors.pem\"\n",
             cluster.name,
             nodes.join(", ")
         );
         let path = directory.join(format!("{node}.xmip"));
         (document(&text), path.display().to_string())
+    }
+
+    /// `authority`'s directory's `tls`: a certificate naming each of the
+    /// test cluster's first `nodes` nodes, with its key, and the anchors.
+    fn certified(authority: &crate::fixture::Authority, nodes: usize) {
+        let tls = authority.directory.join("tls");
+        std::fs::create_dir_all(&tls).expect("a folder");
+        let cluster = configure::fixture::test_cluster();
+        for place in 0..nodes {
+            let node = &cluster.node(place).name;
+            let (certificate, key, anchors) = authority.pem(node);
+            for (file, pem) in [
+                (format!("{node}.pem"), certificate),
+                (format!("{node}.key"), key),
+                ("anchors.pem".to_string(), anchors),
+            ] {
+                std::fs::write(tls.join(file), pem).expect("written");
+            }
+        }
     }
 
     fn opened(document: &XmipConfigurationDocument, path: &str) -> Reached {
@@ -641,15 +660,7 @@ mod tests {
     fn a_node_reaches_the_storage_nodes_listed_and_waits_for_the_primary_gone_to_return() {
         let authority = crate::fixture::Authority::new();
         let directory = authority.directory.clone();
-        let (certificate, key, anchors) = authority.pem("node");
-        std::fs::create_dir_all(directory.join("tls")).expect("a folder");
-        for (file, pem) in [
-            ("node.pem", certificate),
-            ("node.key", key),
-            ("anchors.pem", anchors),
-        ] {
-            std::fs::write(directory.join("tls").join(file), pem).expect("written");
-        }
+        certified(&authority, 3);
         let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
         let storage = |place: usize| {
             let (document, path) = reaching_node(
@@ -729,6 +740,65 @@ mod tests {
         assert!(gone.is_err(), "no Storage node answers");
         let said = &reaching.published(&node)[0];
         assert_eq!(said.1, Health::Done, "{}", said.2);
+    }
+
+    /// ADR-0052 and ADR-0056, amendments 2026-11-13: the primary of several
+    /// hands the node it runs in each standby it copies to, by the node the
+    /// standby's certificate names, with what it copied — what the node
+    /// draws *copies to* — while a standby, and a node reaching Storage over
+    /// the wire, hand none; a standby once ready stands Fine.
+    #[test]
+    fn a_primary_hands_its_node_each_standby_it_copies_to_by_name_with_what_it_copied() {
+        let authority = crate::fixture::Authority::new();
+        let directory = authority.directory.clone();
+        certified(&authority, 3);
+        let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
+        let storage = |place: usize| {
+            let at = Some(listed[place].as_str());
+            let (document, path) = reaching_node(&directory, (place, "storage"), &listed, at);
+            opened(&document, &path)
+        };
+        let (first, second) = (storage(0), storage(1));
+        let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
+        let reaching = opened(&document, &path);
+        let journey = persist::storage::JourneyRecord {
+            journey: xcore::JourneyId::new(8),
+            body: b"copied on".to_vec(),
+            facts: persist::storage::JourneyFacts::default(),
+        };
+        reaching.storage().write_journey(&journey).expect("written");
+
+        let cluster = configure::fixture::test_cluster();
+        let (standby, scope) = (cluster.node(1).name.clone(), cluster.node_scope(1));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let copied = loop {
+            let followers = first.followers();
+            let caught_up = followers
+                .first()
+                .is_some_and(|copied| copied.writes > 0 && copied.behind == 0);
+            if caught_up && second.published(&scope)[0].1 == Health::Fine {
+                break followers;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} / {}",
+                first.said(),
+                second.said()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(copied.len(), 1, "{copied:?}");
+        assert_eq!(copied[0].node.as_deref(), Some(standby.as_str()));
+        assert!(copied[0].bytes > 0, "{copied:?}");
+        assert_eq!(second.followers(), [], "a standby copies to none");
+        assert_eq!(reaching.followers(), [], "nor does a node reaching Storage");
+        assert!(
+            first.said().contains(&format!("standbys {standby} from ")),
+            "{}",
+            first.said()
+        );
+        second.stop();
+        first.stop();
     }
 
     #[test]
