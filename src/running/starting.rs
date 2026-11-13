@@ -69,6 +69,10 @@ impl Running {
         let certificates = certificate_standing::CertificateStanding::configured(&document, base);
         let operate = document.operate.clone();
         let bound = bound_nodes(&document);
+        // Read once more as the storage plan below refuses words that are no
+        // role: by then this is the node's declaration.
+        let roles =
+            node::NodeRole::declared(document.roles.as_deref().unwrap_or("")).unwrap_or_default();
         let reaching = crate::storage::plan(&document, path, &linked)?;
         let guard = crate::receive_certificate::guard(&document, Path::new(path))
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
@@ -141,6 +145,7 @@ impl Running {
             cluster: tree.service.cluster_name,
             node: tree.service.node_name,
             bound,
+            roles,
             capabilities,
             host_services,
             locations,

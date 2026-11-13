@@ -6,19 +6,25 @@
 //! it routed by, carrying the Streams routed along it, so a person sees
 //! which Location feeds which Subscription and how much (the owner,
 //! 2026-11-10: *from and to in every observation*). **Outside it**, the
-//! Parties (`party::ANY_PARTY` while a publication cannot say which a Location
-//! takes; open problem 33), each link saying the transport its Locations'
-//! addresses chose. **Between nodes**, where it serves Xmip Storage, what
-//! each node the cluster's bindings name wrote into it and took from it;
-//! and, while it is the primary of several, what it copies to each standby
-//! (ADR-0052 and ADR-0056, amendments 2026-11-13).
+//! Party facing it on each side (`party::facing`, while a publication cannot
+//! say which Parties a Location takes; open problem 33), each link saying
+//! the transport its Locations' addresses chose. **Between nodes**, where it
+//! serves Xmip Storage, what each node the cluster's bindings name wrote
+//! into it and took from it; and, while it is the primary of several, what
+//! it copies to each standby (ADR-0052 and ADR-0056, amendments
+//! 2026-11-13) — each link named as the relation it crosses
+//! (`observe::topology::link_id`), so the cluster's configured relation and
+//! this observed traffic merge into one line.
 
 use std::collections::BTreeMap;
 
-use node::Stage;
+use node::{NodeRole, Stage};
 use observe::topology::draw::node_id;
-use observe::topology::{XMIP_STORAGE, draw, party};
-use observe::{Counted, Health, Origin, Pattern, Snapshot, Topology, TopologyLink, now_unix_nanos};
+use observe::topology::relate::Member;
+use observe::topology::{XMIP_STORAGE, draw, link_id, party};
+use observe::{
+    Counted, Health, Origin, Pattern, Relation, Snapshot, Topology, TopologyLink, now_unix_nanos,
+};
 use persist::storage::standby::Follower;
 
 use crate::outcome::Outcomes;
@@ -30,15 +36,13 @@ pub(super) use crate::outcome::PlacedCounts as Placed;
 /// Publications it wrote and the Journeys it took on (`storage::Reached::peers`).
 pub(super) type Peered = (String, u64, u64);
 
-/// The relation a primary's link to each of its standbys says it is.
-const COPIES_TO: &str = "copies to";
-
 /// What a node's drawing is drawn from beside its snapshot: what it counted
 /// at each Receive Location and along each Subscription, the nodes that
 /// crossed the Storage node it serves, the nodes the cluster's bindings
 /// name, each standby that Storage node hands its writes to while it is
-/// the primary (`storage::Reached::followers`), and the transport each of
-/// its Locations is reached over, by the endpoint it is drawn as.
+/// the primary (`storage::Reached::followers`), the transport each of its
+/// Locations is reached over, by the endpoint it is drawn as, and the roles
+/// its configuration declares.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Seen<'a> {
     pub(super) placed: Option<&'a Placed>,
@@ -46,21 +50,23 @@ pub(super) struct Seen<'a> {
     pub(super) bound: &'a [String],
     pub(super) copied: &'a [Follower],
     pub(super) transports: &'a [(String, String)],
+    pub(super) roles: &'a [NodeRole],
 }
 
-/// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself,
-/// its stages and their endpoints, each Receive Location linked to the
-/// Subscriptions it routed by as `seen` counted, the traffic between nodes
-/// its Storage node measured and what it copies to each standby, and
-/// `party::ANY_PARTY` on each side a stage faces, over the transports its
-/// Locations are reached over.
+/// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself
+/// saying the roles it declares, its stages and their endpoints, each
+/// Receive Location linked to the Subscriptions it routed by as `seen`
+/// counted, the traffic between nodes its Storage node measured and what it
+/// copies to each standby, and the Party facing it on each side a stage
+/// faces, over the transports its Locations are reached over.
 pub(super) fn drawn(cluster: &str, node: &str, snapshot: &Snapshot, seen: Seen<'_>) -> Topology {
     let root = format!("xmip:///{cluster}");
     let names = [node];
+    let itself = [Member::new(node, seen.roles, None)];
     let mut topology = Topology {
         source: format!("{root} — node {node}"),
         observed_unix_nanos: now_unix_nanos(),
-        nodes: draw::members(snapshot, &root, &names),
+        nodes: draw::members(snapshot, &root, &itself),
         links: Vec::new(),
     };
     if let Some((_, routed)) = seen.placed {
@@ -68,11 +74,7 @@ pub(super) fn drawn(cluster: &str, node: &str, snapshot: &Snapshot, seen: Seen<'
     }
     topology.links.extend(crossed(node, seen.peers, seen.bound));
     topology.links.extend(copied(node, seen.copied));
-    let parties = [party::Party::over_locations(
-        party::ANY_PARTY,
-        seen.transports,
-    )];
-    party::draw(snapshot, &root, &names, &parties, &mut topology);
+    party::facing(snapshot, &root, &names, seen.transports, &mut topology);
     topology
 }
 
@@ -96,11 +98,12 @@ fn routes(topology: &Topology, node: &str, routed: &[(String, String, u64)]) -> 
         })
         .filter(|(from, to, ..)| drawn(from) && drawn(to))
         .map(|(from, to, location, subscription, volume)| TopologyLink {
-            id: format!("{from}→{to}"),
+            id: link_id(&from, &to, Relation::Traffic),
             from,
             to,
             pattern: Pattern::PublishConsume,
             origin: Origin::Both,
+            relation: Relation::Traffic,
             protocol: String::new(),
             state: Health::Fine,
             volume,
@@ -114,22 +117,30 @@ fn routes(topology: &Topology, node: &str, routed: &[(String, String, u64)]) -> 
 }
 
 /// The traffic between nodes, measured where it passes: from each node
-/// that wrote a Publication into the Storage node this node serves, and to
-/// each that took a Journey on from it, publish → consume over Xmip
-/// Storage, carrying what it counted (ADR-0052, amendment 2026-11-11). Only
-/// a node of `bound`, one the cluster's bindings place a Location on, is
-/// drawn: a certificate of node standing naming any other — one an
-/// authority another cluster shares issued, a host name from an outside
-/// authority — draws nothing. A direction nothing crossed is not drawn.
+/// that wrote a Publication into the Storage node this node serves — it
+/// *writes into* it — and to each that took a Journey on from it — it is
+/// *handed work* — publish → consume over Xmip Storage, carrying what it
+/// counted (ADR-0052, amendments 2026-11-11 and 2026-11-13). Only a node of
+/// `bound`, one the cluster's bindings place a Location on, is drawn: a
+/// certificate of node standing naming any other — one an authority another
+/// cluster shares issued, a host name from an outside authority — draws
+/// nothing. A direction nothing crossed is not drawn.
 fn crossed(node: &str, peers: &[Peered], bound: &[String]) -> Vec<TopologyLink> {
     let here = node_id(node);
-    let link = |(from, to): (String, String), volume: u64, what: &str| TopologyLink {
-        id: format!("{from}→{to}"),
-        evidence: format!("{volume} {what} over {XMIP_STORAGE}"),
+    let link = |(from, to): (String, String), volume: u64, relation: Relation| TopologyLink {
+        id: link_id(&from, &to, relation),
+        evidence: format!(
+            "{volume} {} over {XMIP_STORAGE}",
+            match relation {
+                Relation::WritesInto => "Publication(s) written",
+                _ => "Journey(s) taken on",
+            }
+        ),
         from,
         to,
         pattern: Pattern::PublishConsume,
         origin: Origin::Observed,
+        relation,
         protocol: XMIP_STORAGE.to_string(),
         state: Health::Fine,
         volume,
@@ -146,11 +157,11 @@ fn crossed(node: &str, peers: &[Peered], bound: &[String]) -> Vec<TopologyLink> 
             links.push(link(
                 (there.clone(), here.clone()),
                 *published,
-                "Publication(s) written",
+                Relation::WritesInto,
             ));
         }
         if *taken > 0 {
-            links.push(link((here.clone(), there), *taken, "Journey(s) taken on"));
+            links.push(link((here.clone(), there), *taken, Relation::HandsWorkTo));
         }
     }
     links
@@ -181,10 +192,11 @@ fn copied(node: &str, followers: &[Follower]) -> Vec<TopologyLink> {
                 entries => format!(", {entries} entries copied whole"),
             };
             Some(TopologyLink {
-                id: format!("{here}→{there} {COPIES_TO}"),
+                id: link_id(&here, &there, Relation::CopiesTo),
                 evidence: format!(
-                    "{COPIES_TO}: {} write(s) copied{whole}, {}; {} write(s) behind; \
+                    "{}: {} write(s) copied{whole}, {}; {} write(s) behind; \
                      the standby connected from {}",
+                    Relation::CopiesTo.name(),
                     follower.writes,
                     size(follower.bytes),
                     follower.behind,
@@ -194,6 +206,7 @@ fn copied(node: &str, followers: &[Follower]) -> Vec<TopologyLink> {
                 to: there,
                 pattern: Pattern::Streaming,
                 origin: Origin::Observed,
+                relation: Relation::CopiesTo,
                 protocol: XMIP_STORAGE.to_string(),
                 state: Health::Fine,
                 volume: follower.writes.saturating_add(follower.entries),
@@ -348,6 +361,11 @@ mod tests {
             "nothing crossed, nothing drawn; never itself, never a node the cluster does not bind"
         );
         assert!(links.iter().all(|link| link.protocol == XMIP_STORAGE));
+        assert_eq!(
+            links.iter().map(|link| link.relation).collect::<Vec<_>>(),
+            [Relation::WritesInto, Relation::HandsWorkTo],
+            "named as the relation it crosses, so the configured one and it meet"
+        );
         assert!(
             crossed(&storing, &peers, &[]).is_empty(),
             "a cluster that binds none draws none"
@@ -403,8 +421,12 @@ mod tests {
         let id = |name: &str| format!("node/{name}");
         assert_eq!((&link.from, &link.to), (&id(&primary), &id(&standby)));
         assert_eq!(
-            link.id,
-            format!("{}→{} copies to", id(&primary), id(&standby))
+            (link.id.clone(), link.relation),
+            (
+                link_id(&id(&primary), &id(&standby), Relation::CopiesTo),
+                Relation::CopiesTo
+            ),
+            "the one id rule, so the configured relation and this link meet"
         );
         assert_eq!(
             (link.protocol.as_str(), link.origin),

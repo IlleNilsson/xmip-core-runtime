@@ -17,11 +17,12 @@
 use abi::operate::audit::{phase, severity};
 #[cfg(feature = "node")]
 use abi::operate::event::{action, outcome};
-use abi::operate::publication::{kind, origin, pattern};
+use abi::operate::publication::{band, column, kind, origin, pattern, relation};
 use abi::operate::{counted, health};
 #[cfg(feature = "node")]
 use node::Stage;
-use observe::{Counted, Health, NodeKind, Origin, Pattern};
+use observe::topology::layout::{Band, Column};
+use observe::{Counted, Health, NodeKind, Origin, Pattern, Relation};
 use xcore::{ExecutionPhase, Severity};
 #[cfg(feature = "node")]
 use xevent::outcome::Outcome;
@@ -120,6 +121,52 @@ pub(crate) const fn wire_pattern(value: Pattern) -> i32 {
         Pattern::FireAndForget => pattern::FIRE_AND_FORGET,
         Pattern::Session => pattern::SESSION,
         Pattern::Retry => pattern::RETRY,
+    }
+}
+
+/// The header's `XmipTopologyRelation` for an observe `Relation`.
+pub(crate) const fn wire_relation(value: Relation) -> i32 {
+    match value {
+        Relation::WritesInto => relation::WRITES_INTO,
+        Relation::HandsWorkTo => relation::HANDS_WORK_TO,
+        Relation::CopiesTo => relation::COPIES_TO,
+        Relation::Operates => relation::OPERATES,
+        Relation::Monitors => relation::MONITORS,
+        Relation::OperatesAndMonitors => relation::OPERATES_AND_MONITORS,
+        Relation::Traffic => relation::TRAFFIC,
+    }
+}
+
+/// An observe `Relation` for the header's `XmipTopologyRelation`, or
+/// `None`.
+pub(crate) fn from_wire_relation(value: i32) -> Option<Relation> {
+    Relation::ALL
+        .iter()
+        .copied()
+        .find(|relation| wire_relation(*relation) == value)
+}
+
+/// The header's `XmipTopologyBand` for a band of the map.
+pub(crate) const fn wire_band(value: Band) -> i32 {
+    match value {
+        Band::Operation => band::OPERATION,
+        Band::Processing => band::PROCESSING,
+        Band::Path => band::PATH,
+        Band::Standby => band::STANDBY,
+        Band::Executing => band::EXECUTING,
+        Band::Inside => band::INSIDE,
+    }
+}
+
+/// The header's `XmipTopologyColumn` for a column of the map.
+pub(crate) const fn wire_column(value: Column) -> i32 {
+    match value {
+        Column::TxParty => column::TX_PARTY,
+        Column::Receiving => column::RECEIVING,
+        Column::Storage => column::STORAGE,
+        Column::Sending => column::SENDING,
+        Column::RxParty => column::RX_PARTY,
+        Column::Spanning => column::SPANNING,
     }
 }
 
@@ -236,9 +283,28 @@ mod tests {
         for pattern in Pattern::ALL {
             assert_eq!(from_wire_pattern(wire_pattern(*pattern)), Some(*pattern));
         }
+        for relation in Relation::ALL {
+            assert_eq!(
+                from_wire_relation(wire_relation(*relation)),
+                Some(*relation)
+            );
+        }
         assert_eq!(from_wire_kind(16), None);
         assert_eq!(from_wire_origin(-1), None);
         assert_eq!(from_wire_pattern(7), None);
+        assert_eq!(from_wire_relation(7), None);
+        let bands: Vec<i32> = Band::ALL.into_iter().map(wire_band).collect();
+        let columns: Vec<i32> = Column::ALL.into_iter().map(wire_column).collect();
+        assert_eq!(
+            bands,
+            [0, 1, 2, 3, 4, 5],
+            "the header numbers them in order"
+        );
+        assert_eq!(
+            columns,
+            [0, 1, 2, 3, 4, 5],
+            "the header numbers them in order"
+        );
     }
 
     #[test]

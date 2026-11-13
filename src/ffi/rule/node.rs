@@ -11,7 +11,7 @@
 use abi::ffi::{Str, status};
 use node::{Capability, NodeRole, Stage};
 
-use super::{fill, refuse};
+use super::{fill, hand, refuse};
 use crate::ffi::text::{borrow, scope_text};
 
 /// `node::Stage::WORDS`, forwarded. Static.
@@ -135,6 +135,41 @@ unsafe fn role_stages(role: Str, out: *mut Str, cap: usize, out_len: *mut usize)
         )
     };
     status::OK
+}
+
+/// `node::NodeRole::purpose`, forwarded: what a node declaring `declared`
+/// is for, written as UTF-8 into `out`, its true length in `out_len`; a
+/// declaration naming a word that is no role is refused there instead.
+///
+/// # Safety
+/// `declared` points at its stated length of readable bytes; `out` has room
+/// for `cap` bytes; `out_len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_role_purpose_v1(
+    declared: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        role_purpose(declared, out, cap, out_len)
+    })
+}
+
+/// [`xmip_role_purpose_v1`] within its guard.
+unsafe fn role_purpose(declared: Str, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `declared`.
+    let Some(raw) = (unsafe { scope_text(declared) }) else {
+        return status::MALFORMED;
+    };
+    let (said, code) = match NodeRole::declared(raw) {
+        Ok(roles) => (NodeRole::purpose(&roles), status::OK),
+        Err(refusal) => (refusal, status::INVALID),
+    };
+    // SAFETY: per the contract above.
+    unsafe { hand(said.as_bytes(), out, cap, out_len) };
+    code
 }
 
 /// The stage a word names, or `None` for a word that is no stage or text
@@ -493,5 +528,35 @@ mod tests {
         let (code, node, words, said) = entry(&format!("{third}=relay"));
         assert_eq!((code, node), (status::INVALID, third));
         assert!(words.is_empty() && said.starts_with("REFUSED"), "{said}");
+    }
+
+    /// What a node's roles say it is for crosses as `node::NodeRole::purpose`
+    /// says it, asked again at its length; a word that is no role is refused.
+    #[test]
+    fn a_purpose_crosses_as_node_says_it_and_a_stranger_is_refused() {
+        let purpose = |raw: &str| {
+            let mut said = [0u8; 16];
+            let mut len = 0usize;
+            // SAFETY: the buffer has the capacity passed; `len` is writable.
+            let code = unsafe {
+                xmip_role_purpose_v1(borrow(raw), said.as_mut_ptr(), said.len(), &raw mut len)
+            };
+            let mut whole = vec![0u8; len];
+            // SAFETY: as above, at the true length.
+            let again = unsafe {
+                xmip_role_purpose_v1(borrow(raw), whole.as_mut_ptr(), whole.len(), &raw mut len)
+            };
+            assert_eq!(code, again);
+            (code, String::from_utf8(whole).expect("UTF-8"))
+        };
+        let roles = [NodeRole::Operational, NodeRole::Monitoring];
+        assert_eq!(
+            purpose("operational, monitoring"),
+            (status::OK, NodeRole::purpose(&roles))
+        );
+        assert_eq!(purpose(""), (status::OK, NodeRole::purpose(&[])));
+        let (code, said) = purpose("relay");
+        assert_eq!(code, status::INVALID);
+        assert!(said.starts_with("REFUSED"), "{said}");
     }
 }
