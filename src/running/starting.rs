@@ -25,7 +25,7 @@ use crate::parties::Parties;
 use crate::pickup::Pickup;
 use crate::receiving::{ReceiveGate, Receiving};
 use crate::send_step::SendStep;
-use crate::sending::Sends;
+use crate::sending::{SendGuards, Sends};
 use crate::service::StartupPhase;
 use crate::startup::{Checked, check, load, open, start_host_services};
 use crate::stopping::Stopping;
@@ -39,6 +39,7 @@ struct Validated {
     gates: Vec<ReceiveGate>,
     gathering: route::Gathering,
     parties: Arc<Parties>,
+    guards: SendGuards,
     host_services: Vec<HostService>,
 }
 
@@ -81,6 +82,7 @@ impl Running {
             gates,
             gathering,
             parties,
+            guards,
             host_services,
         } = validated(document, &applications, &mut linked)?;
         cfg_select! {
@@ -100,7 +102,7 @@ impl Running {
         // from its Administration Database as it connects (ADR-0019,
         // amendment 2026-10-29).
         let storage = reaching.open(&linked, &tree.tuning)?;
-        let (receiving, sends) = opened(&tree, &linked, (gates, guard, &data), &storage)?;
+        let (receiving, sends) = opened(&tree, &linked, (gates, guards, guard, &data), &storage)?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let routes = routes(&receiving, &tree);
         let configured = routes.then(|| ConfiguredSubscription::of(&applications, &files));
@@ -179,7 +181,8 @@ impl Running {
 
 /// Phases 2 to 5: what the node starts, bound; every gate, filter and
 /// compiled call checked against what the program linked; the Parties lent
-/// to this process while it serves (`ffi::event`); the receive policies set
+/// to this process while it serves (`ffi::event`), and its connects' SYN
+/// retransmission (`net::retransmit_by`); the receive policies set
 /// up from the Locations it starts, before the capabilities are registered;
 /// and the Host Services its Modules need, started.
 fn validated(
@@ -200,12 +203,17 @@ fn validated(
         gates,
         gathering,
         parties,
+        guards,
     } = check(&tree, linked)
         .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
     // Lent to this process while the node serves: a program in it is
     // resolved through them, never by a Party it names (`ffi::event`).
     let parties = Arc::new(parties);
     Parties::serve(&parties);
+    // Lent the same way: every TCP connect the process makes from here on,
+    // Xmip Storage's first, sends a SYN nobody answered again as the node's
+    // `[tuning]` says, and a refusal is answered at once (`net::connect`).
+    net::retransmit_by(tree.tuning.retransmission());
     let started = crate::linked::Started {
         receive: &gates,
         send: &tree.send_locations_to_start,
@@ -229,6 +237,7 @@ fn validated(
         gates,
         gathering,
         parties,
+        guards,
         host_services,
     })
 }
@@ -241,7 +250,7 @@ fn validated(
 fn opened(
     tree: &ExecutionTree,
     linked: &Linked,
-    (gates, guard, data): (Vec<ReceiveGate>, Option<Guard>, &Path),
+    (gates, guards, guard, data): (Vec<ReceiveGate>, SendGuards, Option<Guard>, &Path),
     storage: &Reached,
 ) -> Result<(Vec<Receiving>, Sends), Refusal> {
     let guard = guard.map(|guard| guard.handshaking_within(tree.tuning.receive_handshake));
@@ -249,8 +258,13 @@ fn opened(
     let secrets: Arc<dyn xcore::Secrets> = Arc::new(persist::storage::StoredSecrets(Arc::clone(
         storage.storage(),
     )));
-    open(tree, linked, (gates, guard.as_ref(), &pins, &secrets))
-        .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))
+    open(
+        tree,
+        linked,
+        (gates, guard.as_ref(), &pins, &secrets),
+        guards,
+    )
+    .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))
 }
 
 /// The node's send step, registered for the runtime's library, and its work

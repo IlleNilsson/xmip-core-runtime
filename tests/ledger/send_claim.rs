@@ -30,8 +30,8 @@ use xmip_core_runtime::sending::Sends;
 
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{
-    Pinned, dispatching, interleaving, journey, onward, order, out, quick, sender, taking, telling,
-    took, until,
+    Pinned, dispatching, guards, interleaving, journey, onward, order, out, quick, sender, taking,
+    telling, took, until,
 };
 
 /// A far end that says it was reached, holds its send until `go`, and
@@ -54,10 +54,12 @@ fn failing_over(first: FarEnd, second: FarEnd) -> Sender {
         port.send_locations = vec!["First".to_string(), "Second".to_string()];
         port.failover = Some(configure::Failover::Next);
     });
+    let ports = vec![port];
     Sender {
         sends: Sends {
             locations: vec![first.at("First"), second.at("Second")],
-            ports: vec![port],
+            guards: guards(&ports),
+            ports,
             groups: Vec::new(),
             points: Vec::new(),
         },

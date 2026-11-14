@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use xaudit::program_audit::ProgramAudit;
-use xcore::latency::{PlainWake, at_once, spread};
+use xcore::latency::{Rounds, at_once};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::plane::{Board, Listener, Remote, Role};
@@ -21,64 +21,11 @@ const BOUND: Duration = Duration::from_millis(1);
 /// The wait a surface states: the node's default.
 const WAIT: Duration = Duration::from_secs(2);
 
-/// A follow's rounds and a plain wake beside each, held to the millisecond
-/// rule by what is Xmip's alone, each figure the fastest round in every
-/// five (`xcore::latency`): a poll or a missed notify is in every round, a
-/// wake that waited its turn for a processor in some only. **The wake is a
-/// wake**: from post to follower told is under the millisecond plus a
-/// plain wake, three times — the notice wakes the node's follow, the
-/// connection's reader and the surface where the plain wake wakes one
-/// thread. **Xmip's own work is under the millisecond**: this process's
-/// processor time across a round — the node's side and the surface's —
-/// is under the millisecond plus the process's across the plain wake,
-/// which counts what the rest of the process runs beside it. The median and
-/// the tail are printed and held by nothing: on a machine busy on every
-/// processor they measure the scheduler.
-pub(super) struct Rounds {
-    pub(super) took: Vec<Duration>,
-    pub(super) worked: Vec<Duration>,
-    plain: PlainWake,
-    woke: Vec<Duration>,
-    idle: Vec<Duration>,
-}
-
-impl Default for Rounds {
-    fn default() -> Self {
-        Self {
-            took: Vec::new(),
-            worked: Vec::new(),
-            plain: PlainWake::start(),
-            woke: Vec::new(),
-            idle: Vec::new(),
-        }
-    }
-}
-
-impl Rounds {
-    /// One plain wake, after a round.
-    pub(super) fn beside(&mut self) {
-        let (woke, idle) = self.plain.round();
-        self.woke.push(woke);
-        self.idle.push(idle);
-    }
-
-    pub(super) fn hold(self, what: &str) {
-        let took = spread(what, self.took).fastest_of_five;
-        let usual = spread("a plain wake beside it", self.woke).fastest_of_five;
-        let worked = spread("the process's processor time for a round", self.worked);
-        let idle = spread("the process's processor time for a plain wake", self.idle);
-        assert!(
-            took < BOUND + usual * 3,
-            "{what}: the fastest of five {took:?}, the machine's own {usual:?}"
-        );
-        assert!(
-            worked.fastest_of_five < BOUND + idle.fastest_of_five,
-            "{what}: the process's processor time {:?}, for a plain wake {:?}",
-            worked.fastest_of_five,
-            idle.fastest_of_five
-        );
-    }
-}
+/// How many threads a round here wakes where a plain wake wakes one
+/// (`xcore::latency::Rounds`): a post wakes the node's follow, the
+/// connection's reader and the surface; a connection the listener, its
+/// handshake's reader and the caller.
+const WAKES: u32 = 3;
 
 #[test]
 fn a_surface_reads_the_publication_and_is_told_as_it_advances() {
@@ -102,7 +49,7 @@ fn a_surface_reads_the_publication_and_is_told_as_it_advances() {
     // from the post to the follower told, over many rounds, each beside a
     // plain wake (Rounds::hold says what is held).
     let mut seen = reached.told;
-    let mut rounds = Rounds::default();
+    let mut rounds = Rounds::crossing(WAKES);
     for round in 2..=201u64 {
         let posted = Instant::now();
         let from = ProcessorTime::process();
@@ -183,7 +130,7 @@ fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() 
     // measured from the post to the follower told, over many rounds, each
     // beside a plain wake (Rounds::hold says what is held).
     let mut seen = reached.told;
-    let mut rounds = Rounds::default();
+    let mut rounds = Rounds::crossing(WAKES);
     for round in 2..=201u64 {
         let posted = Instant::now();
         let from = ProcessorTime::process();
@@ -218,7 +165,7 @@ fn a_connection_on_this_machine_is_proven_and_answered_within_the_millisecond() 
     // learn the node's (`deadline::declared`), which on this machine's
     // temporary folder alone took 0.4 to 0.6 ms of processor time
     // (2026-10-21, open problem 35).
-    let mut rounds = Rounds::default();
+    let mut rounds = Rounds::crossing(WAKES);
     for _ in 0..200 {
         let opened = Instant::now();
         let from = ProcessorTime::process();

@@ -85,10 +85,14 @@ pub enum Arrived {
     Refused { reason: Refused },
 
     /// Authenticated, published, and at least one Subscription wanted it.
+    /// `promoted` is what routing read, the Message's one promotion: the
+    /// keys of its Stream's sequences and the places its Publication takes
+    /// read it too (`crate::sequence::received`, `crate::ledger::publish`).
     Routed {
         work: ReceivedWork,
         facts: IdentityFacts,
         routing: Routing,
+        promoted: Promoted,
     },
 
     /// Authenticated, published, and nobody wanted it.

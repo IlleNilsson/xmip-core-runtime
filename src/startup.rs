@@ -22,7 +22,7 @@ use crate::linked::{Linked, LinkedTransport};
 use crate::parties::Parties;
 use crate::receiving::{ReceiveGate, Receiving};
 use crate::running::publication::location;
-use crate::sending::{Sending, Sends};
+use crate::sending::{SendGuards, Sending, Sends};
 
 /// What startup phase 3 found the configuration needs of what was linked.
 pub(crate) struct Checked {
@@ -30,12 +30,16 @@ pub(crate) struct Checked {
     pub(crate) gathering: Gathering,
     /// The Parties `[[parties]]` declares, each mechanism a declared one.
     pub(crate) parties: Parties,
+    /// Each Send Port's guards, its `retry` built as the retry guard the
+    /// program linked (ADR-0048, amendment 2026-11-14).
+    pub(crate) guards: SendGuards,
 }
 
 /// Startup phase 3's checks of what only the program can answer: that every
 /// started Location's transport, every accepted mechanism, every mechanism a
-/// Party's identity names and every name a filter uses is one this node was
-/// built with, and every accepted Party one the configuration declares.
+/// Party's identity names, every name a filter uses and every Send Port's
+/// `retry` is one this node was built with, and every accepted Party one the
+/// configuration declares.
 pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Vec<String>> {
     let mut problems = linked.scheme_problems();
 
@@ -108,11 +112,20 @@ pub(crate) fn check(tree: &ExecutionTree, linked: &Linked) -> Result<Checked, Ve
             .map(|refused| format!("a Subscription's filter cannot be read: {refused}")),
     );
 
+    // A Send Port stating `retry` where the program linked no retry guard
+    // is refused now, not at its first failed try.
+    let guards =
+        crate::sending::guards(&tree.designed_send_ports, linked.retry).unwrap_or_else(|refused| {
+            problems.extend(refused);
+            SendGuards::new()
+        });
+
     if problems.is_empty() {
         Ok(Checked {
             gates,
             gathering,
             parties,
+            guards,
         })
     } else {
         Err(problems)
@@ -238,9 +251,12 @@ pub(crate) fn load(
 /// once, from its address and settings, given the node's location (the
 /// owner's *Option A*, 2026-10-03: the runtime gives every transport its
 /// node's identity once, as it builds it) and the guard its receives
-/// terminate TLS with where the node has one, and the secret it names,
-/// read from `secrets` as it connects (ADR-0019, amendment 2026-10-29), and
-/// held to the direction it serves.
+/// terminate TLS with where the node has one, the most one caller's turn
+/// on its receives takes (`[tuning] receive_turn`), and the secret it
+/// names, read from `secrets` as it connects (ADR-0019, amendment
+/// 2026-10-29), and held to the direction it serves; the Send Ports with
+/// `guards`, as phase
+/// 3 built them ([`check`]).
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
@@ -250,6 +266,7 @@ pub(crate) fn open(
         &Arc<Pinned>,
         &Arc<dyn Secrets>,
     ),
+    guards: SendGuards,
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
     let node = NodeLocation::new(location(
         &tree.service.cluster_name,
@@ -266,7 +283,8 @@ pub(crate) fn open(
             }
             None => None,
         };
-        match technology.open(location, side, (&node, guard, pins, secured)) {
+        let turn = tree.tuning.receive_turn;
+        match technology.open(location, side, (&node, guard, pins, secured, turn)) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),
@@ -336,6 +354,7 @@ pub(crate) fn open(
                 points: crate::sequence::destinations(tree)
                     .map_err(|why| why.join("; "))
                     .unwrap_or_default(),
+                guards,
             },
         ))
     } else {

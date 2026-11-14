@@ -56,7 +56,7 @@ impl Followed {
             .unwrap_or(&row);
         let mut said = format!(
             "a member since {}, as process {:032x}: {}; runs serial {} of save {}",
-            to_the_second(own.started_unix_nanos),
+            CivilTime::from_unix_nanos(i128::from(own.started_unix_nanos)).rfc3339(),
             row.process,
             listening(&row),
             row.serial,
@@ -98,11 +98,4 @@ fn listening(row: &MemberRecord) -> String {
         .map(|place| format!(", Storage node {} of those listed", place + 1))
         .unwrap_or_default();
     format!("{operate}, {sync}{place}")
-}
-
-/// `unix_nanos` as RFC 3339 in UTC to the whole second, as a person reads
-/// when a member started: `2026-11-13T09:00:00Z`.
-fn to_the_second(unix_nanos: u64) -> String {
-    let after = std::time::Duration::from_nanos(unix_nanos);
-    CivilTime::from_system_time(std::time::SystemTime::UNIX_EPOCH + after).rfc3339()
 }

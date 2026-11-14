@@ -32,7 +32,9 @@ use xmip_core_runtime::sending::Sends;
 
 use super::bounded::{Made, alone};
 use super::receive_cycle::{Sender, node, on_node};
-use super::sending::{Told, dispatching, interleaving, onward, order, out, port, quick, sender};
+use super::sending::{
+    Told, dispatching, guards, interleaving, onward, order, out, port, quick, sender,
+};
 use super::{directory, test_node};
 
 /// The Send Ports of the fan-out.
@@ -70,6 +72,7 @@ fn fan_out(
     let place = directory(test);
     let failing = Failing::over(test_node(&place));
     let storage: Arc<dyn XmipStorage> = failing.clone();
+    let ports: Vec<_> = PORTS.iter().map(|name| port(name, |_| {})).collect();
     let sending = Sender {
         sends: Sends {
             locations: drains
@@ -77,7 +80,8 @@ fn fan_out(
                 .zip(PORTS)
                 .map(|(drain, name)| drain.clone().at(name))
                 .collect(),
-            ports: PORTS.iter().map(|name| port(name, |_| {})).collect(),
+            guards: guards(&ports),
+            ports,
             groups: vec![SendPortGroup {
                 name: "All".to_string(),
                 send_ports: PORTS.iter().map(ToString::to_string).collect(),

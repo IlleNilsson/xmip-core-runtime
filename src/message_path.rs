@@ -194,8 +194,8 @@ pub fn carry(
     // 2026-10-20); the cycle itself ends once the Publication is durable.
     if let Arrived::Routed { work, facts, .. } = &arrived {
         // A Message bound for a Work Process this node runs is read now.
-        for hold in &lined.holds {
-            runtime.work.ask(hold.queue);
+        for &(_, queue) in &lined.queued {
+            runtime.work.ask(queue);
         }
         runtime.send.handed(lined, &journeys, work, facts, &durable);
     } else {
@@ -227,21 +227,22 @@ fn published(
     gate: &ReceiveGate,
     arrived: Arrived,
 ) -> (Arrived, Option<Published>) {
-    let (work, facts, routing, unmatched) = match &arrived {
+    // The Message is promoted once, at arrival: its sequences' keys and
+    // its Publication's places read what arrival promoted.
+    let ((work, facts, routing, promoted), unmatched) = match &arrived {
         Arrived::Routed {
             work,
             facts,
             routing,
-        } => (work, facts, routing, Unmatched::default()),
+            promoted,
+        } => ((work, facts, routing, promoted), Unmatched::default()),
         Arrived::Unroutable {
             work,
             facts,
             routing,
             promoted,
         } => (
-            work,
-            facts,
-            routing,
+            (work, facts, routing, promoted),
             Unmatched {
                 promoted: Some(promoted),
                 facts: Some(facts),
@@ -256,7 +257,6 @@ fn published(
         origin: runtime.origin,
         send: runtime.send,
         sends: runtime.sends,
-        gathering: runtime.gathering,
         cluster: runtime.work.cluster(),
     };
     let (message, location) = (&work.message, &gate.location);
@@ -268,7 +268,7 @@ fn published(
         gate.points.as_slice(),
     );
     let cluster = runtime.work.cluster();
-    let received = match sequence::received(cluster, points, runtime.gathering, message) {
+    let received = match sequence::received(cluster, points, (message, promoted)) {
         Ok(received) => received,
         Err(reason) => return (Arrived::Failed { reason }, None),
     };
@@ -276,7 +276,7 @@ fn published(
         &publisher,
         pickup,
         (location, received),
-        message,
+        (message, promoted),
         routing,
         &unmatched,
         || facts.record(),

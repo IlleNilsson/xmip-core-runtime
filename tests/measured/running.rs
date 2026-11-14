@@ -10,7 +10,7 @@ use tcp::TcpTransport;
 use transport::Transport;
 use transport::socket::connect_tcp;
 use xcore::latency::spread;
-use xmip_core_runtime::fixture::started;
+use xmip_core_runtime::fixture::{started, until_listening};
 
 use super::node::{count_anew, deliver, given, linked, node, path_text, written};
 
@@ -189,8 +189,10 @@ fn eight_senders_at_once_are_carried_side_by_side() {
     );
     let path = written("eight", &spread);
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
+    // Its Receive Location binds on its first receive: the warm-up connect
+    // asks again until it listens; the senders connect after it was taken.
     posted_as(
-        &mut connect_tcp(&receive, Some(CONNECT)).expect("connects"),
+        &mut until_listening(&receive, || connect_tcp(&receive, Some(CONNECT))),
         "warm",
         b"warm",
     );

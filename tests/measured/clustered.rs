@@ -4,7 +4,7 @@
 //! holds (`plane::monitoring::written`), so answering a surface reads that
 //! text and writes it, as answering the node's own publication does. Held
 //! over loopback TLS, a cluster of nine members, each round beside a plain
-//! wake (`plane.rs`'s `Rounds`): from the call to the answer read is under the
+//! wake (`xcore::latency::Rounds`): from the call to the answer read is under the
 //! millisecond plus three plain wakes, and the process's processor time
 //! across it under the millisecond plus a plain wake's. The node's own
 //! publication of the same text is read the same way and printed beside
@@ -20,7 +20,7 @@ use node::Capability;
 use observe::topology::relate::Member as Drawn;
 use observe::topology::window::Window;
 use observe::{Health, HealthRecord, Publication, Snapshot, now_unix_nanos};
-use xcore::latency::spread;
+use xcore::latency::{Rounds, spread};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::plane::gather::{Gathered, Heard, Said};
@@ -28,11 +28,14 @@ use xmip_core_runtime::plane::monitoring::written;
 use xmip_core_runtime::plane::remote::Clustered;
 use xmip_core_runtime::plane::{Board, Published, Role};
 
-use super::plane::Rounds;
 use super::{certified, endpoint};
 
 /// The bound: about a millisecond.
 const BOUND: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// How many plain wakes a call's wall clock is held beside, as the operate
+/// plane's rounds are: three (`plane.rs`).
+const WAKES: u32 = 3;
 
 /// The Locations beneath each member, each said Fine and counted.
 const LOCATIONS: [&str; 4] = [
@@ -117,7 +120,7 @@ fn a_monitoring_node_answers_the_cluster_from_its_gathered_view_within_the_milli
     }
     let _ = spread("the node's own publication of the same text", own_reads);
 
-    let mut rounds = Rounds::default();
+    let mut rounds = Rounds::crossing(WAKES);
     for _ in 0..200 {
         let asked = Instant::now();
         let from = ProcessorTime::process();

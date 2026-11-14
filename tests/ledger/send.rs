@@ -9,7 +9,8 @@
 //! - a retry waiting for its backoff holds no thread, no claim and no
 //!   place: its due time is kept at its place in its queue, a stop does not
 //!   wait it out, and a short one is tried again and sent; a restart keeps
-//!   its due time and its count of tries;
+//!   its due time and its count of tries; a Send Port with retry off tries
+//!   once — its `retry` is the retry guard (ADR-0048, amendment 2026-11-14);
 //! - a Sequential Send Port keeps its order, and a Message of it that
 //!   failed blocks its sequence, or is set aside, as `on_failure` says.
 
@@ -87,6 +88,43 @@ fn a_send_that_succeeds_is_written_completed_and_leaves_its_queue() {
                 assert_eq!(took(&taken), ["order 1"]);
                 assert_eq!(waiting(runtime), [] as [JourneyId; 0]);
                 assert_eq!(runtime.send.figures()["Out"].sent, 1);
+            });
+        },
+    );
+}
+
+/// A Send Port with retry off is given no retry guard: a failure its far
+/// end says may pass is tried once, and the Message is Failed at once
+/// (ADR-0048, amendment 2026-11-14).
+#[test]
+fn a_send_port_with_retry_off_tries_a_retryable_failure_once_and_fails_it() {
+    let storage = memory();
+    let tries = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&tries);
+    let (far, _) = FarEnd::answering(Box::new(move |_| {
+        counted.fetch_add(1, Ordering::Relaxed);
+        Err(TransportError {
+            message: "the far end is down".to_string(),
+            retryable: true,
+        })
+    }));
+    let sending = sender(node(), far, out(|_| {}));
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sending,
+        |runtime, pickup, gate| {
+            dispatching(runtime, |told| {
+                let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+                told.wait_for(id, "failed");
+                let failed = journey(storage.as_ref(), id);
+                assert_eq!(failed.state, JourneyState::Failed);
+                assert_eq!(failed.attempts.tries, 1, "tried once");
+                let tried = failed.entries().iter().filter(|e| e.action == "send");
+                assert_eq!(tried.count(), 1, "one try recorded, never Recovering");
+                assert_eq!(tries.load(Ordering::Relaxed), 1);
+                let figures = &runtime.send.figures()["Out"];
+                assert_eq!((figures.failed, figures.waiting), (1, 0));
             });
         },
     );

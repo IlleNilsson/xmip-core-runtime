@@ -7,8 +7,6 @@
 //! 2026-11-13 the Essentials' roll held it (ADR-0028 and ADR-0052,
 //! amendments 2026-11-13).
 
-use std::time::{Duration, SystemTime};
-
 use codec::civil::CivilTime;
 use observe::snapshot::PAUSED_SEVERITY;
 use observe::topology::draw::joined;
@@ -32,11 +30,11 @@ pub fn reached(root: &str, heard: &Heard, now: i64) -> HealthRecord {
             0,
             format!("{}, did not answer: {why}", heard.at),
         ),
-        Said::Stopped(at) => (
-            Health::Paused,
-            PAUSED_SEVERITY,
-            format!("{}, stopped in order at {}", heard.at, to_the_second(*at)),
-        ),
+        Said::Stopped(at) => {
+            let when = CivilTime::from_unix_nanos(i128::from(*at)).rfc3339();
+            let evidence = format!("{}, stopped in order at {when}", heard.at);
+            (Health::Paused, PAUSED_SEVERITY, evidence)
+        }
     };
     HealthRecord {
         scope: joined(&[root, "/node/", &heard.node, "/", REACHED]),
@@ -45,11 +43,4 @@ pub fn reached(root: &str, heard: &Heard, now: i64) -> HealthRecord {
         evidence,
         observed_unix_nanos: now,
     }
-}
-
-/// `unix_nanos` as RFC 3339 in UTC to the whole second, as a person reads
-/// when a member stopped: `2026-11-13T09:00:00Z`.
-fn to_the_second(unix_nanos: u64) -> String {
-    let after = Duration::from_nanos(unix_nanos);
-    CivilTime::from_system_time(SystemTime::UNIX_EPOCH + after).rfc3339()
 }

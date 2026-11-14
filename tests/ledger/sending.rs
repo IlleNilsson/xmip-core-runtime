@@ -21,7 +21,7 @@ use xcore::{Clock, ExecutionId, JourneyId, MessageId};
 use xmip_core_runtime::fixture::{Answer, Failing, FarEnd};
 use xmip_core_runtime::message_path::Runtime;
 use xmip_core_runtime::send_step::{Departure, Ended, dispatch};
-use xmip_core_runtime::sending::Sends;
+use xmip_core_runtime::sending::{SendGuards, Sends};
 use xmip_core_runtime::sequence::{Point, PointKind};
 use xmip_core_runtime::tuning::Tuning;
 use xmip_core_runtime::work_step::{KeyWord, ResolvedSet};
@@ -206,6 +206,18 @@ pub fn quick() -> Tuning {
     }
 }
 
+/// The retry guard the tests' program links, as `xmip-service` links it
+/// (`Linked::retry`).
+pub fn retry_guard(tries: u32, backoff: Duration) -> Box<dyn resilience::Guard> {
+    Box::new(retry::Retry::new(tries, backoff))
+}
+
+/// Each of `ports`' guards, as a node builds them as it starts: a Send
+/// Port's `retry` the retry guard.
+pub fn guards(ports: &[DesignedSendPort]) -> SendGuards {
+    xmip_core_runtime::sending::guards(ports, Some(retry_guard)).expect("the retry guard linked")
+}
+
 /// The node at `node` sending `Out` to `far` by `port`.
 pub fn sender(node: String, far: FarEnd, port: DesignedSendPort) -> Sender {
     senders(node, vec![(far, port)], Vec::new())
@@ -226,6 +238,7 @@ pub fn senders(
         sends: Sends {
             locations,
             points: points(&ports),
+            guards: guards(&ports),
             ports,
             groups,
         },

@@ -13,7 +13,14 @@
 //! every record that copied and sorted what it found
 //! (`observe::snapshot::Beneath`), and wrote about 6,400 strings an
 //! assembly, each grown several times by `format!`
-//! (`observe::topology::draw::joined`).
+//! (`observe::topology::draw::joined`). On 2026-11-14, with the machine
+//! half loaded by other programs, the two shapes took 0.76 to 1.09 ms and
+//! 0.64 to 0.78 ms, most of it allocating: a copy of every scope as its
+//! snapshot key, a node's records copied out, scopes written twice and
+//! searched again; with each text written once into what keeps it, a
+//! node's records borrowed and read in one pass, and an id hashed once,
+//! they take 0.48 to 0.55 ms and 0.46 to 0.65 ms (ADR-0052, amendment
+//! 2026-11-14).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

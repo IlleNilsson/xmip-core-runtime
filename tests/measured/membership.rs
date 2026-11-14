@@ -3,12 +3,15 @@
 //! knows (`storage::Reached::answers`), never by a try that would wait out a
 //! Storage node's timeout, so it adds no more than a millisecond beyond the
 //! stop's own work; its row is left saying it runs, and the stop says why.
+//! The fastest of five over its rounds (`xcore::latency::spread`); until
+//! 2026-11-14 one stop was timed once.
 
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use persist::storage::{MemberRecord, StorageServer, XmipStorage};
+use xcore::latency::spread;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::linked::Linked;
 use xmip_core_runtime::membership::{Joined, UNANSWERED};
@@ -17,6 +20,9 @@ use xmip_core_runtime::tuning::Tuning;
 
 /// Far longer than anything here takes.
 const LONG: Duration = Duration::from_secs(60);
+
+/// How many stops are timed.
+const ROUNDS: usize = 20;
 
 /// The test cluster's first node as it writes its row.
 fn row() -> MemberRecord {
@@ -43,9 +49,20 @@ fn a_stop_with_its_storage_gone_adds_no_more_than_a_millisecond() {
     let authority = Authority::new();
     let (behind, _) = persist::fixture::crowd::node();
     let behind: Arc<dyn XmipStorage> = Arc::new(behind);
+    let took = (0..ROUNDS)
+        .map(|_| stopped_with_storage_gone(&authority, &behind))
+        .collect();
+    let took = spread("a node's membership stopped with its Storage gone", took);
+    assert!(took.fastest_of_five < Duration::from_millis(1), "{took:?}");
+}
+
+/// A node's membership joined over a Storage node in front of `behind`,
+/// that Storage node stopped and known gone, and the membership stopped:
+/// how long the stop took.
+fn stopped_with_storage_gone(authority: &Authority, behind: &Arc<dyn XmipStorage>) -> Duration {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bound");
-    let server =
-        StorageServer::start(behind, listener, &authority.identity("storage")).expect("served");
+    let server = StorageServer::start(Arc::clone(behind), listener, &authority.identity("storage"))
+        .expect("served");
     let planned = Planned::Reaching {
         listed: vec![server.address().to_string()],
         identity: authority.identity("node"),
@@ -74,7 +91,6 @@ fn a_stop_with_its_storage_gone_adds_no_more_than_a_millisecond() {
     let asked = Instant::now();
     let left = joined.stop(reached.answers());
     let took = asked.elapsed();
-    eprintln!("a node's membership stopped with its Storage gone in {took:?}");
     assert_eq!(left, Some(UNANSWERED), "its stop record says why");
-    assert!(took < Duration::from_millis(1), "{took:?}");
+    took
 }

@@ -184,7 +184,7 @@ impl Pickup {
             message: None,
             properties,
         };
-        crate::ledger::audit_entry(&record)
+        crate::ledger::audit_entry(record)
     }
 
     fn audited_replay(&self, id: MessageId, who: &str, opened: usize, said: &str) {

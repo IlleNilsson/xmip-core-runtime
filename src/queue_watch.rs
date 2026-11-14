@@ -54,11 +54,13 @@ struct More {
 }
 
 /// A queue the watch hands its step: what is due in it, where the wait
-/// answered with that, and when the answer came.
+/// answered with that, when the answer came, and when the wait was asked —
+/// what is due was read no earlier, and maybe before a write since.
 #[derive(Clone, Debug)]
 pub(crate) struct Woken {
     pub(crate) due: Option<DueQueue>,
     pub(crate) at: Instant,
+    pub(crate) asked: Instant,
 }
 
 impl QueueWatch {
@@ -141,12 +143,13 @@ impl QueueWatch {
                 }
                 Ok(moved) => {
                     let at = Instant::now();
+                    let woken = |due| Woken { due, at, asked };
                     for one in moved {
                         let queue = match one.position.watched {
                             Watched::Queue(queue) => queue,
                             other => {
                                 for queue in self.moved(other) {
-                                    ask(queue, Woken { due: None, at });
+                                    ask(queue, woken(None));
                                 }
                                 continue;
                             }
@@ -157,7 +160,7 @@ impl QueueWatch {
                         {
                             kept.at = one.position.at;
                         }
-                        ask(queue, Woken { due: one.due, at });
+                        ask(queue, woken(one.due));
                     }
                 }
                 Err(_) => self.waiter.rest(bound),

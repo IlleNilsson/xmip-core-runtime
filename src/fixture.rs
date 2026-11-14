@@ -18,12 +18,14 @@ pub mod authority;
 mod drain;
 mod failing;
 mod lines;
+mod listening;
 mod signed;
 
 pub use authority::Authority;
 pub use drain::{Drain, Stall};
 pub use failing::{Failing, Interleaved, Operation};
 pub use lines::{Lines, LinesUnits};
+pub use listening::until_listening;
 pub use signed::{configuration_folder, started, unsigned, write_signed};
 
 /// Verifies every claim of its mechanism with the verdict it was given.

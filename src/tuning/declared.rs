@@ -1,13 +1,12 @@
 //! What `[tuning]` may say: each key, its kind, its bounds and its default,
 //! declared once (`super`).
 
-use std::time::Duration;
-
 use persist::storage::{client, standby};
 use schedule::pace::{RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWEEP};
 use xcluster::timing;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
+use super::row::{as_integer, count, duration};
 use crate::act_watch::OPERATE_ACT;
 use crate::budget::{
     NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD, RECEIVE_CHUNKS_PER_THREAD, SEND_CHUNKS_PER_THREAD,
@@ -102,6 +101,14 @@ pub const TUNING: &Settings = &Settings {
             presence: Presence::Default(Fixed::Duration(transport::guard::HANDSHAKE)),
             meaning: "The most each read of a TLS handshake a Receive Location terminates \
                       waits on the client, apart from the Location's own wait.",
+            applies: Applies::Both,
+        },
+        Setting {
+            name: "receive_turn",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(transport::serving::TURN)),
+            meaning: "The most one caller's turn on a Receive Location takes, every read of it \
+                      given only what is left; a caller past it is turned away.",
             applies: Applies::Both,
         },
         Setting {
@@ -212,35 +219,27 @@ pub const TUNING: &Settings = &Settings {
                       back before they leave it behind to read from Storage.",
             applies: Applies::Both,
         },
-        Setting {
-            name: "storage_timeout",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(client::TIMEOUT)),
-            meaning: "What bounds each connect to and each read from a Storage node.",
-            applies: Applies::Both,
-        },
-        Setting {
-            name: "storage_pass_over",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(client::PASS_OVER)),
-            meaning: "How long a Storage node that did not answer is asked only after the rest.",
-            applies: Applies::Both,
-        },
-        Setting {
-            name: "storage_beat",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(standby::BEAT)),
-            meaning: "How often a primary Storage node says it is there to an idle standby.",
-            applies: Applies::Both,
-        },
-        Setting {
-            name: "storage_silence",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(standby::SILENCE)),
-            meaning: "How long a Storage node waits to hear from another, and how often a \
-                      primary asks the others what they are.",
-            applies: Applies::Both,
-        },
+        duration(
+            "storage_timeout",
+            client::TIMEOUT,
+            "What bounds each connect to and each read from a Storage node.",
+        ),
+        duration(
+            "storage_pass_over",
+            client::PASS_OVER,
+            "How long a Storage node that did not answer is asked only after the rest.",
+        ),
+        duration(
+            "storage_beat",
+            standby::BEAT,
+            "How often a primary Storage node says it is there to an idle standby.",
+        ),
+        duration(
+            "storage_silence",
+            standby::SILENCE,
+            "How long a Storage node waits to hear from another, and how often a primary asks \
+             the others what they are.",
+        ),
         Setting {
             name: "storage_kept",
             kind: Kind::Integer {
@@ -251,14 +250,12 @@ pub const TUNING: &Settings = &Settings {
             meaning: "The bytes of each database's writes a primary keeps for a standby behind it.",
             applies: Applies::Both,
         },
-        Setting {
-            name: "storage_wait",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(persist::storage::HOLD)),
-            meaning: "The longest a Storage node holds one node's wait on its queues before it \
-                      answers that nothing moved.",
-            applies: Applies::Both,
-        },
+        duration(
+            "storage_wait",
+            persist::storage::HOLD,
+            "The longest a Storage node holds one node's wait on its queues before it answers \
+             that nothing moved.",
+        ),
         Setting {
             name: "storage_unwaited",
             kind: Kind::Integer {
@@ -271,13 +268,19 @@ pub const TUNING: &Settings = &Settings {
                       is let go and read again when next waited on.",
             applies: Applies::Both,
         },
-        Setting {
-            name: "local_timeout",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(LOCAL_TIMEOUT)),
-            meaning: "How long a surface's call to this node's local endpoint waits for it.",
-            applies: Applies::Both,
-        },
+        count(
+            "storage_due_places",
+            (0, 4_194_304),
+            persist::storage::DUE_QUEUES,
+            "How many queues' places by when each is due a Storage node's writer keeps, so a \
+             write into one reads none of them from the store; past it the first kept is let go \
+             and read again by the next write into it.",
+        ),
+        duration(
+            "local_timeout",
+            LOCAL_TIMEOUT,
+            "How long a surface's call to this node's local endpoint waits for it.",
+        ),
         Setting {
             name: "operate_connections",
             kind: Kind::Integer {
@@ -300,86 +303,81 @@ pub const TUNING: &Settings = &Settings {
                       at once; one past them is closed as it is accepted.",
             applies: Applies::Both,
         },
-        Setting {
-            name: "operate_handshake",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(HANDSHAKE_WITHIN)),
-            meaning: "How long a handshake with the operate listener may take in all, however \
-                      it is read.",
-            applies: Applies::Both,
-        },
-        Setting {
-            name: "operate_act",
-            kind: Kind::Duration,
-            presence: Presence::Default(Fixed::Duration(OPERATE_ACT)),
-            meaning: "How long this node, as the door an operator's act is asked at, holds \
-                      the asker's call while the node it is asked of takes it; past it the \
-                      asker is told the act is asked, and its node takes it as soon as it runs.",
-            applies: Applies::Both,
-        },
-        sync(
+        duration(
+            "operate_handshake",
+            HANDSHAKE_WITHIN,
+            "How long a handshake with the operate listener may take in all, however it is read.",
+        ),
+        duration(
+            "operate_act",
+            OPERATE_ACT,
+            "How long this node, as the door an operator's act is asked at, holds the asker's \
+             call while the node it is asked of takes it; past it the asker is told the act is \
+             asked, and its node takes it as soon as it runs.",
+        ),
+        duration(
             "sync_beat",
             timing::BEAT,
             "How often an idle sync link says it is alive.",
         ),
-        sync(
+        duration(
             "sync_silence",
             timing::SILENCE,
             "How long a sync link may say nothing before it is taken for broken.",
         ),
-        sync(
+        duration(
             "sync_handshake",
             timing::HANDSHAKE,
             "The most a sync link's TLS handshake waits on the other node.",
         ),
-        sync(
+        duration(
             "sync_watch",
             timing::WATCH,
             "How often a sync link waiting to read looks whether its side is ending.",
         ),
-        sync(
+        duration(
             "sync_connect",
             timing::CONNECT,
             "The most a connect to another member's sync listener waits.",
         ),
-        sync(
+        duration(
             "sync_write",
             timing::WRITE,
             "The most a sync link's write waits on a node that does not read.",
         ),
-        sync(
+        duration(
             "sync_retry",
             timing::RETRY,
             "The first wait before a member that could not be reached is tried again, \
              doubled each time it is not.",
         ),
-        sync(
+        duration(
             "sync_retry_most",
             timing::RETRY_MOST,
             "The longest wait before a member that could not be reached is tried again.",
         ),
-        sync(
+        duration(
             "sync_follow",
             timing::FOLLOW,
             "How often the cluster's members are read again when nothing says they changed.",
         ),
+        duration(
+            "connect_retransmit",
+            net::RETRANSMISSION.first,
+            "How long a TCP connect waits for the peer's answer before it sends its SYN again, \
+             each later wait twice the one before: the initial retransmission timeout, at most \
+             65,534 ms on Windows.",
+        ),
+        Setting {
+            name: "connect_retransmissions",
+            kind: Kind::Integer {
+                minimum: 0,
+                maximum: 8,
+            },
+            presence: Presence::Default(Fixed::Integer(net::RETRANSMISSION.times as i64)),
+            meaning: "How many times a TCP connect sends a SYN nobody answered again; a refusal \
+                      is answered at once and never asked again.",
+            applies: Applies::Both,
+        },
     ],
 };
-
-/// A duration of the sync plane (`xcluster::sync`), its default the
-/// constant beside the plane (`xcluster::timing`).
-const fn sync(name: &'static str, default: Duration, meaning: &'static str) -> Setting {
-    Setting {
-        name,
-        kind: Kind::Duration,
-        presence: Presence::Default(Fixed::Duration(default)),
-        meaning,
-        applies: Applies::Both,
-    }
-}
-
-/// A count as the declaration writes its default.
-#[allow(clippy::cast_possible_wrap)]
-const fn as_integer(count: usize) -> i64 {
-    count as i64
-}

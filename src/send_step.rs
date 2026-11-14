@@ -220,12 +220,12 @@ impl Departure {
 }
 
 /// What a Publication writes for the Messages that go on to be sent: each
-/// in its destination's queue, and the claims this node takes on those it
-/// sends itself.
+/// in its destination's queue ([`LinedUp::holds`]), and the claims this
+/// node takes on those it sends itself ([`LinedUp::claims`]).
 #[derive(Debug, Default)]
 pub struct LinedUp {
-    pub holds: Vec<Hold>,
-    pub claims: Vec<Claim>,
+    /// Each Message lined up, by its Journey, and the queue it waits in.
+    pub queued: Vec<(JourneyId, u128)>,
     /// The claimed ones, by Journey: where each leads and its queue.
     claimed: Vec<(JourneyId, Subscriber, u128, Claim)>,
     /// The places in the Send pool admitted for them.
@@ -233,6 +233,39 @@ pub struct LinedUp {
     /// When it was lined up, before its Publication was asked: what its
     /// claims are surely held a lease from.
     asked: Option<Instant>,
+}
+
+impl LinedUp {
+    /// Each Message as its Publication keeps it, at the end of its queue,
+    /// `body` beside each: moved into the last, copied for the rest.
+    #[must_use]
+    pub fn holds(&self, body: Vec<u8>) -> Vec<Hold> {
+        let mut holds: Vec<Hold> = self
+            .queued
+            .iter()
+            .map(|&(journey, queue)| Hold {
+                queue,
+                journey,
+                body: Vec::new(),
+            })
+            .collect();
+        if let Some((last, rest)) = holds.split_last_mut() {
+            for hold in rest {
+                hold.body.clone_from(&body);
+            }
+            last.body = body;
+        }
+        holds
+    }
+
+    /// The claims this node takes, as its Publication writes them.
+    #[must_use]
+    pub fn claims(&self) -> Vec<Claim> {
+        self.claimed
+            .iter()
+            .map(|(.., claim)| claim.clone())
+            .collect()
+    }
 }
 
 /// A node's send step: what it sends, what it holds claimed, when each of
@@ -354,16 +387,15 @@ impl SendStep {
     /// The Messages of the Journeys a Publication opens that go on to be
     /// sent — each with
     /// where it leads — lined up: each kept at the end of its destination's
-    /// queue, beside it `body`, the identity it arrived with in its one
-    /// form; and those this node sends, on a Send Port that is not
-    /// Sequential, claimed by it in the same write, minted by `ids` — as
-    /// many as the Send pool admits; the rest wait unclaimed for room.
+    /// queue, beside it the identity it arrived with in its one form
+    /// ([`LinedUp::holds`]); and those this node sends, on a Send Port that
+    /// is not Sequential, claimed by it in the same write, minted by `ids` —
+    /// as many as the Send pool admits; the rest wait unclaimed for room.
     #[must_use]
     pub fn line_up(
         &self,
         sends: &Sends,
         departing: &[(&Journey, &Subscriber)],
-        body: &[u8],
         ids: &dyn IdGenerator,
     ) -> LinedUp {
         let sent_here = |to: &Subscriber| sends.serves(to) && !sequential(sends, to);
@@ -377,11 +409,7 @@ impl SendStep {
         for (journey, to) in departing {
             let queue = self.queue(to);
             let journey = journey.journey_id();
-            lined.holds.push(Hold {
-                queue,
-                journey,
-                body: body.to_vec(),
-            });
+            lined.queued.push((journey, queue));
             if places > 0 && sent_here(to) {
                 places -= 1;
                 let claim = Claim {
@@ -391,7 +419,6 @@ impl SendStep {
                     until_unix_nanos: 0,
                     fence: 0,
                 };
-                lined.claims.push(claim.clone());
                 lined.claimed.push((journey, (*to).clone(), queue, claim));
             }
         }
@@ -443,10 +470,10 @@ impl SendStep {
             state.owned.insert(id, Owned::of(&departure));
             state.handed.push_back(departure);
         }
-        for hold in &lined.holds {
-            let claimed = state.owned.contains_key(&hold.journey);
-            if !claimed && !state.asked.contains(&hold.queue) {
-                state.asked.push(hold.queue);
+        for &(journey, queue) in &lined.queued {
+            let claimed = state.owned.contains_key(&journey);
+            if !claimed && !state.asked.contains(&queue) {
+                state.asked.push(queue);
             }
         }
         drop(state);

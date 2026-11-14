@@ -5,7 +5,7 @@
 //! is no one, so a handle is never guessed (ADR-0009, amendment
 //! 2026-11-01); and the clock both end one by.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use xcore::{Clock, SystemClock};
 
 /// A handle `taken` does not already name, never 0.
 #[must_use]
@@ -18,14 +18,10 @@ pub fn drawn(taken: impl Fn(u64) -> bool) -> u64 {
     }
 }
 
-/// Now, in seconds since the Unix epoch.
+/// Now, in seconds since the Unix epoch, as the one clock reads it.
 #[must_use]
 pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
+    SystemClock.unix_seconds()
 }
 
 #[cfg(test)]
