@@ -10,8 +10,9 @@
 //!   on, with no restart and nothing held;
 //! - a turn on the dispatching thread — its Work Process naming a
 //!   Correlation — whose flow panics keeps the dispatching going;
-//! - a turn that unwinds before its claim is let go of and, asked again,
-//!   taken up, on the pool and on the dispatching thread.
+//! - a turn that unwinds before its claim is let go of and taken up again
+//!   by the next read of its queue, on the pool and on the dispatching
+//!   thread.
 //!
 //! Until 2026-11-12 a turn that panicked stayed owned on its node and every
 //! read passed it over until the node restarted, and one on the dispatching
@@ -130,7 +131,15 @@ fn a_sequenced_turn_whose_flow_panics_keeps_the_dispatching_going() {
 /// A node over Xmip Storage whose next claim panics before it is taken,
 /// running `Absorb` — on the dispatching thread where `in_order` — taking
 /// a Message for it: its turn unwinds, is let go of, and is taken up again
-/// once asked.
+/// by the next read of its queue, under a claim of its own.
+///
+/// Which read takes it up is not the test's to say. One Publication is read
+/// twice on its own node — the message path asks the queue as it routes the
+/// Message, and the Storage wait wakes for the write — so the read the other
+/// asked may take the turn up before this test asks; where none is left, the
+/// ask here does. Either way it completes, claimed again, and unwound once
+/// (until 2026-11-13 this test held that nothing took it up before it
+/// asked, which the dispatching thread's next read broke now and then).
 fn a_claim_that_panics_is_let_go_of_and_taken_up_again(in_order: bool) {
     let failing = Failing::over(memory());
     let storage: Arc<dyn XmipStorage> = Arc::clone(&failing) as _;
@@ -146,12 +155,16 @@ fn a_claim_that_panics_is_let_go_of_and_taken_up_again(in_order: bool) {
         turning(works, pickup, || {
             let id = carried_to((works, pickup), gate, "Absorb", "A");
             until(|| works.work.unwound() == 1, "its turn unwound");
-            until(|| works.work.held() == 0, "its place given back");
-            assert!(!is(storage.as_ref(), id, JourneyState::Completed));
             works.work.ask_every();
             let completed = || is(storage.as_ref(), id, JourneyState::Completed);
             until(completed, "taken up again");
+            until(|| works.work.held() == 0, "its place given back");
             assert_eq!(works.work.unwound(), 1, "once");
+            // The turn that unwound asked first; it completed under a claim
+            // asked after it. A read of a page taken before the completion
+            // was written may ask once more.
+            let claims = failing.asked_times(Operation::Claim);
+            assert!(claims >= 2, "claimed again after it unwound: {claims}");
         });
     });
 }

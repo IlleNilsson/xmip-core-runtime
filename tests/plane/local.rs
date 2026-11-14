@@ -51,10 +51,10 @@ fn an_operator_on_this_machine_acts_and_the_node_answers() {
         .act(0, &absent_node(), ("message", "j1", "retry"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
-    assert_eq!(
-        said,
-        format!("REFUSED: no node at {} runs in this process", absent_node())
-    );
+    // A listener no node keeps a door on carries no act to another node.
+    let refused = format!("REFUSED: no node at {} runs in this process", absent_node());
+    assert!(said.starts_with(&refused), "{said}");
+    assert!(said.contains("declares no operational role"), "{said}");
 }
 
 #[test]

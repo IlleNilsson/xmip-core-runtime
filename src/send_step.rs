@@ -89,9 +89,9 @@
 //! `runtime-model.md` section 3, *A claim is not ordering*).
 //!
 //! **A Message that failed waits for an operator** in its queue: Retry
-//! sends it again, Dismiss ends it Dismissed, each an act through the
-//! node's orders, audited ([`SendStep::act`], `runtime-model.md` section
-//! 13). A retry's count is the Journey's `attempts`, kept with its every
+//! sends it again, Dismiss ends it Dismissed, each an act asked at a node's
+//! door and taken by its act watch, audited ([`SendStep::act`],
+//! `crate::act_watch`, `runtime-model.md` section 13). A retry's count is the Journey's `attempts`, kept with its every
 //! hand-on, so it survives a restart and another node taking it up. The
 //! hand-on that fails it enters it in its queue's index of failed Messages
 //! in the Ledger and the act takes it out, so how many wait is Xmip
@@ -264,8 +264,8 @@ struct State {
     handed: VecDeque<Departure>,
     /// By queue, when its earliest retry is due and how many wait for one,
     /// as its last read of the Ledger showed: one entry per queue, however
-    /// many wait ([`due::Due`]).
-    due: HashMap<u128, due::Due>,
+    /// many wait, as `xmip-core-schedule` decides ([`schedule::due::Due`]).
+    due: HashMap<u128, schedule::due::Due>,
     owned: HashMap<JourneyId, Owned>,
     /// Places in the Send pool admitted for Messages not yet owned.
     admitted: usize,

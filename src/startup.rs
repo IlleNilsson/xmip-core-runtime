@@ -4,6 +4,7 @@
 //! each Location's transport built once. `running.rs` runs them in order.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use authenticate::Authenticator;
@@ -145,11 +146,14 @@ pub(crate) fn start_host_services(services: &mut [HostService]) -> Result<(), Ve
 /// Startup phases 6 and 7 for what was linked, and 7 for what was opened:
 /// each technology the configuration uses, loaded once — its declaration
 /// carried into the catalogue, so every surface's validation in this process
-/// reads it too — and each capability registered once.
+/// reads it too — and each capability registered once, an opened Module's
+/// with the library it was opened from, read against `base`, the folder the
+/// node's configuration is in (`crate::library::located`).
 pub(crate) fn load(
     tree: &ExecutionTree,
     linked: &Linked,
     gathering: &Gathering,
+    base: &Path,
 ) -> Result<CapabilityRegistry, Vec<String>> {
     let mut registry = CapabilityRegistry::default();
     let mut problems = Vec::new();
@@ -217,10 +221,8 @@ pub(crate) fn load(
     }
 
     for module in &tree.modules_to_start {
-        let path = crate::library::library(module).unwrap_or_default();
-        if let Err(problem) =
-            registry.register_module(&module.manifest, &Load::Library(path.into()))
-        {
+        let path = crate::library::located(module, base).unwrap_or_default();
+        if let Err(problem) = registry.register_module(&module.manifest, &Load::Library(path)) {
             problems.push(problem);
         }
     }

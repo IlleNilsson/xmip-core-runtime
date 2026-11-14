@@ -107,8 +107,10 @@ impl Transport for Backlogged {
     }
 }
 
-/// A Receive Location called `In` over `transport`, at the default pace.
-fn location(
+/// A Receive Location called `In` at `address` over `transport`, at the
+/// default pace: `turned_away.rs`'s too.
+pub(super) fn location(
+    address: &str,
     transport: Box<dyn Transport + Send + Sync>,
     gate: &xmip_core_runtime::receiving::ReceiveGate,
 ) -> Receiving {
@@ -116,7 +118,7 @@ fn location(
         configured: configure::ConfiguredLocation {
             name: "In".to_string(),
             start: true,
-            address: "tcp://in".to_string(),
+            address: address.to_string(),
             secret: None,
             contract: None,
             settings: configure::LocationSettings::default(),
@@ -151,7 +153,7 @@ fn a_stop_takes_every_connection_already_queued_at_the_listener() {
     };
     let told = Mutex::new(0_usize);
     let took = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
-        let location = location(Box::new(backlogged), gate);
+        let location = location("tcp://in", Box::new(backlogged), gate);
         let began = Instant::now();
         std::thread::scope(|pool| {
             location.serve(pool, runtime, pickup, &stopping, |_| {

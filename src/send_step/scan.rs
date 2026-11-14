@@ -16,9 +16,9 @@ use std::time::Instant;
 use context::IdentityFacts;
 use persist::storage::{Claim, Durable};
 use route::Subscriber;
+use schedule::due::Due;
 use xcore::JourneyId;
 
-use super::due::Due;
 use super::found::Found;
 use super::reading::Reading;
 use super::steps::{Step, Steps};

@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use xcore::lock::Locked;
 
+use schedule::pace::Pace;
 use transport::{Acknowledgement, Arrivals, Arrived, Directions, Transport, Verdict, Waiting};
 use xmip_core_runtime::budget::NodeBudget;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::Runtime;
 use xmip_core_runtime::pickup::Pickup;
 use xmip_core_runtime::pool::{Limits, hardware_threads};
-use xmip_core_runtime::receiving::{Pace, ReceiveGate, Receiving};
+use xmip_core_runtime::receiving::{ReceiveGate, Receiving};
 use xmip_core_runtime::sending::Sends;
 use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;

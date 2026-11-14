@@ -1,9 +1,14 @@
 //! What `[tuning]` may say: each key, its kind, its bounds and its default,
 //! declared once (`super`).
 
+use std::time::Duration;
+
 use persist::storage::{client, standby};
+use schedule::pace::{RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWEEP};
+use xcluster::timing;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Setting, Settings};
 
+use crate::act_watch::OPERATE_ACT;
 use crate::budget::{
     NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD, RECEIVE_CHUNKS_PER_THREAD, SEND_CHUNKS_PER_THREAD,
 };
@@ -11,7 +16,6 @@ use crate::ledger::SEGMENTS;
 use crate::plane::limits;
 use crate::plane::remote::LOCAL_TIMEOUT;
 use crate::pool::{RECEIVE_IDLE, RECEIVE_THREADS_PER_HARDWARE_THREAD};
-use crate::receiving::{RECEIVE_BACKOFF, RECEIVE_DRAIN, RECEIVE_POLL, RECEIVE_SWEEP};
 use crate::secure_listener::HANDSHAKE_WITHIN;
 use crate::send_step::{
     FAILED_WINDOW, SEND_IDLE, SEND_LEASE, SEND_SCAN, SEND_THREADS_PER_HARDWARE_THREAD,
@@ -304,8 +308,75 @@ pub const TUNING: &Settings = &Settings {
                       it is read.",
             applies: Applies::Both,
         },
+        Setting {
+            name: "operate_act",
+            kind: Kind::Duration,
+            presence: Presence::Default(Fixed::Duration(OPERATE_ACT)),
+            meaning: "How long this node, as the door an operator's act is asked at, holds \
+                      the asker's call while the node it is asked of takes it; past it the \
+                      asker is told the act is asked, and its node takes it as soon as it runs.",
+            applies: Applies::Both,
+        },
+        sync(
+            "sync_beat",
+            timing::BEAT,
+            "How often an idle sync link says it is alive.",
+        ),
+        sync(
+            "sync_silence",
+            timing::SILENCE,
+            "How long a sync link may say nothing before it is taken for broken.",
+        ),
+        sync(
+            "sync_handshake",
+            timing::HANDSHAKE,
+            "The most a sync link's TLS handshake waits on the other node.",
+        ),
+        sync(
+            "sync_watch",
+            timing::WATCH,
+            "How often a sync link waiting to read looks whether its side is ending.",
+        ),
+        sync(
+            "sync_connect",
+            timing::CONNECT,
+            "The most a connect to another member's sync listener waits.",
+        ),
+        sync(
+            "sync_write",
+            timing::WRITE,
+            "The most a sync link's write waits on a node that does not read.",
+        ),
+        sync(
+            "sync_retry",
+            timing::RETRY,
+            "The first wait before a member that could not be reached is tried again, \
+             doubled each time it is not.",
+        ),
+        sync(
+            "sync_retry_most",
+            timing::RETRY_MOST,
+            "The longest wait before a member that could not be reached is tried again.",
+        ),
+        sync(
+            "sync_follow",
+            timing::FOLLOW,
+            "How often the cluster's members are read again when nothing says they changed.",
+        ),
     ],
 };
+
+/// A duration of the sync plane (`xcluster::sync`), its default the
+/// constant beside the plane (`xcluster::timing`).
+const fn sync(name: &'static str, default: Duration, meaning: &'static str) -> Setting {
+    Setting {
+        name,
+        kind: Kind::Duration,
+        presence: Presence::Default(Fixed::Duration(default)),
+        meaning,
+        applies: Applies::Both,
+    }
+}
 
 /// A count as the declaration writes its default.
 #[allow(clippy::cast_possible_wrap)]

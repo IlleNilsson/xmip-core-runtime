@@ -12,8 +12,9 @@ use std::io;
 
 use persist::PersistError;
 use persist::storage::{Ask, ChunkReader, Chunked, Query, XmipStorage, chain_digest};
-use xaudit::audit_chain::{FIRST, Link, Verdict, walk};
+use xaudit::audit_chain::{Link, Verdict, walk};
 use xcore::AuditId;
+use xcore::audit_chain::FIRST;
 
 /// Walk `writer`'s audit chain as Xmip Storage keeps it. A record whose
 /// index entry stands and whose record is gone is passed over, so its

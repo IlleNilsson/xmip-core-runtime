@@ -1,7 +1,6 @@
-//! An operator's act on a node running in this process, applied once,
-//! whichever way it came: an order the node took from its `orders`
-//! directory (`xmip-service`), or an act that reached the node's operate
-//! listener over the network (ADR-0014, amendment 2026-10-12).
+//! An operator's act on a node running in this process, applied once: the
+//! act its act watch took, asked at any node's door and written to Xmip
+//! Storage (`crate::act_watch`; ADR-0014, amendment 2026-11-13).
 //!
 //! The node is found by its scope among the nodes this process runs —
 //! their pickups and send steps as registered — and the act is that

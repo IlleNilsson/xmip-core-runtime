@@ -24,9 +24,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use persist::storage::MemberRecord;
+
 use super::serving::serve;
 use super::{Refusal, Running};
 use crate::linked::Linked;
+use crate::membership::{self, Joined};
 use crate::service::StartupPhase;
 use crate::signed::{self, Admitted, Slice, Which};
 
@@ -84,6 +87,38 @@ impl Running {
         self.standing = Some(standing);
         let serving = serve(served, Arc::clone(&self.stopping), Arc::clone(&self.tally));
         self.serving = Some(serving);
+        self.join();
+        self.gather();
+    }
+
+    /// Its membership of the cluster begun: its row written to Xmip Storage
+    /// once it is reached, and the members followed (`crate::membership`).
+    /// A thread that does not start leaves it no member, said as the node's
+    /// failure.
+    fn join(&mut self) {
+        let declared = node::Capability::of(&self.roles).with_online(self.online);
+        let runs = self.attempt.slice.which();
+        let row = MemberRecord {
+            process: membership::process(),
+            node: self.location(),
+            roles: declared.words(),
+            evidence: declared.evidence(),
+            operate: self.operated.get().cloned(),
+            sync: None,
+            storage_place: None,
+            save: runs.save,
+            serial: runs.serial,
+            started_unix_nanos: 0,
+            stopped_unix_nanos: None,
+            written: 0,
+            latest: false,
+        };
+        let timings = (self.tuning.storage_wait, self.tuning.storage().pass_over);
+        let storage = Arc::clone(self.storage.storage());
+        match Joined::start(storage, (row, self.storage.placing()), timings) {
+            Ok(joined) => self.membership = Some(joined),
+            Err(problem) => self.tally.fail(&self.node, problem),
+        }
     }
 
     /// What the node runs, and what of its candidate was refused: none

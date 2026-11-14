@@ -2,8 +2,9 @@
 //! its own.
 //!
 //! The owner, 2026-09-24: *Code shall be uniquely placed, used by others,
-//! who in turn have unique code used by others.* Scope containment, and the
-//! node and stage a scope is on, are `observe::Scope`'s; a mood's word, its
+//! who in turn have unique code used by others.* Scope containment, the
+//! node and stage a scope is on and the one wildcard over scopes are
+//! `node::Scope`'s and `node::wildcard`'s; a mood's word, its
 //! color name, the rollup and the worst-first order are `observe::Health`'s
 //! and `observe::Standing`'s; a
 //! counted kind's word and the kind a stage counts are `observe::Counted`'s,
@@ -26,8 +27,8 @@
 pub mod health;
 pub mod node;
 
+use ::node::Scope;
 use abi::ffi::{Str, status};
-use observe::Scope;
 
 use crate::ffi::text::{borrow, scope_text};
 
@@ -87,7 +88,7 @@ pub(crate) unsafe fn hand(bytes: &[u8], out: *mut u8, cap: usize, out_len: *mut 
     }
 }
 
-/// `observe::Scope::contains`, forwarded.
+/// `node::Scope::contains`, forwarded.
 ///
 /// # Safety
 /// Both scopes point at their stated length of readable bytes;
@@ -120,7 +121,7 @@ unsafe fn scope_contains(scope: Str, candidate: Str, out_contains: *mut u8) -> i
     status::OK
 }
 
-/// `observe::wildcard::matches`, forwarded: the one wildcard, which every
+/// `node::wildcard::matches`, forwarded: the one wildcard, which every
 /// surface's `ScopePattern` calls rather than keeping a copy (ADR-0052,
 /// amendment 2026-09-19; moved to Rust 2026-09-29).
 ///
@@ -149,7 +150,7 @@ unsafe fn scope_matches(candidate: Str, pattern: Str, out_matches: *mut u8) -> i
     };
 
     // SAFETY: `out_matches` is writable per the contract.
-    unsafe { *out_matches = u8::from(observe::wildcard::matches(candidate, pattern)) };
+    unsafe { *out_matches = u8::from(::node::wildcard::matches(candidate, pattern)) };
     status::OK
 }
 
@@ -167,7 +168,7 @@ pub unsafe extern "C" fn xmip_run_shown_v1(hidden: u8, including: u8, out_shown:
     })
 }
 
-/// `observe::Scope::segments`, forwarded. Each entry borrows from `scope`.
+/// `node::Scope::segments`, forwarded. Each entry borrows from `scope`.
 ///
 /// # Safety
 /// `scope` points at its stated length of readable bytes; `out` has room for
@@ -197,7 +198,7 @@ unsafe fn scope_parts(scope: Str, out: *mut Str, cap: usize, out_len: *mut usize
     status::OK
 }
 
-/// `observe::Scope::node` and `observe::Scope::stage`, forwarded: the node a
+/// `node::Scope::node` and `node::Scope::stage`, forwarded: the node a
 /// scope is on, borrowed from `scope`, and its stage's static word, each
 /// empty where there is none.
 ///
@@ -468,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn containment_is_observe_scope_and_nothing_else() {
+    fn containment_is_node_scope_and_nothing_else() {
         let cluster = configure::fixture::test_cluster();
         let (name, scope) = (&cluster.name, cluster.scope());
         for (scope, candidate) in [
@@ -490,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn the_parts_are_observe_scope_segments_borrowed_from_the_input() {
+    fn the_parts_are_node_scope_segments_borrowed_from_the_input() {
         let node = configure::fixture::test_cluster().node(0).name.clone();
         let (code, read) = parts(&format!("xmip://localhost:9000/{node}/receive/orders/"));
 
@@ -500,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn the_node_and_stage_are_observe_scopes_and_the_cluster_is_none() {
+    fn the_node_and_stage_are_node_scopes_and_the_cluster_is_none() {
         let node = |scope: &str| {
             let (mut node, mut stage) = (Str::empty(), Str::empty());
             // SAFETY: `scope` borrows a live string; both outs are writable.

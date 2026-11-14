@@ -1,6 +1,6 @@
 //! `xmip_operate.h` section 11, who may subscribe: the program hosting this
 //! library hands the process's hub its policy, as a Rust program hands
-//! `xevent::hub::Hub::authorize_by` an `authorize::Authorizer` (ADR-0065,
+//! `xcluster::delivery::hub::Hub::authorize_by` an `authorize::Authorizer` (ADR-0065,
 //! amendment 2026-09-26: being in the process admits nobody, and who may
 //! subscribe is a policy and nothing beside it).
 //!
@@ -18,8 +18,8 @@ use abi::ffi::status;
 use abi::operate::event::{Authorizer as Decide, decision};
 use authorize::{Attempt, Authorizer, Decision};
 use context::IdentityFacts;
+use xcluster::delivery::hub::Hub;
 use xcore::Layer;
-use xevent::hub::Hub;
 
 use crate::ffi::text::borrow;
 
@@ -80,7 +80,7 @@ impl Authorizer for Hosted {
     }
 }
 
-/// `xevent::hub::Hub::authorize_by` on the process's hub, with the program's
+/// `xcluster::delivery::hub::Hub::authorize_by` on the process's hub, with the program's
 /// callback as its one policy; a null callback hands it none.
 ///
 /// # Safety

@@ -85,7 +85,7 @@ impl Running {
         } = validated(document, &applications, &mut linked)?;
         cfg_select! {
             feature = "dynamic-loading" => {
-                let libraries = crate::library::Libraries::open(&tree.modules_to_start)
+                let libraries = crate::library::Libraries::open(&tree.modules_to_start, base)
                     .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
             }
             _ => {
@@ -93,7 +93,7 @@ impl Running {
                     .map_err(|problems| Refusal::at(StartupPhase::LoadModules, problems))?;
             }
         }
-        let capabilities = load(&tree, &linked, &gathering)
+        let capabilities = load(&tree, &linked, &gathering, base)
             .map_err(|problems| Refusal::at(StartupPhase::RegisterCapabilities, problems))?;
 
         // Xmip Storage before the Locations: a Location's secret is read
@@ -162,7 +162,12 @@ impl Running {
             standing: None,
             provision,
             storage,
+            membership: None,
+            unregistered: None,
             operate,
+            operated: std::sync::OnceLock::new(),
+            monitoring: std::sync::OnceLock::new(),
+            acts: std::sync::Mutex::default(),
             certificates,
             tuning: tree.tuning,
             configuration: PathBuf::from(path),

@@ -9,7 +9,7 @@
 use context::property::PARTY;
 use journey::Journey;
 use message::Message;
-use observe::Scope;
+use node::Scope;
 use persist::storage::{
     AuditEntry, AuditFacts, Audited, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
@@ -115,7 +115,7 @@ pub(crate) fn audited(message: &Message, body: &[u8]) -> Audited {
 /// An audit record as Xmip Storage keeps it: its form, and when it
 /// happened, what, in which phase and how severe, whether it failed, what
 /// it says, its origin — and the cluster and the node by name, as its
-/// location says them, by the one rule (`observe::Scope`) the audit reader
+/// location says them, by the one rule (`node::Scope`) the audit reader
 /// reads them by — and the execution it belongs to: its Journey, its
 /// Message and its artifact, spelled out; and whose audit chain it is in,
 /// by the one rule (`Origin::writer`; ADR-0070 clause 5).

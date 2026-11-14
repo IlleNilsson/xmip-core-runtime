@@ -36,10 +36,15 @@ use crate::plane::local;
 use crate::plane::shared::Shared;
 
 mod asking;
+mod cluster;
 #[cfg(feature = "node")]
 pub(crate) mod fresh;
 pub(crate) mod relayed;
 mod secret;
+mod wait;
+
+pub(crate) use cluster::Waited;
+pub use cluster::{Clustered, Follows};
 
 /// How long a drop waits for the follow to end once its read is
 /// cancelled.
@@ -64,13 +69,16 @@ pub const RETRY: [Duration; 4] = [
 ];
 
 /// Whether the node answers, why not where it does not, the revision of
-/// its publication, and how many times a follower has been told.
+/// the publication followed, how many times a follower has been told, and
+/// which publication that is (`remote::cluster`): `Follows::Answered`
+/// until the node's answer decides it, where a surface left it to.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct State {
     pub reachable: bool,
     pub reason: String,
     pub revision: u64,
     pub told: u64,
+    pub follows: Follows,
 }
 
 /// What an act came to on the node.
@@ -86,11 +94,15 @@ pub enum Outcome {
     Invalid,
     /// Xmip Storage did not answer the node; nothing changed.
     Failed,
+    /// Written to Xmip Storage, asked of the node that owns what it acts
+    /// on, and not taken yet within the door's bound: that node takes it as
+    /// soon as it runs (ADR-0014, amendment 2026-11-13).
+    Asked,
 }
 
 impl Outcome {
     /// The outcome the node's word names: `taken`, `denied`, `invalid`,
-    /// `failed`, and refused for any other.
+    /// `failed`, `asked`, and refused for any other.
     #[must_use]
     pub fn of(word: &str) -> Self {
         match word {
@@ -98,6 +110,7 @@ impl Outcome {
             "denied" => Self::Denied,
             "invalid" => Self::Invalid,
             "failed" => Self::Failed,
+            "asked" => Self::Asked,
             _ => Self::Refused,
         }
     }
@@ -191,6 +204,7 @@ impl Remote {
                 reach,
                 patience,
                 deadline: Deadline::default(),
+                trying: Deadline::default(),
                 retry,
                 state: Mutex::new(State {
                     reason: "not connected yet".to_string(),
@@ -200,6 +214,7 @@ impl Remote {
                 ending: Arc::new(AtomicBool::new(false)),
                 connecting: AtomicBool::new(false),
                 following: Mutex::new(None),
+                follows: std::sync::OnceLock::new(),
                 asking: Mutex::new(None),
                 line: Mutex::new(None),
                 #[cfg(feature = "node")]
@@ -256,22 +271,6 @@ impl Remote {
             Outcome::of(answer["outcome"].as_str().unwrap_or_default()),
             said,
         ))
-    }
-
-    /// The state once a follower has been told more than `seen` times, or
-    /// after `within`: the follow starts with the first wait and runs while
-    /// this lives.
-    #[must_use]
-    pub fn wait(&self, seen: u64, within: Duration) -> State {
-        self.followed();
-        let state = self.shared.state.locked();
-        self.shared
-            .told
-            .wait_timeout_while(&self.shared.state, state, within, |state| {
-                state.told <= seen && !self.shared.ending()
-            })
-            .0
-            .clone()
     }
 
     /// The state now.

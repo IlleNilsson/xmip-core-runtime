@@ -22,8 +22,9 @@ use process::{Act, Declared, Event, Flow, Instance, Refused};
 
 use crate::ffi::loaded_module::LoadedModule;
 
-/// The trait this file drives, as `descriptor.module` spells it.
-pub const WORK_PROCESS: &str = "work-process";
+/// The trait this file drives, as `descriptor.module` spells it: the work
+/// process capability's word, as a manifest writes it.
+pub const WORK_PROCESS: &str = abi::UnitCapability::WorkProcess.word();
 
 /// What this host requires of a module offering the work process trait.
 #[must_use]

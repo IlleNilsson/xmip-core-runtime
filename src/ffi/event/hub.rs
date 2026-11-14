@@ -1,5 +1,5 @@
 //! `xmip_operate.h` section 11, the process's hub: subscribe, drain, listen,
-//! unsubscribe and publish, forwarded to `xmip-core-event`'s `Hub::process`
+//! unsubscribe and publish, forwarded to `xmip-core-cluster`'s `Hub::process`
 //! (ADR-0065, ADR-0052). The node's side only: a remote build carries none
 //! of it (`ffi::event`). No argument names the subscriber: it is the caller
 //! this process proves to be (`crossing::subscriber`; ADR-0019, amendment
@@ -8,7 +8,7 @@
 //! A drained batch owns what it hands out: the Events, the text of their
 //! identifiers, and the header's structs borrowing from both; one call
 //! frees it (section 8's pattern). A listening subscription calls back on
-//! the event crate's listener thread with one Event borrowed for the call.
+//! the cluster's delivery listener thread with one Event borrowed for the call.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): a program hands over where to write.
@@ -22,9 +22,9 @@ use abi::ffi::{Str, status};
 use abi::operate::event::{
     Callback, Event as Wire, EventBatch, EventFilter, EventSubscription as Handle,
 };
+use xcluster::delivery::hub::{EventSubscription, Hub};
+use xcluster::delivery::listener::Listener;
 use xevent::Event;
-use xevent::hub::{EventSubscription, Hub};
-use xevent::listener::Listener;
 
 use crate::ffi::rule::refuse;
 
@@ -63,7 +63,7 @@ impl Context {
     }
 }
 
-/// `xevent::hub::Hub::subscribe` on the process's hub, forwarded, as the
+/// `xcluster::delivery::hub::Hub::subscribe` on the process's hub, forwarded, as the
 /// subscriber this process proves to be (`crossing::subscriber`): no
 /// argument names a Party.
 ///
@@ -133,7 +133,7 @@ unsafe fn event_subscribe(
     }
 }
 
-/// `xevent::hub::EventSubscription::listen`, forwarded: `callback` with
+/// `xcluster::delivery::hub::EventSubscription::listen`, forwarded: `callback` with
 /// `context` for each Event, on the listener's thread.
 ///
 /// # Safety
@@ -216,7 +216,7 @@ unsafe fn event_listen(
     }
 }
 
-/// `xevent::hub::EventSubscription::next`, forwarded, as a batch.
+/// `xcluster::delivery::hub::EventSubscription::next`, forwarded, as a batch.
 ///
 /// # Safety
 /// `subscription` is a handle subscribe returned and nobody unsubscribed;
@@ -338,7 +338,7 @@ pub unsafe extern "C" fn xmip_event_unsubscribe_v1(subscription: *mut Handle) {
     }
 }
 
-/// `xevent::hub::Hub::publish` on the process's hub, forwarded.
+/// `xcluster::delivery::hub::Hub::publish` on the process's hub, forwarded.
 ///
 /// # Safety
 /// `event` points at a readable Event whose strings and diagnostics hold

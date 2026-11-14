@@ -2,9 +2,14 @@
 //! certificate — or, on the local endpoint, the operating system — proves,
 //! the role the node's configuration grants that very caller
 //! (`plane::grant`), and each call answered in turn — the publication,
-//! a wait for its next revision, and an operator's act, admitted by the
-//! caller's role and audited taken or refused (ADR-0009, amendments
-//! 2026-10-06 and 2026-11-07; ADR-0062).
+//! a wait for its next revision, the cluster's publication a monitoring
+//! node gathered and a wait for its next ([`read`]), and an operator's act,
+//! admitted by the caller's role and audited taken or refused (ADR-0009,
+//! amendments 2026-10-06 and 2026-11-07; ADR-0062).
+
+mod read;
+
+pub use read::GATHERS_NO_CLUSTER;
 
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpStream};
@@ -19,10 +24,12 @@ use observe::{Noun, Order};
 use serde_json::{Value, json};
 use xcore::{ExecutionPhase, Severity};
 
-use crate::applied::{Applied, apply};
+use crate::act_watch::Asker;
+use crate::applied::Applied;
 use crate::plane::call::{self, ACT, NONCES, PUBLICATION, SECRET, SECRETS, UNVOUCH, VOUCH, WAIT};
-use crate::plane::call::{LONGEST_WAIT, WATCH};
+use crate::plane::call::{CLUSTER, CLUSTER_WAIT, WATCH};
 use crate::plane::caller;
+use crate::plane::grant::Presented;
 use crate::plane::limits::{Handshaking, handshaken};
 use crate::plane::listener::Serve;
 use crate::plane::local::Stream;
@@ -73,9 +80,9 @@ pub(crate) fn answer(
             Ok((guarded, who))
         });
     match guarded {
-        Ok((guarded, (caller, role))) => calls(
+        Ok((guarded, (caller, role, presented))) => calls(
             Box::new(Watched::new(guarded, || serve.stopped())),
-            (&caller, role),
+            (&caller, role, &presented),
             serve,
         ),
         Err(reason) => noted(serve, &peer.to_string(), &format!("refused: {reason}")),
@@ -94,10 +101,11 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
     if let Err(error) = stream.watch(WATCH) {
         return noted(serve, &caller.value, &format!("refused: {error}"));
     }
-    let role = serve.grants.account(&caller.value);
+    let presented = Presented::Account(caller.value.clone());
+    let role = serve.grants.of(&presented);
     calls(
         Box::new(Watched::new(stream, || serve.stopped())),
-        (&caller, role),
+        (&caller, role, &presented),
         serve,
     );
 }
@@ -125,32 +133,25 @@ fn calls(connection: Boxed<'_>, caller: Caller<'_>, serve: &Serve) {
     }
 }
 
-/// A connection's caller, and the role granted it; `None` for none.
-type Caller<'a> = (&'a AuthenticatedIdentity, Option<Role>);
+/// A connection's caller, the role granted it — `None` for none — and what
+/// it presented, which that role is read from.
+type Caller<'a> = (&'a AuthenticatedIdentity, Option<Role>, &'a Presented);
 
 /// The caller the certificate the surface presented proves, which the
 /// handshake checked against the anchors, through the authentication gate,
-/// and the role `serve` grants that certificate.
+/// the role `serve` grants that certificate, and the certificate.
 fn proven(
     guarded: &tls::GuardedServer,
     serve: &Serve,
-) -> Result<(AuthenticatedIdentity, Option<Role>), String> {
+) -> Result<(AuthenticatedIdentity, Option<Role>, Presented), String> {
     let leaf = guarded
         .conn
         .peer_certificates()
         .and_then(<[_]>::first)
         .ok_or_else(|| "the surface presented no certificate".to_string())?;
-    Ok((caller::certificate(leaf)?, serve.grants.certificate(leaf)))
-}
-
-/// Who asks a call: the caller it is admitted and audited as, the role
-/// granted it, and the relay it came through where a relay called for that
-/// caller.
-#[derive(Clone, Copy)]
-struct Asker<'a> {
-    who: &'a str,
-    role: Option<Role>,
-    through: Option<&'a str>,
+    let presented = Presented::Certificate(leaf.to_vec());
+    let role = serve.grants.of(&presented);
+    Ok((caller::certificate(leaf)?, role, presented))
 }
 
 /// The answer to one call: decided from its method, the identity the
@@ -158,7 +159,7 @@ struct Asker<'a> {
 /// ([`call::CALLER_HEADER`]), that caller as the node holds it
 /// (`plane::vouched`) — and the role granted that very caller before a
 /// byte of it is read (`role::admitted`), and only then read and answered.
-fn called(serve: &Serve, (caller, role): Caller<'_>, request: &Request) -> Response {
+fn called(serve: &Serve, (caller, role, presented): Caller<'_>, request: &Request) -> Response {
     let Some(method) = call::method(&request.path).filter(|method| METHODS.contains(method)) else {
         return call::refusal(
             "UNIMPLEMENTED",
@@ -175,7 +176,7 @@ fn called(serve: &Serve, (caller, role): Caller<'_>, request: &Request) -> Respo
     // The caller each call names is decided by the identity and role the
     // connection proved, or the one a relay vouched for, and no other.
     let (acting, through) = match (call::caller_of(request), relaying) {
-        (None, _) => (Some((caller.clone(), role)), None),
+        (None, _) => (Some((caller.clone(), role, presented.clone())), None),
         (Some(handle), Some(_)) => (
             relaying.and_then(|relaying| vouched::proven(relaying, handle, &caller.value)),
             Some(caller.value.as_str()),
@@ -185,11 +186,13 @@ fn called(serve: &Serve, (caller, role): Caller<'_>, request: &Request) -> Respo
             return answered_refused(method, &refused);
         }
     };
-    let Some((acting, role)) = acting else {
+    let Some((acting, role, presented)) = acting else {
         return answered_refused(method, call::UNKNOWN_CALLER);
     };
     let asker = Asker {
         who: acting.value.as_str(),
+        proven: acting.mechanism.name(),
+        presented: &presented,
         role,
         through,
     };
@@ -203,20 +206,7 @@ fn called(serve: &Serve, (caller, role): Caller<'_>, request: &Request) -> Respo
         Err(why) => return call::refusal("INVALID_ARGUMENT", &why),
     };
     match method {
-        PUBLICATION => {
-            let (revision, text) = serve.published.read();
-            call::answer(&json!({ "revision": revision, "publication": text }))
-        }
-        WAIT => {
-            let after = message["after"].as_u64().unwrap_or(0);
-            let within = message["within_ms"]
-                .as_u64()
-                .map_or(LONGEST_WAIT, Duration::from_millis)
-                .min(LONGEST_WAIT);
-            let stopped = || serve.stopped();
-            let revision = serve.published.wait(after, within, &stopped);
-            call::answer(&json!({ "revision": revision }))
-        }
+        PUBLICATION | WAIT | CLUSTER | CLUSTER_WAIT => read::read(serve, method, &message),
         ACT => acted(serve, asker, &message),
         SECRET => secret_set(serve, asker, &message),
         _ => match crate::secret::listed(message["node"].as_str().unwrap_or_default()) {
@@ -274,6 +264,8 @@ fn asked(method: &str) -> &'static str {
     match method {
         PUBLICATION => "read the publication",
         WAIT => "follow the publication",
+        CLUSTER => "read the cluster's publication",
+        CLUSTER_WAIT => "follow the cluster's publication",
         SECRET => "set a secret",
         SECRETS => "list the secrets",
         _ => "act",
@@ -281,9 +273,11 @@ fn asked(method: &str) -> &'static str {
 }
 
 /// Every method the listener answers.
-const METHODS: [&str; 8] = [
+const METHODS: [&str; 10] = [
     PUBLICATION,
     WAIT,
+    CLUSTER,
+    CLUSTER_WAIT,
     ACT,
     SECRET,
     SECRETS,
@@ -292,9 +286,11 @@ const METHODS: [&str; 8] = [
     UNVOUCH,
 ];
 
-/// An act, its caller admitted by role already: read, recorded, applied,
-/// and what came of it — `taken`, `refused` by the node, `invalid` for no
-/// act the noun takes, or `failed`.
+/// An act, its caller admitted by role already: read, recorded, asked
+/// through the node's door of the node it names (`act_watch::Door`), and
+/// what came of it — `taken`, `refused` by the node or the door, `failed`,
+/// `asked` where its node did not take it within the door's bound, or
+/// `invalid` for no act the noun takes.
 fn acted(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
     let who = asker.who;
     let text = |key: &str| message[key].as_str().unwrap_or_default().to_string();
@@ -318,14 +314,8 @@ fn acted(serve: &Serve, asker: Asker<'_>, message: &Value) -> Response {
         act,
         who: who.to_string(),
     };
-    match apply(&order) {
-        Applied::Taken(said) => {
-            serve.published.acted();
-            outcome("taken", &said)
-        }
-        Applied::Refused(said) => outcome("refused", &said),
-        Applied::Failed(said) => outcome("failed", &said),
-    }
+    let (decided, said) = serve.door().ask(&order, asker);
+    outcome(decided.word(), &said)
 }
 
 /// A secret set, its caller admitted by role already as for any act:

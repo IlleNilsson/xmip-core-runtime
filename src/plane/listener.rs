@@ -19,25 +19,27 @@
 //! long a handshake may take are its [`Limits`] (`plane::limits`).
 //! A stop wakes every wait, and ends every connection reading.
 
+mod accepting;
+
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use xcore::lock::Locked;
 
 use xaudit::program_audit::ProgramAudit;
 use xcore::{ExecutionPhase, Severity};
 
+use crate::act_watch::Door;
 use crate::plane::board::Published;
 use crate::plane::grant::Grants;
-use crate::plane::limits::{Backoff, Handshaking, Limits};
-use crate::plane::local::{self, Acceptor, Cancel};
-use crate::plane::served::{answer, answer_local, noted};
+use crate::plane::limits::Limits;
+use crate::plane::local::{self, Acceptor};
 use crate::plane::vouched::Relaying;
-use crate::plane::workers::Workers;
+use accepting::{Connections, accept, accept_local, ended};
 
 /// How long a stop waits on its own wake-up connection, and on a
 /// connection to end.
@@ -46,6 +48,10 @@ const WAKE: Duration = Duration::from_secs(1);
 /// What every connection shares.
 pub(crate) struct Serve {
     pub(crate) published: Arc<dyn Published>,
+    /// The cluster's publication a monitoring node gathers, `Cluster` and
+    /// `ClusterWait` answered from (`plane::served::read`); none for a node
+    /// that gathers none, which refuses both naming the role.
+    pub(crate) gathered: OnceLock<Arc<dyn Published>>,
     /// The TLS a network connection is answered inside; none on the local
     /// endpoint.
     pub(crate) config: Option<Arc<tls::ServerConfig>>,
@@ -55,6 +61,9 @@ pub(crate) struct Serve {
     /// (`[operate] relay`, `plane::vouched`); none until set, so a call
     /// before is relayed for no one.
     pub(crate) relaying: OnceLock<Arc<Relaying>>,
+    /// The node's door its acts are asked through (`act_watch::Door`); none
+    /// until set, the door of no node.
+    pub(crate) door: OnceLock<Arc<Door>>,
     pub(crate) audit: ProgramAudit,
     pub(crate) stopping: AtomicBool,
 }
@@ -63,6 +72,13 @@ impl Serve {
     pub(crate) fn stopped(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
     }
+
+    /// The door its acts are asked through: the node's, else the door of
+    /// no node.
+    pub(crate) fn door(&self) -> &Door {
+        static NO_DOOR: Door = Door::none();
+        self.door.get().map_or(&NO_DOOR, AsRef::as_ref)
+    }
 }
 
 /// Where a listener listens.
@@ -70,48 +86,6 @@ enum Place {
     Network(SocketAddr),
     Local(PathBuf),
 }
-
-/// A connection being answered, whether it has ended, and what ends a read
-/// it waits in.
-struct Connection {
-    done: Arc<AtomicBool>,
-    cancel: Option<Cancel>,
-}
-
-/// The connections being answered, the threads answering them, what bounds
-/// them, the handshakes in progress, and whether a connection past a bound
-/// was told to the audit since one was last taken.
-#[derive(Default)]
-struct Served {
-    connections: Mutex<Vec<Connection>>,
-    workers: Arc<Workers>,
-    limits: Mutex<Limits>,
-    handshaking: Arc<AtomicUsize>,
-    refusing: AtomicBool,
-}
-
-impl Served {
-    /// Whether `most` connections are being answered already.
-    fn full(&self, most: usize) -> bool {
-        let mut connections = self.connections.locked();
-        connections.retain(|connection| !connection.done.load(Ordering::SeqCst));
-        connections.len() >= most
-    }
-
-    /// A connection from `peer` closed for going past `most` of `bound`,
-    /// told to the audit where it is the first since one was taken.
-    fn refused(&self, serve: &Serve, peer: &str, (most, bound): (usize, &str)) {
-        if !self.refusing.swap(true, Ordering::SeqCst) {
-            let said = format!(
-                "refused: the listener takes {most} {bound} at once ([tuning] operate_{bound}); \
-                 every connection past them is closed until one ends"
-            );
-            noted(serve, peer, &said);
-        }
-    }
-}
-
-type Connections = Arc<Served>;
 
 /// An operate listener, serving until it is stopped or dropped.
 pub struct Listener {
@@ -215,6 +189,24 @@ impl Listener {
         let _ = self.serve.relaying.set(relaying);
     }
 
+    /// Answer `Cluster` and `ClusterWait` from `gathered`, the cluster's
+    /// publication this node gathers: handed a node whose roles include
+    /// monitoring (`node::Capability::gathers`), and a program hosting a
+    /// listener through the C ABI as it posts the first it gathered
+    /// (`xmip_operate_post_cluster_v1`). Set once; until then both are
+    /// refused in words naming the role (ADR-0027 decision 8, amendment
+    /// 2026-11-13).
+    pub fn gathers(&self, gathered: Arc<dyn Published>) {
+        let _ = self.serve.gathered.set(gathered);
+    }
+
+    /// Ask every act it admits through `door`, the node's (`act_watch`).
+    /// Set once, as the node starts; until then an act is asked through the
+    /// door of no node.
+    pub fn door(&self, door: Arc<Door>) {
+        let _ = self.serve.door.set(door);
+    }
+
     /// Bound it by `limits` from the next connection on (`[tuning]
     /// operate_connections`, `operate_handshakes`, `operate_handshake`).
     pub fn limit(&self, limits: Limits) {
@@ -237,6 +229,9 @@ impl Listener {
             return;
         }
         self.serve.published.wake();
+        if let Some(gathered) = self.serve.gathered.get() {
+            gathered.wake();
+        }
         // Knocked until it has heard (`net::accepting`).
         if let Some(accepting) = self.accepting.take() {
             let _ = net::accepting::woken(accepting, WAKE, || match &self.place {
@@ -266,100 +261,12 @@ fn serving(
 ) -> Arc<Serve> {
     Arc::new(Serve {
         published,
+        gathered: OnceLock::new(),
         config,
         grants,
         audit: audit.clone(),
         relaying: OnceLock::new(),
+        door: OnceLock::new(),
         stopping: AtomicBool::new(false),
     })
-}
-
-/// A connection ended: a read it waits in cancelled until it has ended — a
-/// pipe has no timeout to look between — waiting at most [`WAKE`]; one
-/// that has not by then is left to end alone.
-fn ended(connection: &Connection) {
-    let until = Instant::now() + WAKE;
-    while !connection.done.load(Ordering::SeqCst) && Instant::now() < until {
-        if let Some(cancel) = &connection.cancel {
-            cancel.cancel();
-        }
-        std::thread::sleep(Duration::from_micros(200));
-    }
-}
-
-/// Each connection accepted answered, within the listener's [`Limits`]: one
-/// past them closed as it is accepted, the handshake of one taken bounded in
-/// all.
-fn accept(listener: &TcpListener, serve: &Arc<Serve>, served: &Connections) {
-    let mut backoff = Backoff::default();
-    loop {
-        // bounded: a listener waits as long as its node runs; a stop wakes it
-        let accepted = listener.accept();
-        if serve.stopped() {
-            return;
-        }
-        let Ok((connection, peer)) = accepted else {
-            backoff.failed();
-            continue;
-        };
-        backoff.succeeded();
-        let limits = *served.limits.locked();
-        if served.full(limits.connections) {
-            served.refused(
-                serve,
-                &peer.to_string(),
-                (limits.connections, "connections"),
-            );
-            continue;
-        }
-        let Some(handshaking) = Handshaking::begun(&served.handshaking, limits.handshakes) else {
-            served.refused(serve, &peer.to_string(), (limits.handshakes, "handshakes"));
-            continue;
-        };
-        let bound = (limits.handshake_within, handshaking);
-        let serve = Arc::clone(serve);
-        answered(served, None, move || {
-            answer(connection, peer, &serve, bound)
-        });
-    }
-}
-
-fn accept_local(acceptor: &Acceptor, serve: &Arc<Serve>, served: &Connections) {
-    let mut backoff = Backoff::default();
-    loop {
-        let accepted = acceptor.accept();
-        if serve.stopped() {
-            return;
-        }
-        let Ok(stream) = accepted else {
-            backoff.failed();
-            continue;
-        };
-        backoff.succeeded();
-        let most = served.limits.locked().connections;
-        if served.full(most) {
-            served.refused(serve, "the local endpoint", (most, "connections"));
-            continue;
-        }
-        let cancel = stream.cancel();
-        let serve = Arc::clone(serve);
-        answered(served, Some(cancel), move || answer_local(stream, &serve));
-    }
-}
-
-/// `work` answered on one of the listener's threads (`plane::workers`),
-/// and kept among its connections until it has ended.
-fn answered(served: &Connections, cancel: Option<Cancel>, work: impl FnOnce() + Send + 'static) {
-    let done = Arc::new(AtomicBool::new(false));
-    let ending = Arc::clone(&done);
-    let mut connections = served.connections.locked();
-    connections.retain(|connection| !connection.done.load(Ordering::SeqCst));
-    let running = served.workers.run(Box::new(move || {
-        work();
-        ending.store(true, Ordering::SeqCst);
-    }));
-    if running {
-        connections.push(Connection { done, cancel });
-        served.refusing.store(false, Ordering::SeqCst);
-    }
 }

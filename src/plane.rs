@@ -14,7 +14,10 @@
 //! admitted by the [`Role`] its configuration grants that very caller
 //! ([`Grants`]) and audited, and held to its [`Limits`]. The surface's side is
 //! [`Remote`], exported through `xmip_operate.h` section 17 so every
-//! language's surface follows a node the same way.
+//! language's surface follows a node the same way; and a cluster's view
+//! gathered from its members, each followed with a [`Remote`] ([`gather`]),
+//! which a node declaring the monitoring role answers beside its own
+//! publication (`monitoring`, `Cluster` and `ClusterWait`).
 //!
 //! **gRPC on Xmip's own stack.** The estate speaks HTTP/2 itself
 //! (`net::http2`, with HPACK) and TLS itself (`xmip-core-library-tls`), and
@@ -34,6 +37,7 @@ pub mod deadline;
 mod follow;
 #[cfg(feature = "node")]
 pub mod fresh;
+pub mod gather;
 #[cfg(feature = "node")]
 pub mod grant;
 pub mod handle;
@@ -44,6 +48,8 @@ mod line;
 #[cfg(feature = "node")]
 pub mod listener;
 pub mod local;
+#[cfg(feature = "node")]
+pub mod monitoring;
 #[cfg(feature = "node")]
 pub mod possessed;
 pub mod remote;

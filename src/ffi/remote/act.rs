@@ -19,7 +19,9 @@ use crate::plane::Outcome;
 /// vouching for it; 0 for this side itself. `XMIP_OK` taken; `XMIP_E_AUTH`
 /// refused by role, or no one; `XMIP_E_NOT_FOUND` refused by the node;
 /// `XMIP_E_INVALID` no act the noun takes; `XMIP_E_IO` Xmip Storage did not
-/// answer; `XMIP_E_UNAVAILABLE` the node did not. The sentence in `said`.
+/// answer; `XMIP_E_AGAIN` asked: written to Xmip Storage and not taken yet,
+/// its node taking it as soon as it runs — not a failure; `XMIP_E_UNAVAILABLE`
+/// the node did not answer. The sentence in `said`.
 ///
 /// # Safety
 /// `remote` is a live handle; the strings point at their stated lengths;
@@ -80,6 +82,7 @@ const fn status_of(outcome: Outcome) -> i32 {
         Outcome::Refused => status::NOT_FOUND,
         Outcome::Invalid => status::INVALID,
         Outcome::Failed => status::IO,
+        Outcome::Asked => status::AGAIN,
     }
 }
 

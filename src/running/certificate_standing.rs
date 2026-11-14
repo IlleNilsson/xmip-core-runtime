@@ -19,8 +19,8 @@ use xcore::lock::Locked;
 
 use configure::XmipConfigurationDocument;
 use observe::Health;
-use provision::Parsed;
 use provision::renewal::Standing;
+use tls::certificate::Certificate;
 
 /// What a certificate file said when it was read: its validity and serial,
 /// or why it did not read.
@@ -117,7 +117,7 @@ impl Held {
         }
         let what = std::fs::read_to_string(&self.path)
             .map_err(|failure| format!("{}: {failure}", self.path.display()))
-            .and_then(|text| Parsed::first(&text).map_err(|failure| failure.message))
+            .and_then(|text| Certificate::first(&text).map_err(|failure| failure.message))
             .map(|leaf| (leaf.not_before, leaf.not_after, leaf.serial_hex()));
         *read = Some((modified, what.clone()));
         what

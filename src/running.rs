@@ -50,6 +50,7 @@ use crate::storage::Reached;
 
 pub mod activation;
 mod certificate_standing;
+mod gathering;
 mod operate;
 pub mod publication;
 pub mod revocation_list;
@@ -119,8 +120,23 @@ pub struct Running {
     /// the cluster's authority from ([`Running::provision`]).
     provision: BTreeMap<String, LocationSettings>,
     storage: Reached,
+    /// Its membership of the cluster once activated: its row written to
+    /// Xmip Storage and the members followed (`crate::membership`).
+    membership: Option<crate::membership::Joined>,
+    /// Where its stop left its membership row saying it runs, why.
+    unregistered: Option<&'static str>,
     /// `[operate]`, and the file it was read from ([`Running::operate`]).
     operate: Option<configure::OperateConfiguration>,
+    /// Where its operate listener answers on the network, once
+    /// [`Running::operate`] bound it: what its membership row says.
+    operated: std::sync::OnceLock<String>,
+    /// Its gathering of the cluster, where its roles include monitoring,
+    /// once [`Running::operate`] handed its listeners the cluster's
+    /// publication (`running::gathering`).
+    monitoring: std::sync::OnceLock<gathering::Gathering>,
+    /// Its act watch, once [`Running::operate`] started it: what takes
+    /// every act asked of it through Xmip Storage (`crate::act_watch`).
+    acts: std::sync::Mutex<Option<crate::act_watch::ActWatching>>,
     /// When each certificate it presents is due for renewal (ADR-0034,
     /// amendment 2026-10-22).
     certificates: certificate_standing::CertificateStanding,
@@ -194,6 +210,16 @@ impl Running {
         &self.storage
     }
 
+    /// The members of its cluster as it follows them in Xmip Storage, once
+    /// it is activated: `xcluster::Membership`, the one seam every follower
+    /// of the members takes (`crate::membership`).
+    #[must_use]
+    pub fn membership(&self) -> Option<Arc<crate::membership::Followed>> {
+        self.membership
+            .as_ref()
+            .map(|joined| Arc::clone(joined.followed()))
+    }
+
     /// What became of every Stream so far.
     #[must_use]
     pub fn outcomes(&self) -> Outcomes {
@@ -208,7 +234,10 @@ impl Running {
     /// Returns what became of every Stream.
     pub fn stop(mut self) -> Outcomes {
         self.halt();
-        self.tally.outcomes()
+        Outcomes {
+            membership: self.unregistered,
+            ..self.tally.outcomes()
+        }
     }
 
     fn halt(&mut self) {
@@ -221,6 +250,15 @@ impl Running {
         }
         for service in &mut self.host_services {
             service.stop();
+        }
+        // It takes no act more once its own work stopped.
+        drop(xcore::lock::Locked::locked(&self.acts).take());
+        // It gathers no more before it stops following its members.
+        self.stop_gathering();
+        // Its row says it stopped in order while its Storage still serves,
+        // where its Storage answers by what its client already knows.
+        if let Some(mut membership) = self.membership.take() {
+            self.unregistered = membership.stop(self.storage.answers());
         }
         // The node's own work stopped, what it serves the others stops: a
         // primary Storage node hands its standbys what it wrote first.

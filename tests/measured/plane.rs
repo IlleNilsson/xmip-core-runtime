@@ -34,9 +34,9 @@ const WAIT: Duration = Duration::from_secs(2);
 /// which counts what the rest of the process runs beside it. The median and
 /// the tail are printed and held by nothing: on a machine busy on every
 /// processor they measure the scheduler.
-struct Rounds {
-    took: Vec<Duration>,
-    worked: Vec<Duration>,
+pub(super) struct Rounds {
+    pub(super) took: Vec<Duration>,
+    pub(super) worked: Vec<Duration>,
     plain: PlainWake,
     woke: Vec<Duration>,
     idle: Vec<Duration>,
@@ -56,13 +56,13 @@ impl Default for Rounds {
 
 impl Rounds {
     /// One plain wake, after a round.
-    fn beside(&mut self) {
+    pub(super) fn beside(&mut self) {
         let (woke, idle) = self.plain.round();
         self.woke.push(woke);
         self.idle.push(idle);
     }
 
-    fn hold(self, what: &str) {
+    pub(super) fn hold(self, what: &str) {
         let took = spread(what, self.took).fastest_of_five;
         let usual = spread("a plain wake beside it", self.woke).fastest_of_five;
         let worked = spread("the process's processor time for a round", self.worked);

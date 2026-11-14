@@ -6,7 +6,9 @@
 //! A socket's read keeps time itself (`net::watched`'s silence); a named
 //! pipe's has none, so a call on a pipe is bounded by one thread for the
 //! process that cancels a surface's asking line's read once its deadline
-//! passes (`plane::local::Cancel`). The thread waits on nothing until a
+//! passes (`plane::local::Cancel`), and the follow's line's read the same
+//! where its try — connect, handshake and the node's first answer — runs
+//! past the same wait (`plane::follow`; 2026-11-13). The thread waits on nothing until a
 //! call arms a deadline. Until 2026-10-21 each surface had a thread of its
 //! own, whose start and wakes cost a connection on the local endpoint more
 //! processor time than the rest of it (open problem 35).
@@ -56,6 +58,30 @@ impl Deadline {
     pub(crate) fn passed(&self) -> bool {
         self.armed.locked().fired
     }
+
+    /// Kept at `now` by the process's deadline thread: `cancel` the read of
+    /// a call whose deadline passed, and again until its call has ended;
+    /// when the thread looks next for this one, none while nothing is
+    /// armed.
+    fn kept(&self, now: Instant, cancel: impl Fn()) -> Option<Instant> {
+        let mut armed = self.armed.locked();
+        match (armed.fired, armed.until) {
+            // Its call has not ended: `disarm` takes `fired`.
+            (true, _) => {
+                cancel();
+                Some(now + AGAIN)
+            }
+            (false, Some(until)) if now >= until => {
+                armed.until = None;
+                armed.fired = true;
+                // Under its lock, so the next call cannot arm before this
+                // cancel has reached the read it was meant for.
+                cancel();
+                Some(now + AGAIN)
+            }
+            (false, until) => until,
+        }
+    }
 }
 
 /// The key a node declares its `[tuning] local_timeout` under, in
@@ -74,7 +100,7 @@ pub fn declared(path: &Path) -> Duration {
             .find(|(named, _)| named == key)
             .map(|(_, value)| value.clone())
     };
-    node::standing(&node::declaration::directory())
+    crate::declared::standing(&crate::declared::directory())
         .iter()
         .filter(|standing| {
             said(standing, "operate").is_some_and(|operate| operate.split(" and ").any(|a| a == at))
@@ -149,6 +175,10 @@ fn sooner(until: Instant) {
     }
 }
 
+/// A deadline a surface's line is kept to, and what cancels that line's
+/// read once it passes.
+type Keeping<'a> = (&'a Deadline, fn(&Shared));
+
 /// How long a passed deadline's cancel waits for its call to end before it
 /// cancels again.
 const AGAIN: Duration = Duration::from_millis(1);
@@ -170,27 +200,18 @@ fn watch(watcher: &Watcher) {
             let Some(shared) = weak.upgrade().filter(|shared| !shared.ending()) else {
                 return false;
             };
-            let mut armed = shared.deadline.armed.locked();
-            let due = match (armed.fired, armed.until) {
-                // Its call has not ended: `disarm` takes `fired`.
-                (true, _) => {
-                    shared.cancel_asking();
-                    Some(now + AGAIN)
-                }
-                (false, Some(until)) if now >= until => {
-                    armed.until = None;
-                    armed.fired = true;
-                    // Under its lock, so the next call cannot arm before
-                    // this cancel has reached the read it was meant for.
-                    shared.cancel_asking();
-                    Some(now + AGAIN)
-                }
-                (false, until) => until,
-            };
-            next = match (next, due) {
-                (Some(next), Some(due)) => Some(next.min(due)),
-                (next, due) => next.or(due),
-            };
+            // The asking line's call, and the follow's try (`plane::follow`).
+            let deadlines: [Keeping<'_>; 2] = [
+                (&shared.deadline, Shared::cancel_asking),
+                (&shared.trying, Shared::cancel_following),
+            ];
+            for (deadline, cancel) in deadlines {
+                let due = deadline.kept(now, || cancel(&shared));
+                next = match (next, due) {
+                    (Some(next), Some(due)) => Some(next.min(due)),
+                    (next, due) => next.or(due),
+                };
+            }
             true
         });
         kept.looks = next;
@@ -297,12 +318,14 @@ mod tests {
             reach: crate::plane::line::Reach::Local(path),
             patience: Duration::ZERO,
             deadline: Deadline::default(),
+            trying: Deadline::default(),
             retry: Vec::new(),
             state: Mutex::new(crate::plane::remote::State::default()),
             told: Wake::new(),
             ending: Arc::new(AtomicBool::new(false)),
             connecting: AtomicBool::new(false),
             following: Mutex::new(None),
+            follows: std::sync::OnceLock::new(),
             asking: Mutex::new(None),
             line: Mutex::new(None),
             #[cfg(feature = "node")]

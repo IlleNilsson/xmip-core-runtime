@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The design the runtime's example Work Process unit is generated from
+     (approval_unit.rs, by process::generate): it waits for a second Message
+     of its Instance and publishes it. -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D"
+    targetNamespace="urn:example">
+  <bpmn:process id="Approval" isExecutable="true">
+    <bpmn:startEvent id="S"/>
+    <bpmn:receiveTask id="Wait"/>
+    <bpmn:sendTask id="Send"/>
+    <bpmn:endEvent id="E"/>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait"/>
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="Send"/>
+    <bpmn:sequenceFlow id="F3" sourceRef="Send" targetRef="E"/>
+  </bpmn:process>
+</bpmn:definitions>

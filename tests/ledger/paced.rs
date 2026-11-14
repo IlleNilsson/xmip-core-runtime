@@ -15,9 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use schedule::pace::Pace;
 use transport::{Arrivals, Directions, Transport, TransportError, Waiting};
 use xmip_core_runtime::ledger::CHUNK;
-use xmip_core_runtime::receiving::{Pace, Receiving};
+use xmip_core_runtime::receiving::Receiving;
 use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;
 

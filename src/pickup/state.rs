@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use codec::cursor::Cursor;
 use codec::field::{read_text, text};
+use codec::form::{Form, from_numbered, numbered};
 use codec::writer::ByteWriter;
 use observe::{PauseState, Subscription as Published};
 
@@ -34,35 +35,34 @@ pub(super) struct Standing {
 const FORM: u8 = 1;
 
 impl Standing {
+    /// The standing in its one binary form, after the form's number.
     pub(super) fn record(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + self.by.len());
-        out.byte(FORM).byte(u8::from(self.paused));
-        text(&mut out, &self.by);
-        out.i64_be(self.since_unix_nanos);
+        numbered(&mut out, FORM, self);
         out
     }
 
+    /// The standing `bytes` hold, and nothing after it, or why not.
     pub(super) fn from_record(bytes: &[u8]) -> Result<Self, String> {
-        let mut cursor = Cursor::new(bytes);
-        let read = |cursor: &mut Cursor<'_>| -> codec::Result<Self> {
-            let form = cursor.byte()?;
-            if form != FORM {
-                return Err(codec::CodecError::new(format!(
-                    "a standing of form {form}, and this reads form {FORM}"
-                )));
-            }
-            Ok(Self {
-                paused: cursor.byte()? != 0,
-                by: read_text(cursor)?,
-                since_unix_nanos: cursor.i64_be()?,
-            })
-        };
-        let standing = read(&mut cursor).map_err(|error| error.to_string())?;
-        if cursor.is_empty() {
-            Ok(standing)
-        } else {
-            Err("bytes after the standing".to_string())
-        }
+        from_numbered(bytes, FORM, "a standing").map_err(|error| error.to_string())
+    }
+}
+
+/// The standing's fields, `codec::form::Form`, without the form's number
+/// [`Standing::record`] writes before them.
+impl Form for Standing {
+    fn write(&self, out: &mut Vec<u8>) {
+        out.byte(u8::from(self.paused));
+        text(out, &self.by);
+        out.i64_be(self.since_unix_nanos);
+    }
+
+    fn read(cursor: &mut Cursor<'_>) -> codec::Result<Self> {
+        Ok(Self {
+            paused: cursor.byte()? != 0,
+            by: read_text(cursor)?,
+            since_unix_nanos: cursor.i64_be()?,
+        })
     }
 }
 
@@ -138,6 +138,23 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bytes a paused standing is written as, taken from the encoder
+    /// that wrote them before the form was a `Form` (2026-11-13): the form
+    /// may not change.
+    const PAUSED: &str = "010116616e206f70657261746f7220e2809420c3a5c3a4c3b6fffffffffffffffd";
+
+    #[test]
+    fn a_standing_is_written_byte_for_byte_as_its_form_was() {
+        let standing = Standing {
+            paused: true,
+            by: "an operator — åäö".to_string(),
+            since_unix_nanos: -3,
+        };
+        assert_eq!(codec::hex::encode(&standing.record()), PAUSED);
+        let bytes = codec::hex::decode(PAUSED).expect("hex");
+        assert_eq!(Standing::from_record(&bytes), Ok(standing));
+    }
 
     #[test]
     fn a_standing_comes_back_from_its_record_as_it_was() {

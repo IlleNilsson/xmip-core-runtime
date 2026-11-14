@@ -17,6 +17,9 @@
 //! <node>/storage/<domain>    each database it keeps: its schema version
 //! <node>/configuration       which slice it runs: Fine, or Stressed with
 //!                            why its candidate was refused (`activation`)
+//! <node>/membership          its membership: Working until its row is in
+//!                            Xmip Storage, Stressed where its save is not
+//!                            its peers' (`crate::membership`)
 //! <node>/certificate/<use>  each certificate it presents: renewal due, Stressed
 //! <node>/receive/<Location>  each Receive Location: Fine while it serves,
 //! <node>/send/<Location>     Done with the reason once it stopped, and
@@ -161,6 +164,9 @@ impl Running {
         self.storage.publish(&node, &mut record);
         if let Some(standing) = &self.standing {
             standing.publish(&node, &mut record);
+        }
+        if let Some(membership) = &self.membership {
+            membership.followed().publish(&node, &mut record);
         }
         self.certificates.publish(&node, now, &mut record);
         let figures = self.send.figures();

@@ -8,9 +8,11 @@
 //! subset of it in startup node types of its own (open problem 25, row b).
 //!
 //! A node that binds Xmip Applications (ADR-0064) is given them: the tree
-//! takes the Locations its bindings give this node and every Subscription
-//! of every bound Application, through `configure::bind`, which is the one
-//! reading of a binding.
+//! takes the Locations and Work Processes its bindings give this node and
+//! every Subscription of every bound Application, through `configure::bind`,
+//! which is the one reading of a binding. A module holding only Work Process
+//! units starts where a Work Process the tree starts names it
+//! (`crate::library::to_open`).
 
 use abi::ExtensionManifest;
 use configure::{
@@ -136,17 +138,16 @@ pub fn build_execution_tree(
         warnings: Vec::new(),
     })?;
 
-    let modules_to_start = document
-        .modules
-        .into_iter()
-        .filter(|module| module.start)
-        .collect();
-
+    // The node's own Work Processes that start, and those its bindings give
+    // it, as it chains its own Locations and its bound ones below.
     let work_processes_to_start = document
         .work_processes
         .into_iter()
         .filter(|work_process| work_process.start)
+        .chain(bound.work_processes)
         .collect::<Vec<_>>();
+
+    let modules_to_start = crate::library::to_open(document.modules, &work_processes_to_start);
 
     let verified_extensions = work_processes_to_start
         .iter()
@@ -662,5 +663,87 @@ keys = ["context:Party"]
             "{:?}",
             report.errors
         );
+    }
+
+    /// A `[[modules]]` entry holding one Work Process unit, as
+    /// `process::generate` writes it.
+    fn unit_module(module: &str, unit: &str) -> String {
+        format!(
+            "[[modules]]\nname = \"{module}\"\nstart = true\n\n\
+             [modules.manifest]\noffline = true\n\n\
+             [modules.manifest.identity]\nname = \"{module}\"\nversion = \"0.1.0\"\n\n\
+             [[modules.manifest.capabilities]]\ncapability = \"work-process\"\n\
+             execution_host = \"native-rust\"\ntrusted_required = false\n\n\
+             [modules.manifest.entrypoint]\nlibrary_path = \"work-process/{module}.dll\"\n\
+             symbol = \"xmip_create_module_v1\"\n\n\
+             [[modules.manifest.units]]\nname = \"{unit}\"\ncapability = \"work-process\"\n\
+             stages = [\"process\"]\noffline = true\n\n"
+        )
+    }
+
+    /// [`orders_text`] with the Work Process "Confirm" designed, its unit's
+    /// module and an unneeded one given to every node, and Confirm bound to
+    /// the test cluster's first node.
+    fn confirming(place: usize) -> XmipConfigurationDocument {
+        let first = configure::fixture::test_cluster().node(0).name.clone();
+        let modules = unit_module("confirming", "Confirm") + &unit_module("idle", "Idle");
+        let text = orders_text(place)
+            .replacen(
+                "\n[[applications]]",
+                &format!("\n{modules}[[applications]]"),
+                1,
+            )
+            .replacen(
+                "\n[[xmip_applications]]",
+                &format!(
+                    "\n[[applications.work_processes]]\nname = \"Confirm\"\nnode = \"{first}\"\n\n\
+                     [[xmip_applications]]"
+                ),
+                1,
+            )
+            .replacen(
+                "\n[[correlations]]",
+                "\n[[xmip_applications.work_processes]]\nname = \"Confirm\"\n\
+                 module = \"confirming\"\nunit = \"Confirm\"\n\n[[correlations]]",
+                1,
+            );
+        configure::parse_toml(&text).expect("parses")
+    }
+
+    /// A Work Process bound to a node starts there as its design says, and
+    /// opens the module of its unit there and nowhere else (ADR-0056,
+    /// amendment 2026-11-13).
+    #[test]
+    fn a_bound_work_process_starts_where_it_is_bound_with_the_module_it_names() {
+        let document = confirming(0);
+        let design = application(&document);
+        let (tree, report) =
+            build_execution_tree(document, &[design], &Declarations::new()).expect("binds");
+        assert!(report.is_valid(), "{report:?}");
+        let [process] = tree.work_processes_to_start.as_slice() else {
+            panic!("one Work Process: {:?}", tree.work_processes_to_start);
+        };
+        assert_eq!(process.name, "Confirm");
+        assert!(process.start);
+        assert_eq!(
+            (process.module.as_deref(), process.unit.as_deref()),
+            (Some("confirming"), Some("Confirm"))
+        );
+        let opened: Vec<&str> = tree
+            .modules_to_start
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect();
+        assert_eq!(opened, ["confirming"], "the idle unit's module stays shut");
+
+        let document = confirming(1);
+        let design = application(&document);
+        let (tree, _) =
+            build_execution_tree(document, &[design], &Declarations::new()).expect("binds");
+        assert_eq!(
+            tree.work_processes_to_start,
+            [] as [WorkProcessConfiguration; 0]
+        );
+        assert_eq!(tree.modules_to_start, [] as [ModuleConfiguration; 0]);
     }
 }

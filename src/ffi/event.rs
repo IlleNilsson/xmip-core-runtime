@@ -1,9 +1,10 @@
 //! `xmip_operate.h` section 11: Events, subscribed, forwarded.
 //!
 //! A program in any language that loaded this library subscribes to the
-//! process's hub, `xmip-core-event`'s `Hub::process`, and these files do
-//! nothing else: the matching rule, the authorization gate, the queue and
-//! the audit are the event crate's (ADR-0065, ADR-0052). The header's
+//! process's hub, `xmip-core-cluster`'s `delivery::hub::Hub::process`, and
+//! these files do nothing else: the matching rule is the event crate's,
+//! and the authorization gate, the queue and the audit are the cluster's
+//! delivery (ADR-0065, ADR-0052). The header's
 //! action and outcome integers cross in `crossing`, converted by
 //! `crate::wire` with every other enum that crosses the header.
 //!
