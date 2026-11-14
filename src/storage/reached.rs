@@ -81,6 +81,41 @@ impl Reached {
         }
     }
 
+    /// Its own Storage node's place among the Storage nodes listed, as that
+    /// node finds it by the process it answers as, never by a name: what its
+    /// membership row says (`crate::membership`). None for a node that is
+    /// none of the Storage nodes listed.
+    pub fn placing(&self) -> crate::membership::Place {
+        match &self.behind {
+            Behind::Several(node) => {
+                let node = Arc::clone(node);
+                Box::new(move || node.place())
+            }
+            Behind::Given | Behind::Alone(..) | Behind::Reaching(_) => Box::new(|| None),
+        }
+    }
+
+    /// Whether the Xmip Storage it reaches answers, by what it already
+    /// knows and by the rule `<node>/storage` stands by — never by a try
+    /// that could wait out a Storage node's timeout: what a node stopping
+    /// writes its membership's stop by (`crate::membership::Joined::stop`).
+    ///
+    /// # Errors
+    ///
+    /// Where it does not, in one sentence saying its membership row stays
+    /// saying it runs, and why.
+    pub fn answers(&self) -> Result<(), &'static str> {
+        if self.standing().0 != Health::Done {
+            return Ok(());
+        }
+        Err(match &self.behind {
+            Behind::Several(_) => crate::membership::FINDING,
+            Behind::Given | Behind::Alone(..) | Behind::Reaching(_) => {
+                crate::membership::UNANSWERED
+            }
+        })
+    }
+
     /// What it reaches and how it stands, in words, and the chunk: what
     /// the node says as it starts and publishes at `<node>/storage`.
     #[must_use]

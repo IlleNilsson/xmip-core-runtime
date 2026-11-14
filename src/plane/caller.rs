@@ -30,9 +30,9 @@ use context::property::{TLS_HANDSHAKE_VERIFIED as VERIFIED, TLS_PEER_ISSUER};
 use identify::Presented;
 use identify::evidence::{MUTUAL_TLS_HANDSHAKE, PEER_CREDENTIALS_SYSTEM};
 use xaudit::program_audit::ProgramAudit;
+use xcluster::delivery::subscriber::Subscriber;
 use xcore::{Mechanism, Purpose, mechanism};
 use xevent::filter::Filter;
-use xevent::subscriber::Subscriber;
 
 use crate::parties::Parties;
 
@@ -113,7 +113,7 @@ pub fn subscriber(
 /// `peer-credentials` identity names it — never a Party the program names
 /// (the owner, 2026-11-10; ADR-0019, amendment 2026-11-11). A refusal is
 /// audited in `audit` with who asked and for `filter`, as the hub audits
-/// its own (`xevent::subscriber::refused`).
+/// its own (`xcluster::delivery::subscriber::refused`).
 ///
 /// # Errors
 /// The gate's refusal; no Party holds `account`; or more than one does,
@@ -162,7 +162,7 @@ fn refused(
     filter: &Filter,
     said: String,
 ) -> String {
-    xevent::subscriber::refused(audit, caller, filter, &said);
+    xcluster::delivery::subscriber::refused(audit, caller, filter, &said);
     said
 }
 

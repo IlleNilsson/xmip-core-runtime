@@ -5,10 +5,16 @@
 //! network inside mutual TLS, or on this machine's local endpoint.
 //!
 //! A handle owns its listener and its board, and one call stops and frees
-//! them.
+//! them. A program that gathers its cluster posts the cluster's
+//! publication beside its own, which the listener answers the cluster's
+//! from ([`cluster`]).
 #![allow(unsafe_code)]
 
-use std::sync::Arc;
+mod cluster;
+
+pub use cluster::xmip_operate_post_cluster_v1;
+
+use std::sync::{Arc, OnceLock};
 
 use abi::ffi::{Str, status};
 use abi::operate::remote::Served as ServedHandle;
@@ -20,10 +26,12 @@ use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
 use crate::plane::{Board, Grants, Listener, Published};
 
-/// A listener and the board it answers from.
+/// A listener, the board it answers from, and the board it answers the
+/// cluster's publication from once the program posted one.
 struct Serving {
     listener: Listener,
     board: Arc<Board>,
+    cluster: OnceLock<Arc<Board>>,
 }
 
 /// The callers `observers`, `operators` and `developers` list, one name a
@@ -201,7 +209,11 @@ unsafe fn handed(
 ) -> i32 {
     match started {
         Ok(listener) => {
-            let serving = Box::new(Serving { listener, board });
+            let serving = Box::new(Serving {
+                listener,
+                board,
+                cluster: OnceLock::new(),
+            });
             // SAFETY: `out` and `out_len` are writable per the contract.
             unsafe {
                 *out = Box::into_raw(serving).cast::<ServedHandle>();
@@ -331,6 +343,7 @@ mod tests {
         use abi::operate::remote as header;
         let _: header::OpenFn = xmip_remote_open_v1;
         let _: header::PublicationFn = xmip_remote_publication_v1;
+        let _: header::ClusterFn = crate::ffi::remote::xmip_remote_cluster_v1;
         let _: header::WaitFn = xmip_remote_wait_v1;
         let _: header::ActFn = xmip_remote_act_v1;
         let _: header::EndFn = xmip_remote_end_v1;
@@ -342,6 +355,7 @@ mod tests {
         let _: abi::operate::secret::SecretsFn = crate::ffi::remote::xmip_secrets_v1;
         let _: header::ServedAddressFn = xmip_operate_served_address_v1;
         let _: header::PostFn = xmip_operate_post_v1;
+        let _: header::PostClusterFn = xmip_operate_post_cluster_v1;
         let _: header::ServeStopFn = xmip_operate_serve_stop_v1;
         let _: header::SecurityRoleNamedFn = xmip_security_role_named_v1;
         let _: header::SecurityRoleWordsFn = xmip_security_role_words_v1;
@@ -450,16 +464,18 @@ mod tests {
         assert_eq!(code, status::OK);
         assert_eq!(whole, b"source = \"one\"\n");
 
-        let (mut told, mut reachable) = (0u64, 0u8);
+        let (mut told, mut reachable, mut follows) = (0u64, 0u8, 9u32);
         // SAFETY: as above.
         let code = unsafe {
             xmip_remote_wait_v1(
                 remote,
+                abi::operate::remote::FOLLOWS_NODE,
                 0,
                 5000,
                 &raw mut told,
                 &raw mut revision,
                 &raw mut reachable,
+                &raw mut follows,
                 report.as_mut_ptr(),
                 report.len(),
                 &raw mut length,
@@ -474,11 +490,13 @@ mod tests {
         unsafe {
             xmip_remote_wait_v1(
                 remote,
+                abi::operate::remote::FOLLOWS_NODE,
                 seen,
                 5000,
                 &raw mut told,
                 &raw mut revision,
                 &raw mut reachable,
+                &raw mut follows,
                 report.as_mut_ptr(),
                 report.len(),
                 &raw mut length,

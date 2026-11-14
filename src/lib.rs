@@ -17,6 +17,8 @@
 //! (`xmip_operate.h` sections 7, 8, 9, 18 and section 17's client).
 
 #[cfg(feature = "node")]
+pub mod act_watch;
+#[cfg(feature = "node")]
 pub mod applied;
 #[cfg(feature = "node")]
 pub mod arrival;
@@ -30,6 +32,7 @@ pub mod catalogue;
 pub mod configured_subscription;
 #[cfg(feature = "node")]
 pub mod dead_message;
+pub mod declared;
 #[cfg(feature = "node")]
 pub mod departure;
 #[cfg(feature = "node")]
@@ -53,6 +56,8 @@ pub mod ledger;
 pub mod library;
 #[cfg(feature = "node")]
 pub mod linked;
+#[cfg(feature = "node")]
+pub mod membership;
 #[cfg(feature = "node")]
 pub mod message_path;
 #[cfg(feature = "node")]

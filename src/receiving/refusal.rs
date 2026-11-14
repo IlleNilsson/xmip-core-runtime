@@ -1,16 +1,20 @@
 //! A refused arrival: what its far end is told, and the transport event its
-//! attempt is audited as.
+//! attempt is audited as; and a caller its transport turned away at its own
+//! connection, audited the same way.
 //!
 //! ADR-0013 clause 1: a Stream refused at transport identification,
 //! authentication or authorization keeps nothing, and *the attempt is audited
 //! as a transport event*. What the record says of the sender is the claim
 //! the gate was handed — its mechanism, value, layer and how it was
-//! established (ADR-0019 clauses 5 and 8) — and never its proof.
+//! established (ADR-0019 clauses 5 and 8) — and never its proof. A caller
+//! turned away before it handed over a Stream — a head past its bound,
+//! bytes that are not the protocol, a request its technology refused — is
+//! said by the address it called from (ADR-0018, amendment 2026-11-13).
 
 use std::collections::BTreeMap;
 
 use identify::Presented;
-use transport::{Refusal, Verdict};
+use transport::{Refusal, Turned, TurnedAway, Verdict, arrival_identity};
 use xcore::{ExecutionPhase, Layer, Severity};
 
 use super::Receiving;
@@ -91,6 +95,45 @@ impl Receiving {
             )),
             properties,
         );
+    }
+
+    /// Audit each caller its transport turned away since the last receive,
+    /// as a refusal of that caller: the Location, the address it called
+    /// from and why, and how many more there were past those kept
+    /// (`transport::turned`). The Location went on serving the others.
+    pub(super) fn audit_turned_away(&self, turned: Turned) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let location = &self.configured.name;
+        let at = |more: Option<(String, String)>| {
+            let mut properties = BTreeMap::from([("location".to_string(), location.clone())]);
+            properties.extend(more);
+            properties
+        };
+        let refused = |said: &str, properties| {
+            let _ = audit.record(
+                "receive",
+                ExecutionPhase::Finished,
+                Severity::Warning,
+                Some(said),
+                properties,
+            );
+        };
+        for TurnedAway { peer, why } in turned.callers {
+            let said = format!(
+                "the Receive Location '{location}' turned away the caller at {peer}: {}",
+                why.message
+            );
+            refused(&said, at(Some(arrival_identity::peer(peer))));
+        }
+        if turned.beyond > 0 {
+            let said = format!(
+                "the Receive Location '{location}' turned away {} more callers",
+                turned.beyond
+            );
+            refused(&said, at(None));
+        }
     }
 }
 

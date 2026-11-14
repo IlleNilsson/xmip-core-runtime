@@ -23,16 +23,9 @@
 
 use std::time::{Duration, Instant};
 
+use schedule::pace::Ended;
+
 use crate::stopping::Stopping;
-
-use super::pace::Ended;
-
-/// How long a stopping Receive Location goes on taking what its far end
-/// already let go of, where the node's `[tuning] receive_drain` does not
-/// say: a second — the assistant's drafting, 2026-10-15, for the owner to
-/// overrule. It bounds senders that never pause; a backlog is taken in
-/// milliseconds.
-pub const RECEIVE_DRAIN: Duration = Duration::from_secs(1);
 
 /// One Location's drain: whether it is one that drains, and once the stop
 /// is raised, until when and whether a receive has found nothing.
@@ -94,6 +87,8 @@ impl Drain {
 
 #[cfg(test)]
 mod tests {
+    use schedule::pace::RECEIVE_DRAIN;
+
     use super::*;
 
     fn stopped() -> Stopping {

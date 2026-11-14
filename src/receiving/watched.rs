@@ -6,9 +6,9 @@
 //! directory not there yet is watched from the first rest that finds it;
 //! until then the Location polls.
 
+use schedule::pace::Asking;
 use transport::{Notice, Transport};
 
-use super::pace::Asking;
 use crate::directory_watch::DirectoryWatch;
 use crate::stopping::{Nudge, Stopping};
 

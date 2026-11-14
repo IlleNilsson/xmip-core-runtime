@@ -8,14 +8,19 @@
 //! `developers` (`plane::grant`), none for a caller they do not name; who
 //! may relay for a caller, `[operate] relay` (`plane::vouched`); and what
 //! bounds each listener, `[tuning] operate_connections`,
-//! `operate_handshakes` and `operate_handshake` (`plane::limits`).
+//! `operate_handshakes` and `operate_handshake` (`plane::limits`). Every act
+//! either listener admits is asked through the node's door, and every act
+//! asked of the node through Xmip Storage is taken by its act watch, both
+//! started here (`crate::act_watch`; `[tuning] operate_act`).
 
 use std::path::Path;
 use std::sync::Arc;
 
 use configure::operate::Network;
 use xaudit::program_audit::ProgramAudit;
+use xcore::lock::Locked;
 
+use crate::act_watch::{ActWatch, Door};
 use crate::plane::local::Admitting;
 use crate::plane::vouched::Relaying;
 use crate::plane::{Grants, Listener, Published};
@@ -42,6 +47,7 @@ impl Running {
     ) -> Result<Vec<Listener>, String> {
         let operate = self.operate.clone().unwrap_or_default();
         let grants = Grants::listed(operate.grants()?);
+        let acting = grants.clone();
         let local = self.local_endpoint();
         let admitting = Admitting {
             admit: &operate.admit,
@@ -58,17 +64,21 @@ impl Running {
             .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
         ];
         if let Some(network) = operate.network()? {
-            listeners.push(listen(
+            let listener = listen(
                 network,
                 &self.configuration,
                 Arc::clone(published),
                 grants,
                 audit,
-            )?);
+            )?;
+            // Where it answers, as bound: what its membership row says.
+            let _ = self.operated.set(listener.address());
+            listeners.push(listener);
         }
         for listener in &listeners {
             listener.limit(self.tuning.operate());
         }
+        self.monitored(&listeners, published);
         if let Some((relay, anchors)) = operate.relaying()? {
             let anchors = crate::presented::file(&self.configuration, "operate", anchors)?;
             let anchors = String::from_utf8_lossy(&anchors);
@@ -79,7 +89,33 @@ impl Running {
                 listener.relay(Arc::clone(&relaying));
             }
         }
+        self.acts_asked(published, (&listeners, acting), audit)?;
         Ok(listeners)
+    }
+
+    /// The node's door on each of `listeners`, and its act watch started
+    /// over its Xmip Storage, judging every act asked of it by `grants`
+    /// and telling `published` of each it takes (ADR-0014, amendment
+    /// 2026-11-13).
+    fn acts_asked(
+        &self,
+        published: &Arc<dyn Published>,
+        (listeners, grants): (&[Listener], Grants),
+        audit: &ProgramAudit,
+    ) -> Result<(), String> {
+        let (scope, storage) = (self.location(), self.storage.storage());
+        let capability = node::Capability::of(&self.roles);
+        let within = self.tuning.operate_act;
+        let door = Arc::new(Door::of(&scope, &capability, Arc::clone(storage), within));
+        for listener in listeners {
+            listener.door(Arc::clone(&door));
+        }
+        let watch = ActWatch::new(&scope, Arc::clone(storage), grants, audit);
+        let watching = watch
+            .telling(Arc::clone(published))
+            .start(self.tuning.storage_wait)?;
+        *self.acts.locked() = Some(watching);
+        Ok(())
     }
 
     /// The node's local endpoint's name: `[operate] local`, else the name

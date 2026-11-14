@@ -49,9 +49,7 @@ pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Pub
         });
     }
     let topology = drawn(cluster, node, &snapshot, Seen::default());
-    Publication::whole(&last.source, &last.node, &snapshot)
-        .with_orders(last.orders.clone())
-        .with_topology(Some(topology))
+    Publication::whole(&last.source, &last.node, &snapshot).with_topology(Some(topology))
 }
 
 #[cfg(test)]
@@ -87,7 +85,7 @@ mod tests {
         ] {
             snapshot.record_health(record(&format!("{at}{leaf}"), health, evidence));
         }
-        let last = Publication::whole("xmip-service", at, &snapshot).with_orders("orders");
+        let last = Publication::whole("xmip-service", at, &snapshot);
 
         let left = stopped(name, node, &last, "stopped by the console");
         let moods: Vec<(&str, Health)> = left
@@ -120,7 +118,6 @@ mod tests {
         assert_eq!(evidence(&off), Some(configure::NOT_STARTED));
         let standing = format!("{at}/configuration");
         assert_eq!(evidence(&standing), Some("candidate refused"), "kept");
-        assert_eq!(left.orders, "orders");
         let drawn = left.topology.expect("drawn again");
         let id = format!("node/{node}");
         assert!(drawn.nodes.iter().any(|drawn| drawn.id == id));

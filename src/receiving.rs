@@ -10,6 +10,7 @@ use std::thread::Scope;
 use std::time::Instant;
 
 use configure::ConfiguredLocation;
+use schedule::pace::{Ended, Pace};
 use transport::Transport;
 use xaudit::program_audit::ProgramAudit;
 use xcore::spent::Spent;
@@ -18,23 +19,19 @@ use crate::message_path::{Carried, Runtime, carry};
 
 mod drain;
 mod gate;
-mod pace;
 mod received;
 mod refusal;
 mod telling;
 mod turn;
 mod watched;
 
-pub use drain::RECEIVE_DRAIN;
 pub use gate::ReceiveGate;
-pub use pace::{Pace, RECEIVE_BACKOFF, RECEIVE_POLL, RECEIVE_SWEEP};
 
 use crate::budget::Held;
 use crate::pickup::Pickup;
 use crate::pool::{Limits, Pool};
 use crate::stopping::Stopping;
 use drain::Drain;
-use pace::Ended;
 use telling::Telling;
 use turn::{Ticket, Turn};
 use watched::Watched;
@@ -120,10 +117,19 @@ impl Receiving {
     /// stop the Location, and is audited, once for each reason, with the
     /// Location and why, so it is never dropped unseen.
     ///
+    /// **A caller turned away is that caller's, never the Location's**
+    /// (ADR-0018, amendment 2026-11-13). A transport that keeps its
+    /// callers' connections lets one go whose own connection failed — a
+    /// head past its bound, bytes that are not its protocol, a read past
+    /// the Location's timeout, a request it refused — and goes on for the others
+    /// (`transport::serving`). After every receive the Location asks it whom
+    /// it turned away (`Transport::turned_away`) and audits each as a
+    /// refusal of that caller (`refusal.rs`).
+    ///
     /// # Errors
     /// The transport failed in a way asking again will not mend — in a
-    /// receive, or in telling the far end a verdict: the Location stops,
-    /// and says why.
+    /// receive, its own failure and never one caller's, or in telling the
+    /// far end a verdict: the Location stops, and says why.
     pub fn serve<'scope, 'env>(
         &'env self,
         scope: &'scope Scope<'scope, 'env>,
@@ -171,7 +177,9 @@ impl Receiving {
             let places = runtime.budget.carries.hold_up_to(room as u64);
             let began = Instant::now();
             let most = usize::try_from(places.charge()).unwrap_or(1);
-            let outcome = match self.transport.receive_up_to(most) {
+            let received = self.transport.receive_up_to(most);
+            self.audit_turned_away(self.transport.turned_away());
+            let outcome = match received {
                 Ok(arrivals) if arrivals.is_empty() => Ended::Nothing,
                 Ok(arrivals) => {
                     drain.handed(arrivals.iter().any(|arrived| !arrived.defers()));

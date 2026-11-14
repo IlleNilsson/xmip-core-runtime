@@ -9,12 +9,14 @@
 use std::path::{Path, PathBuf};
 
 use abi::ffi::{Str, status};
+use codec::pem;
+use provision::Issuer;
 use provision::carried;
 use provision::crl::{self, Reason};
 use provision::register::{Record, Register};
 use provision::renewal::Standing;
-use provision::{Issuer, Parsed, pem};
 use serde_json::{Value, json};
+use tls::certificate::Certificate;
 
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
@@ -181,9 +183,9 @@ fn inspect(place: &Path, now: i64) -> Result<Value, String> {
     let said = |failure: provision::ProvisionError| failure.message;
     let issuer = Issuer::kept(place).map_err(said)?;
     let register = issuer.register().ok_or("the authority keeps no register")?;
-    let own = Parsed::first(issuer.certificate()).map_err(said)?;
+    let own = Certificate::first(issuer.certificate()).map_err(|failure| failure.message)?;
     let anchor = pem::decode("CERTIFICATE", issuer.certificate())
-        .map_err(said)?
+        .map_err(|failure| failure.message)?
         .pop()
         .unwrap_or_default();
     let listed = crl::read(&issuer.revocation_list(now).map_err(said)?).map_err(said)?;
@@ -199,7 +201,7 @@ fn inspect(place: &Path, now: i64) -> Result<Value, String> {
         .collect();
     Ok(json!({
         "authority": shown(place),
-        "subject": own.common_name().map_err(said)?.unwrap_or_default(),
+        "subject": own.common_name().map_err(|failure| failure.message)?.unwrap_or_default(),
         "notBefore": own.not_before,
         "notAfter": own.not_after,
         "fingerprint": provision::fingerprint(&anchor),
@@ -217,16 +219,15 @@ fn inspect(place: &Path, now: i64) -> Result<Value, String> {
 /// A certificate file's leaf and its standing: what a node's operator
 /// reads to know when a request is due.
 fn read(path: &Path, now: i64) -> Result<Value, String> {
-    let said = |failure: provision::ProvisionError| failure.message;
     let text = std::fs::read_to_string(path)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
-    let leaf = Parsed::first(&text).map_err(said)?;
+    let leaf = Certificate::first(&text).map_err(|failure| failure.message)?;
     let standing = Standing::at(&leaf, now);
     Ok(json!({
         "certificate": shown(path),
         "serial": leaf.serial_hex(),
-        "subject": leaf.common_name().map_err(said)?.unwrap_or_default(),
-        "names": leaf.names().map_err(said)?,
+        "subject": leaf.common_name().map_err(|failure| failure.message)?.unwrap_or_default(),
+        "names": leaf.names().map_err(|failure| failure.message)?,
         "notBefore": standing.not_before,
         "notAfter": standing.not_after,
         "renewAt": standing.renew_at,
@@ -247,7 +248,7 @@ fn export(given: &Given, now: i64) -> Result<Value, String> {
     let bytes = match format.as_str() {
         "pem" => issuer.certificate().as_bytes().to_vec(),
         "der" => pem::decode("CERTIFICATE", issuer.certificate())
-            .map_err(said)?
+            .map_err(|failure| failure.message)?
             .pop()
             .unwrap_or_default(),
         "crl" => issuer.revocation_list(now).map_err(said)?,

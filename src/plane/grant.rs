@@ -76,6 +76,42 @@ impl Grants {
             }
         })
     }
+
+    /// The role the caller that presented `presented` holds: a certificate
+    /// by [`Grants::certificate`], an account by [`Grants::account`]. The
+    /// one rule the operate listener admits a caller by — its own, or one a
+    /// relay vouched for — and the node an act is asked of judges that
+    /// caller by again from what the act's row carries, so a door grants
+    /// nothing this node's lists do not, and this node refuses nothing the
+    /// same lists granted at the door (ADR-0009, amendment 2026-11-13).
+    #[must_use]
+    pub fn of(&self, presented: &Presented) -> Option<Role> {
+        match presented {
+            Presented::Certificate(leaf) => self.certificate(leaf),
+            Presented::Account(account) => self.account(account),
+        }
+    }
+}
+
+/// What a proven caller presented, which the role it holds is read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Presented {
+    /// The leaf certificate (DER) its handshake proved, or a relay's
+    /// browser proved to the node.
+    Certificate(Vec<u8>),
+    /// The account the operating system names on the local endpoint.
+    Account(String),
+}
+
+impl Presented {
+    /// The certificate it presented, where it presented one.
+    #[must_use]
+    pub fn certificate(&self) -> Option<&[u8]> {
+        match self {
+            Self::Certificate(leaf) => Some(leaf),
+            Self::Account(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +150,28 @@ mod tests {
             Grants::default().account(r"HOST\jane"),
             None,
             "closed by default"
+        );
+    }
+
+    #[test]
+    fn what_a_caller_presented_holds_the_role_its_certificate_or_its_account_is_listed_with() {
+        let authority = Authority::new();
+        let (operators, developers) = (
+            vec![r"HOST\jane".to_string()],
+            vec!["localhost".to_string()],
+        );
+        let grants = Grants::listed([&[], &operators, &developers]);
+        // Granted by the alternative name every fixture certificate carries.
+        let issued = leaf(&authority, "alice");
+        let alice = Presented::Certificate(issued.clone());
+        assert_eq!(grants.of(&alice), Some(Role::Developer));
+        assert_eq!(alice.certificate(), Some(issued.as_slice()));
+        let jane = Presented::Account(r"HOST\jane".to_string());
+        assert_eq!(grants.of(&jane), Some(Role::Operator));
+        assert_eq!(jane.certificate(), None);
+        assert_eq!(
+            grants.of(&Presented::Account("localhost-not".to_string())),
+            None
         );
     }
 

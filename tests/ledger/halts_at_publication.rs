@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry, DeadQueue, DuePart,
-    DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit, MessageRecord,
-    Moved, Position, Publication, Query, Replay, Replayed, StreamChunk, StreamRecord, Waiter,
-    XmipStorage,
+    ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry,
+    DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord,
+    KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
+    StreamRecord, Waiter, XmipStorage,
 };
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
 
@@ -224,6 +224,35 @@ impl XmipStorage for HaltsAtPublication {
 
     fn list_secrets(&self) -> Result<Vec<persist::storage::SecretEntry>, PersistError> {
         self.0.list_secrets()
+    }
+
+    fn write_member(&self, member: &persist::storage::MemberRecord) -> Result<(), PersistError> {
+        self.0.write_member(member)
+    }
+
+    fn read_members(&self) -> Result<Vec<persist::storage::MemberRecord>, PersistError> {
+        self.0.read_members()
+    }
+
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError> {
+        self.0.ask_act(act)
+    }
+
+    fn decide_act(
+        &self,
+        act: u128,
+        decided: (ActOutcome, &str),
+    ) -> Result<ActRecord, PersistError> {
+        self.0.decide_act(act, decided)
+    }
+
+    fn read_acts(
+        &self,
+        node: &str,
+        page: (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError> {
+        self.0.read_acts(node, page, open)
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {

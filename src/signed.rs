@@ -26,12 +26,15 @@ pub const AUTHORITY: &str = "authority";
 
 /// `sha256:` and the hexadecimal SHA-256 of `bytes`.
 fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{}", codec::hex::encode(&provision::sha256(bytes)))
+    format!(
+        "sha256:{}",
+        codec::hex::encode(&codec::digest::sha256(bytes))
+    )
 }
 
 /// The certificate PEM `pem` holds, as DER.
 fn der(pem: &str) -> Result<Vec<u8>, String> {
-    provision::pem::decode("CERTIFICATE", pem)
+    codec::pem::decode("CERTIFICATE", pem)
         .map_err(|error| error.to_string())?
         .into_iter()
         .next()
@@ -164,7 +167,8 @@ pub fn verified<'a>(file: &'a str, anchor: &str) -> Result<(&'a str, Signature),
     let value = codec::base64::decode(&signature.value)
         .map_err(|_| "its signature is not base64".to_string())?;
     let message = signed::message(text, &signature);
-    let certificate = provision::Parsed::first(anchor).map_err(|error| error.to_string())?;
+    let certificate =
+        tls::certificate::Certificate::first(anchor).map_err(|error| error.to_string())?;
     if !certificate
         .verifies(&message, &value)
         .map_err(|error| error.to_string())?

@@ -17,10 +17,10 @@
 //! segments = 44                               # ledger::SEGMENTS
 //! receive_threads_per_hardware_thread = 2     # pool::RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_idle = "1m"                         # pool::RECEIVE_IDLE
-//! receive_poll = "1s"                         # receiving::RECEIVE_POLL
-//! receive_sweep = "1s"                        # receiving::RECEIVE_SWEEP
-//! receive_backoff = "5s"                      # receiving::RECEIVE_BACKOFF
-//! receive_drain = "1s"                        # receiving::RECEIVE_DRAIN
+//! receive_poll = "1s"                         # schedule's pace::RECEIVE_POLL
+//! receive_sweep = "1s"                        # schedule's pace::RECEIVE_SWEEP
+//! receive_backoff = "5s"                      # schedule's pace::RECEIVE_BACKOFF
+//! receive_drain = "1s"                        # schedule's pace::RECEIVE_DRAIN
 //! receive_handshake = "5s"                    # transport::guard::HANDSHAKE
 //! node_receive_threads_per_hardware_thread = 4  # budget::NODE_RECEIVE_THREADS_PER_HARDWARE_THREAD
 //! receive_chunks_per_thread = 8               # budget::RECEIVE_CHUNKS_PER_THREAD
@@ -44,17 +44,28 @@
 //! operate_connections = 256                   # plane::limits::CONNECTIONS
 //! operate_handshakes = 32                     # plane::limits::HANDSHAKES
 //! operate_handshake = "10s"                   # secure_listener::HANDSHAKE_WITHIN
+//! operate_act = "1s"                          # act_watch::OPERATE_ACT
+//! sync_beat = "1s"                            # cluster's timing::BEAT
+//! sync_silence = "3s"                         # cluster's timing::SILENCE
+//! sync_handshake = "5s"                       # cluster's timing::HANDSHAKE
+//! sync_watch = "50ms"                         # cluster's timing::WATCH
+//! sync_connect = "2s"                         # cluster's timing::CONNECT
+//! sync_write = "10s"                          # cluster's timing::WRITE
+//! sync_retry = "50ms"                         # cluster's timing::RETRY
+//! sync_retry_most = "1s"                      # cluster's timing::RETRY_MOST
+//! sync_follow = "1m"                          # cluster's timing::FOLLOW
 //! ```
 
 use std::time::Duration;
 
 use configure::LocationSettings;
 use persist::storage::standby::Timings;
+use schedule::pace::Pace;
 use serde::{Deserialize, Serialize};
+use xcluster::Timing;
 use xcore::settings::Applies;
 
 use crate::pool::Limits;
-use crate::receiving::Pace;
 
 mod declared;
 
@@ -97,6 +108,16 @@ pub struct Tuning {
     pub operate_connections: usize,
     pub operate_handshakes: usize,
     pub operate_handshake: Duration,
+    pub operate_act: Duration,
+    pub sync_beat: Duration,
+    pub sync_silence: Duration,
+    pub sync_handshake: Duration,
+    pub sync_watch: Duration,
+    pub sync_connect: Duration,
+    pub sync_write: Duration,
+    pub sync_retry: Duration,
+    pub sync_retry_most: Duration,
+    pub sync_follow: Duration,
 }
 
 impl Default for Tuning {
@@ -170,11 +191,37 @@ impl Tuning {
             operate_connections: count("operate_connections"),
             operate_handshakes: count("operate_handshakes"),
             operate_handshake: duration("operate_handshake"),
+            operate_act: duration("operate_act"),
+            sync_beat: duration("sync_beat"),
+            sync_silence: duration("sync_silence"),
+            sync_handshake: duration("sync_handshake"),
+            sync_watch: duration("sync_watch"),
+            sync_connect: duration("sync_connect"),
+            sync_write: duration("sync_write"),
+            sync_retry: duration("sync_retry"),
+            sync_retry_most: duration("sync_retry_most"),
+            sync_follow: duration("sync_follow"),
         };
         if problems.is_empty() {
             Ok(tuning)
         } else {
             Err(problems)
+        }
+    }
+
+    /// Every bound the node's sync plane runs by (`xcluster::sync`).
+    #[must_use]
+    pub const fn sync(&self) -> Timing {
+        Timing {
+            beat: self.sync_beat,
+            silence: self.sync_silence,
+            handshake: self.sync_handshake,
+            watch: self.sync_watch,
+            connect: self.sync_connect,
+            write: self.sync_write,
+            retry: self.sync_retry,
+            retry_most: self.sync_retry_most,
+            follow: self.sync_follow,
         }
     }
 
@@ -295,6 +342,16 @@ mod tests {
         assert_eq!(tuning.storage_unwaited, persist::storage::UNWAITED);
         assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
         assert_eq!(tuning.operate(), crate::plane::Limits::default());
+        assert_eq!(tuning.sync(), xcluster::Timing::default());
+        let said = read("sync_beat = \"250ms\"\nsync_follow = \"5s\"").expect("read");
+        assert_eq!(
+            (said.sync().beat, said.sync().follow, said.sync().silence),
+            (
+                Duration::from_millis(250),
+                Duration::from_secs(5),
+                xcluster::timing::SILENCE
+            )
+        );
         assert_eq!(tuning.receive_handshake, transport::guard::HANDSHAKE);
         assert_eq!(
             tuning.receive().most,
@@ -342,10 +399,11 @@ mod tests {
              node_receive_threads_per_hardware_thread = 5\nreceive_chunks_per_thread = 3\n\
              send_chunks_per_thread = 9\nstream_stall = \"40ms\"\noperate_connections = 8\n\
              operate_handshakes = 2\noperate_handshake = \"750ms\"\nstorage_wait = \"10s\"\n\
-             storage_unwaited = 64\n",
+             storage_unwaited = 64\noperate_act = \"250ms\"\n",
         )
         .expect("reads");
         assert_eq!(tuning.storage_wait, Duration::from_secs(10));
+        assert_eq!(tuning.operate_act, Duration::from_millis(250));
         // Every Storage node's watch bound: the only one's, and a primary's
         // among several, through what bounds its dealings with the others.
         assert_eq!(tuning.storage_unwaited, 64);

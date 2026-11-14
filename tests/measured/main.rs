@@ -12,8 +12,18 @@
 //! - `plane.rs`: a follower told as the publication advances, over
 //!   loopback TLS and on the local endpoint, a connection on the local
 //!   endpoint answered, and a node known unreachable said so at once;
+//! - `gathered.rs`: a gatherer's view of a cluster drawing 176 things,
+//!   related by role, assembled within a millisecond;
+//! - `clustered.rs`: `Cluster` answered from a monitoring node's gathered
+//!   view of nine members within a millisecond over loopback TLS, and that
+//!   view written, once an assembly, within a millisecond of processor time;
+//! - `acted.rs`: an operator's act asked at a node's door, written to Xmip
+//!   Storage, taken by its node's act watch and answered within a
+//!   millisecond beyond Xmip Storage's own writes, reads and wakes;
 //! - `deadline.rs`: a node that does not answer within the wait is
 //!   unreachable at once after;
+//! - `membership.rs`: a node's stop with its Xmip Storage gone adds no more
+//!   than a millisecond, its stop not written and said why;
 //! - `relayed.rs`: proving a browser's caller to one node, or three at once,
 //!   adds under a
 //!   millisecond to its session's start;
@@ -59,9 +69,13 @@ mod sending;
 #[path = "../ledger/work_design.rs"]
 mod work_design;
 
+mod acted;
+mod clustered;
 mod deadline;
 mod directory_watch;
 mod due;
+mod gathered;
+mod membership;
 mod plane;
 mod relayed;
 mod running;

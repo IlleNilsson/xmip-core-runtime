@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 
 use crate::plane::caller;
 use crate::plane::fresh::Fresh;
-use crate::plane::grant::Grants;
+use crate::plane::grant::{Grants, Presented};
 use crate::plane::handle::{drawn, now};
 use crate::plane::role::Role;
 
@@ -126,6 +126,8 @@ impl Relaying {
 struct Vouched {
     identity: AuthenticatedIdentity,
     role: Option<Role>,
+    /// The certificate it proved, which its role is read from.
+    presented: Presented,
     until: i64,
     through: String,
 }
@@ -168,7 +170,8 @@ pub fn vouch(
 ) -> Result<u64, String> {
     let at = now();
     let (identity, until) = relaying.verified_once(chain)?;
-    let role = chain.first().and_then(|leaf| grants.certificate(leaf));
+    let presented = Presented::Certificate(chain.first().cloned().unwrap_or_default());
+    let role = grants.of(&presented);
     let mut held = relaying.held();
     if held.len() >= MOST {
         held.retain(|_, caller| caller.until > at);
@@ -184,6 +187,7 @@ pub fn vouch(
         Vouched {
             identity,
             role,
+            presented,
             until,
             through: through.to_string(),
         },
@@ -191,22 +195,25 @@ pub fn vouch(
     Ok(handle)
 }
 
-/// The caller the node's `handle` holds, and the role granted it, where it
-/// was vouched for `through` this very account and its certificate has not
-/// ended; `None` — no one — otherwise.
+/// The caller the node's `handle` holds, the role granted it and the
+/// certificate it proved, where it was vouched for `through` this very
+/// account and its certificate has not ended; `None` — no one — otherwise.
 #[must_use]
 pub fn proven(
     relaying: &Relaying,
     handle: u64,
     through: &str,
-) -> Option<(AuthenticatedIdentity, Option<Role>)> {
+) -> Option<(AuthenticatedIdentity, Option<Role>, Presented)> {
     let mut held = relaying.held();
     let caller = held.get(&handle)?;
     if caller.until <= now() {
         held.remove(&handle);
         return None;
     }
-    (caller.through == through).then(|| (caller.identity.clone(), caller.role))
+    (caller.through == through).then(|| {
+        let presented = caller.presented.clone();
+        (caller.identity.clone(), caller.role, presented)
+    })
 }
 
 /// Let the node's `handle` go, where `through` is the account it was
@@ -300,14 +307,15 @@ mod tests {
         let (alice, nobody) = (vec!["CN=alice".to_string()], Vec::new());
         let grants = Grants::listed([&nobody, &alice, &nobody]);
         let handle = vouch(&relaying, "HOST\\gui", &[leaf], &grants).expect("vouched");
-        let (caller, role) = proven(&relaying, handle, "HOST\\gui").expect("the caller");
+        let (caller, role, presented) = proven(&relaying, handle, "HOST\\gui").expect("the caller");
+        assert!(presented.certificate().is_some(), "what it proved is kept");
         assert!(caller.value.contains("alice"), "{}", caller.value);
         assert_eq!(role, Some(Role::Operator));
         let (other, _, _) = authority.pem("bob");
         let other = Chain::from_pem(&other).expect("a chain").leaf().to_vec();
         let bob = vouch(&relaying, "HOST\\gui", &[other], &grants).expect("vouched");
         assert_eq!(
-            proven(&relaying, bob, "HOST\\gui").map(|(_, role)| role),
+            proven(&relaying, bob, "HOST\\gui").map(|(_, role, _)| role),
             Some(None)
         );
         assert!(

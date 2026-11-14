@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use xcore::lock::Locked;
@@ -67,16 +67,20 @@ impl Write for Link {
 
 /// A watched connection whose silence a call restarts: the line sets
 /// `called` as it sends, and the next read counts the peer's silence from
-/// then, not from the last answer.
+/// then, not from the last answer, and bounds it by the line's silence as
+/// it stands then (`Line::hold`), in nanoseconds.
 struct Asking {
     watched: Watched<Link, Ending>,
     called: Arc<AtomicBool>,
+    silence: Arc<AtomicU64>,
 }
 
 impl Read for Asking {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if self.called.swap(false, Ordering::SeqCst) {
             self.watched.heard = Instant::now();
+            let silence = self.silence.load(Ordering::SeqCst);
+            self.watched.silence = Some(Duration::from_nanos(silence));
         }
         self.watched.read(buffer)
     }
@@ -96,6 +100,7 @@ impl Write for Asking {
 pub(crate) struct Line {
     client: BoxedClient<'static>,
     called: Arc<AtomicBool>,
+    silence: Arc<AtomicU64>,
     authority: String,
 }
 
@@ -142,9 +147,11 @@ impl Line {
         let mut watched = Watched::new(link, ending);
         watched.silence = Some(silence);
         let called = Arc::new(AtomicBool::new(false));
+        let silence = Arc::new(AtomicU64::new(nanos(silence)));
         let asking = Asking {
             watched,
             called: Arc::clone(&called),
+            silence: Arc::clone(&silence),
         };
         // HTTP/2 compiled in `net`, as it ships (`net::http2::boxed`).
         let client =
@@ -152,8 +159,17 @@ impl Line {
         Ok(Self {
             client,
             called,
+            silence,
             authority,
         })
+    }
+
+    /// Wait at most `silence` for each answer from the next call on, where
+    /// the connection keeps time: what a follow holding the node's wait
+    /// waits, once its first answer came within the wait every call on its
+    /// surface has.
+    pub(crate) fn hold(&self, silence: Duration) {
+        self.silence.store(nanos(silence), Ordering::SeqCst);
     }
 
     /// Call `method` with `message` — for the caller the node's handle
@@ -178,6 +194,11 @@ impl Line {
             .map_err(|failed| failed.message)?;
         call::answered(&response)
     }
+}
+
+/// `silence` in nanoseconds, the longest a line keeps.
+fn nanos(silence: Duration) -> u64 {
+    u64::try_from(silence.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// TCP to `address` and Xmip's mutual TLS agreeing `h2`.

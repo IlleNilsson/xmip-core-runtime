@@ -1,20 +1,20 @@
 //! `xmip_operate.h` section 16, the Messages that failed: listed from Xmip
-//! Storage a page at a time or as a read publication carries them, and an
-//! operator's act on one, Retry or Dismiss, on the send step of a node in
-//! this process, forwarded.
+//! Storage a page at a time or as a read publication carries them,
+//! forwarded. A Retry or a Dismiss reaches a node through its operate
+//! listener's door and Xmip Storage, never here (ADR-0014, amendment
+//! 2026-11-13).
 //!
-//! The list, the act, its write and its audit are `crate::send_step`'s; the
-//! act's word is `observe`'s. This writes one list's JSON, once, for this
-//! process's nodes and for a read publication alike.
+//! The list is `crate::send_step`'s. This writes one list's JSON, once, for
+//! this process's nodes and for a read publication alike.
 #![allow(unsafe_code)]
 
 #[cfg(feature = "node")]
 use abi::ffi::Str;
 use abi::ffi::status;
 use abi::operate::publication::Publication as Handle;
-use observe::FailedMessages;
 #[cfg(feature = "node")]
-use observe::{Act, Scope};
+use node::Scope;
+use observe::FailedMessages;
 use serde_json::{Value, json};
 
 use crate::ffi::publication::held;
@@ -26,10 +26,7 @@ use crate::send_step::{FAILED_WINDOW, PortFigures, SendStep};
 
 /// A list of failed Messages as the header writes it: each Port's, with the
 /// place its next page reads from, where there is one.
-fn listed<'a>(
-    orders: &str,
-    failed: impl Iterator<Item = (&'a FailedMessages, Option<u64>)>,
-) -> String {
+fn listed<'a>(failed: impl Iterator<Item = (&'a FailedMessages, Option<u64>)>) -> String {
     let failed: Vec<Value> = failed
         .map(|(port, next)| {
             let messages: Vec<Value> = port
@@ -58,7 +55,7 @@ fn listed<'a>(
             })
         })
         .collect();
-    json!({ "orders": orders, "failed_messages": failed }).to_string()
+    json!({ "failed_messages": failed }).to_string()
 }
 
 /// The Messages that failed at `port` (empty: every Port) of every node in
@@ -111,7 +108,7 @@ unsafe fn failed_listed(
     let (code, text) = match failed(node, port, from, most) {
         Ok(failed) => (
             status::OK,
-            listed("", failed.iter().map(|(port, next)| (port, *next))),
+            listed(failed.iter().map(|(port, next)| (port, *next))),
         ),
         Err(failed) => (status::IO, failed),
     };
@@ -159,8 +156,7 @@ fn failed(
     Ok(failed)
 }
 
-/// What a read publication carries of failed Messages, and where its
-/// publisher takes orders.
+/// What a read publication carries of failed Messages.
 ///
 /// # Safety
 /// `publication` is a live handle; `out` has room for `cap` bytes;
@@ -190,90 +186,11 @@ unsafe fn publication_failed_messages(
         return status::INVALID;
     };
     let publication = &read.publication;
-    let text = listed(
-        &publication.orders,
-        publication.failed_messages.iter().map(|port| (port, None)),
-    );
+    let text = listed(publication.failed_messages.iter().map(|port| (port, None)));
 
     // SAFETY: `out` and `out_len` per the contract.
     unsafe { refuse(&text, out, cap, out_len) };
     status::OK
-}
-
-/// `crate::send_step::SendStep::act` on the node at `node` in this process,
-/// forwarded: `act` on the Message whose Journey is `journey`, by `who`.
-///
-/// # Safety
-/// Every `Str` points at its stated length of readable bytes; `said` has room
-/// for `said_cap` bytes; `said_len` is writable.
-#[unsafe(no_mangle)]
-#[cfg(feature = "node")]
-pub unsafe extern "C" fn xmip_message_act_v1(
-    node: Str,
-    journey: Str,
-    act: Str,
-    who: Str,
-    said: *mut u8,
-    said_cap: usize,
-    said_len: *mut usize,
-) -> i32 {
-    // SAFETY: the caller's contract is this export's, passed on whole.
-    abi::guarded(status::PANIC, || unsafe {
-        message_act(node, journey, act, who, said, said_cap, said_len)
-    })
-}
-
-/// [`xmip_message_act_v1`] within its guard.
-#[cfg(feature = "node")]
-unsafe fn message_act(
-    node: Str,
-    journey: Str,
-    act: Str,
-    who: Str,
-    said: *mut u8,
-    said_cap: usize,
-    said_len: *mut usize,
-) -> i32 {
-    // SAFETY: the caller upholds the header's contract on every string.
-    let texts = unsafe {
-        [
-            scope_text(node),
-            scope_text(journey),
-            scope_text(act),
-            scope_text(who),
-        ]
-    };
-    let [Some(node), Some(journey), Some(act), Some(who)] = texts else {
-        return status::MALFORMED;
-    };
-    let (code, sentence) = acted(node, journey, act, who);
-
-    // SAFETY: `said` and `said_len` per the contract.
-    unsafe { refuse(&sentence, said, said_cap, said_len) };
-    code
-}
-
-/// What came of `act` on `journey` at `node`, and its status.
-#[cfg(feature = "node")]
-fn acted(node: &str, journey: &str, act: &str, who: &str) -> (i32, String) {
-    let Some(act) = Act::named(act).filter(|act| matches!(act, Act::Retry | Act::Dismiss)) else {
-        let refused = observe::Noun::Message.act(act).err().unwrap_or_default();
-        return (status::INVALID, refused);
-    };
-    let step = SendStep::registered()
-        .into_iter()
-        .find(|step| step.node() == node);
-    match step {
-        None => (
-            status::NOT_FOUND,
-            format!("REFUSED: no node at {node} runs in this process"),
-        ),
-        Some(step) => match step.act(journey, act, who) {
-            Ok(done) => (status::OK, done),
-            Err(failed) if failed.starts_with("FAILED") => (status::IO, failed),
-            Err(refused) => (status::NOT_FOUND, refused),
-        },
-    }
 }
 
 #[cfg(all(test, feature = "node"))]
@@ -283,7 +200,6 @@ mod tests {
 
     #[test]
     fn the_exports_have_the_shapes_the_binding_declares() {
-        let _: abi::operate::message::MessageActFn = xmip_message_act_v1;
         let _: abi::operate::message::FailedMessagesFn = xmip_failed_messages_v1;
         let _: abi::operate::message::PublicationFailedMessagesFn =
             xmip_publication_failed_messages_v1;
@@ -312,7 +228,6 @@ mod tests {
         assert_eq!(code, status::OK);
         let said: Value = serde_json::from_slice(&buffer[..length]).expect("JSON");
         assert_eq!(said["failed_messages"], json!([]));
-        assert_eq!(said["orders"], "");
 
         let port = FailedMessages {
             node,
@@ -333,11 +248,9 @@ mod tests {
             send_port: "Quiet".to_string(),
             ..FailedMessages::default()
         };
-        let read: Value = serde_json::from_str(&listed(
-            "orders",
-            [(&port, Some(3)), (&none_now, None)].into_iter(),
-        ))
-        .expect("JSON");
+        let read: Value =
+            serde_json::from_str(&listed([(&port, Some(3)), (&none_now, None)].into_iter()))
+                .expect("JSON");
         let first = &read["failed_messages"][0];
         assert_eq!(first["send_port"], "Out");
         assert_eq!(first["count"], 3);
@@ -351,41 +264,10 @@ mod tests {
             (&json!(0), &json!(false))
         );
         assert_eq!(quiet["last_failure"], Value::Null);
-        assert_eq!(read["orders"], "orders");
-    }
-
-    fn act(node: &str, word: &str) -> (i32, String) {
-        let mut buffer = vec![0u8; 1024];
-        let mut length = 0usize;
-        // SAFETY: every pointer is this test's own string or buffer, alive for the call.
-        let code = unsafe {
-            xmip_message_act_v1(
-                borrow(node),
-                borrow("0199a000-0000-7000-8000-000000000001"),
-                borrow(word),
-                borrow("an operator"),
-                buffer.as_mut_ptr(),
-                buffer.len(),
-                &raw mut length,
-            )
-        };
-        (
-            code,
-            String::from_utf8_lossy(&buffer[..length]).into_owned(),
-        )
-    }
-
-    #[test]
-    fn an_act_on_a_node_not_here_or_no_act_on_a_message_is_refused_in_words() {
-        let node = format!(
-            "{}-ffi-message",
-            configure::fixture::test_cluster().node_scope(0)
+        assert_eq!(
+            read.get("orders"),
+            None,
+            "a snapshot is read, never acted on"
         );
-        let (code, said) = act(&node, "retry");
-        assert_eq!(code, status::NOT_FOUND);
-        assert!(said.starts_with("REFUSED: no node at"), "{said}");
-        let (code, said) = act(&node, "replay");
-        assert_eq!(code, status::INVALID);
-        assert!(said.contains("the acts are retry, dismiss"), "{said}");
     }
 }

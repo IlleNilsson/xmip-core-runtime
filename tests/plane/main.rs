@@ -3,14 +3,19 @@
 //! a certificate from one test authority, over gRPC inside Xmip's mutual
 //! TLS — an act gated by the caller's role and audited, a stranger refused,
 //! and a node lost and found again on the recovery loop; each caller its
-//! own role (`granted`), and the listener held to its limits (`bounded`). How fast a
-//! follower is told and a read is answered is the module's timing program's
-//! (`tests/measured`, `doc/governance/rust-style.md` section 5c).
+//! own role (`granted`), and the listener held to its limits (`bounded`);
+//! and a cluster's view gathered from members followed over theirs
+//! (`gathered`), which a monitoring node gathers and answers as `Cluster`
+//! (`clustered`). How fast a follower is told, a read is answered and a
+//! view assembled is the module's timing program's (`tests/measured`,
+//! `doc/governance/rust-style.md` section 5c).
 
 mod bounded;
 mod browsing;
 mod certified;
+mod clustered;
 mod endpoint;
+mod gathered;
 mod granted;
 mod local;
 mod relayed;
@@ -73,10 +78,10 @@ fn an_operator_acts_as_the_certificate_and_the_node_answers() {
         .act(0, &absent_node(), ("message", "j1", "retry"))
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused);
-    assert_eq!(
-        said,
-        format!("REFUSED: no node at {} runs in this process", absent_node())
-    );
+    // A listener no node keeps a door on carries no act to another node.
+    let refused = format!("REFUSED: no node at {} runs in this process", absent_node());
+    assert!(said.starts_with(&refused), "{said}");
+    assert!(said.contains("declares no operational role"), "{said}");
 }
 
 #[test]

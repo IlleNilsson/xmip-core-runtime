@@ -13,7 +13,7 @@ use xcore::wake::Wake;
 use crate::plane::deadline::Deadline;
 use crate::plane::line::{Ending, Line, Reach};
 use crate::plane::local::Cancel;
-use crate::plane::remote::State;
+use crate::plane::remote::{Follows, State};
 
 pub(crate) struct Shared {
     /// What the node is called in what a surface says: its operate
@@ -24,6 +24,10 @@ pub(crate) struct Shared {
     pub(crate) patience: Duration,
     /// The deadline of a call on a line that keeps no time itself.
     pub(crate) deadline: Deadline,
+    /// The deadline of the follow's try — its connect, its handshake and
+    /// the node's first answer — on a line that keeps no time itself: the
+    /// same wait every call on the surface has.
+    pub(crate) trying: Deadline,
     pub(crate) retry: Vec<Duration>,
     pub(crate) state: Mutex<State>,
     pub(crate) told: Wake,
@@ -33,6 +37,9 @@ pub(crate) struct Shared {
     /// What ends a read the follow's line, or the asking line, waits in,
     /// where the line has no timeout to look between.
     pub(crate) following: Mutex<Option<Cancel>>,
+    /// Which publication the follow asks the node for, named by the first
+    /// wait that names one (`remote::cluster`); the node's own until then.
+    pub(crate) follows: std::sync::OnceLock<Follows>,
     pub(crate) asking: Mutex<Option<Cancel>>,
     /// The asking line itself, held between calls: on what is shared, so
     /// a caller a host lets go is told to the node on it (`remote::relayed`)
@@ -57,6 +64,11 @@ impl Shared {
         self.ending.load(Ordering::SeqCst)
     }
 
+    /// Which publication the follow asks for now.
+    pub(crate) fn follows(&self) -> Follows {
+        self.follows.get().copied().unwrap_or_default()
+    }
+
     /// What a line of this surface asks whether it ends by.
     pub(crate) fn ended(&self) -> Ending {
         let ending = Arc::clone(&self.ending);
@@ -66,6 +78,13 @@ impl Shared {
     /// Cancel a read the asking line waits in.
     pub(crate) fn cancel_asking(&self) {
         if let Some(cancel) = &*self.asking.locked() {
+            cancel.cancel();
+        }
+    }
+
+    /// Cancel a read the follow's line waits in.
+    pub(crate) fn cancel_following(&self) {
+        if let Some(cancel) = &*self.following.locked() {
             cancel.cancel();
         }
     }

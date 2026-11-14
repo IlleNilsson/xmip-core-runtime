@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 
 use persist::PersistError;
 use persist::storage::{DuePart, DueQueue, Held};
+use schedule::due::Due;
 
 use super::SendStep;
-use super::due::Due;
 use crate::queue_watch::Woken;
 
 /// The most entries of a queue read at once: as many as a wake brings.

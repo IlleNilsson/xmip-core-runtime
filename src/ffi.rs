@@ -58,8 +58,6 @@ pub mod node_certificate;
 #[cfg(feature = "node")]
 pub mod operate;
 #[cfg(feature = "node")]
-pub mod order;
-#[cfg(feature = "node")]
 pub mod process;
 #[cfg(feature = "remote")]
 pub mod publication;

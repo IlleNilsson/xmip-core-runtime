@@ -15,9 +15,9 @@ use std::path::Path;
 use abi::ffi::{Str, status};
 use abi::operate::event::{Event as Wire, EventFilter};
 use xaudit::program_audit::ProgramAudit;
+use xcluster::delivery::subscriber::Subscriber;
 use xevent::Event;
 use xevent::filter::Filter;
-use xevent::subscriber::Subscriber;
 
 use crate::ffi::text::{borrow, scope_text};
 use crate::parties::Parties;

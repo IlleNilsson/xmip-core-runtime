@@ -2,7 +2,7 @@
 //! Event subscription a hub holds, and pause, resume and remove on one of
 //! them (ADR-0065, amendment 2026-09-29), forwarded.
 //!
-//! The hub's standing, the acts, their audit are the event crate's, and the
+//! The hub's standing, the acts, their audit are the cluster's delivery, and the
 //! acts' words and the order a surface leaves for a node it reads through a
 //! publication are `observe`'s (`ffi/order.rs` leaves it); this writes one
 //! list's JSON, once, for this process's hub and for a read publication
@@ -19,7 +19,7 @@ use observe::Noun;
 use observe::{EventSubscription, PauseState, Unheard};
 use serde_json::{Value, json};
 #[cfg(feature = "node")]
-use xevent::hub::Hub;
+use xcluster::delivery::hub::Hub;
 
 use crate::ffi::publication::held;
 use crate::ffi::rule::refuse;
@@ -29,7 +29,6 @@ use crate::ffi::text::scope_text;
 /// A list of Event subscriptions, and the members not heard, as the header
 /// writes it.
 fn listed<'a>(
-    orders: &str,
     subscriptions: impl Iterator<Item = &'a EventSubscription>,
     unheard: &[Unheard],
 ) -> String {
@@ -53,14 +52,13 @@ fn listed<'a>(
         })
         .collect();
     json!({
-        "orders": orders,
         "event_subscriptions": subscriptions,
         "unheard": super::unheard::listed(unheard),
     })
     .to_string()
 }
 
-/// `xevent::hub::Hub::standing` on the process's hub, forwarded.
+/// `xcluster::delivery::hub::Hub::standing` on the process's hub, forwarded.
 ///
 /// # Safety
 /// `node` points at its stated length of readable bytes; `out` has room for
@@ -87,14 +85,14 @@ unsafe fn event_subscriptions(node: Str, out: *mut u8, cap: usize, out_len: *mut
         return status::MALFORMED;
     };
     let hub = Hub::process();
-    let text = listed("", hub.standing(node).iter(), &hub.unheard());
+    let text = listed(hub.standing(node).iter(), &hub.unheard());
 
     // SAFETY: `out` and `out_len` per the contract.
     unsafe { refuse(&text, out, cap, out_len) };
     status::OK
 }
 
-/// `xevent::hub::Hub::act` on the process's hub, forwarded.
+/// `xcluster::delivery::hub::Hub::act` on the process's hub, forwarded.
 ///
 /// # Safety
 /// Every `Str` points at its stated length of readable bytes; `said` has room
@@ -142,8 +140,7 @@ unsafe fn event_subscription_act(
     code
 }
 
-/// What a read publication carries of Event subscriptions, and where its
-/// publisher takes orders.
+/// What a read publication carries of Event subscriptions.
 ///
 /// # Safety
 /// `publication` is a live handle; `out` has room for `cap` bytes;
@@ -173,11 +170,7 @@ unsafe fn publication_event_subscriptions(
         return status::INVALID;
     };
     let publication = &read.publication;
-    let text = listed(
-        &publication.orders,
-        publication.event_subscriptions.iter(),
-        &publication.unheard,
-    );
+    let text = listed(publication.event_subscriptions.iter(), &publication.unheard);
 
     // SAFETY: `out` and `out_len` per the contract.
     unsafe { refuse(&text, out, cap, out_len) };
@@ -291,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn a_read_publications_event_subscriptions_are_listed_with_where_orders_go() {
+    fn a_read_publications_event_subscriptions_are_listed() {
         let cluster = configure::fixture::test_cluster();
         let text = format!(
-            "node = \"{}\"\norders = 'shared/orders'\n\
+            "node = \"{}\"\n\
              [[event_subscriptions]]\nnode = \"{}\"\nid = 3\n\
              subscriber = \"p\"\nstate = \"paused\"\n",
             cluster.scope(),
@@ -327,7 +320,11 @@ mod tests {
         let list: Value = serde_json::from_slice(&buffer[..length]).expect("JSON");
         // SAFETY: every pointer is this test's own string or buffer, alive for the call.
         unsafe { xmip_publication_free_v1(handle) };
-        assert_eq!(list["orders"], "shared/orders");
+        assert_eq!(
+            list.get("orders"),
+            None,
+            "a snapshot is read, never acted on"
+        );
         assert_eq!(list["event_subscriptions"][0]["state"], "paused");
         assert_eq!(list["event_subscriptions"][0]["id"], 3);
     }

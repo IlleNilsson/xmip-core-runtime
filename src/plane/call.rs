@@ -27,6 +27,19 @@ pub const PUBLICATION: &str = "Publication";
 /// The revision once it is past the one a surface last saw.
 pub const WAIT: &str = "Wait";
 
+/// The cluster's publication as a monitoring node gathered it, and its
+/// revision: answered only by a node declaring the monitoring role
+/// (ADR-0027 decision 8, amendment 2026-11-13). `Publication` stays the
+/// node's own.
+pub const CLUSTER: &str = "Cluster";
+
+/// The cluster's revision once it is past the one a surface last saw.
+pub const CLUSTER_WAIT: &str = "ClusterWait";
+
+/// The field that makes an answer to [`CLUSTER`] or [`CLUSTER_WAIT`] the
+/// kind a node gathering no cluster gives ([`gathers_none`]).
+pub const GATHERS_NONE: &str = "gathers_none";
+
 /// An operator's act on what the node publishes.
 pub const ACT: &str = "Act";
 
@@ -167,6 +180,26 @@ pub fn answered(response: &Response) -> Result<Value, String> {
     serde_json::from_slice(message).map_err(|error| format!("the answer is not JSON: {error}"))
 }
 
+/// The answer a node gathering no cluster gives [`CLUSTER`] and
+/// [`CLUSTER_WAIT`]: an answer of its own kind, [`GATHERS_NONE`] set, which
+/// a surface decides by, and `said`, the words for a person, which nothing
+/// decides by.
+#[must_use]
+pub fn gathers_none(said: &str) -> Response {
+    let mut kind = serde_json::Map::new();
+    kind.insert(GATHERS_NONE.to_string(), Value::Bool(true));
+    kind.insert("said".to_string(), Value::String(said.to_string()));
+    answer(&Value::Object(kind))
+}
+
+/// The words of `answer` where it is [`gathers_none`]'s kind; none for an
+/// answer of any other kind.
+#[must_use]
+pub fn gathered_none(answer: &Value) -> Option<&str> {
+    (answer[GATHERS_NONE].as_bool() == Some(true))
+        .then(|| answer["said"].as_str().unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -190,5 +223,16 @@ mod tests {
         let refused = answered(&refusal("UNIMPLEMENTED", "no method Nope")).unwrap_err();
         assert_eq!(refused, "the node refused the call (12): no method Nope");
         assert_eq!(method("/other.Service/Wait"), None);
+    }
+
+    #[test]
+    fn gathering_none_is_an_answer_of_its_own_kind_whatever_it_says() {
+        let other_words = answered(&gathers_none("anything at all")).expect("an answer");
+        assert_eq!(gathered_none(&other_words), Some("anything at all"));
+        // The words without the kind are no such answer.
+        let words = answer(&json!({ "said": "declares no monitoring role" }));
+        assert_eq!(gathered_none(&answered(&words).expect("an answer")), None);
+        let published = answered(&answer(&json!({ "revision": 4 }))).expect("an answer");
+        assert_eq!(gathered_none(&published), None);
     }
 }

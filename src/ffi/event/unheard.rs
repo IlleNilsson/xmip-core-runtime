@@ -1,7 +1,7 @@
 //! `xmip_operate.h` section 11, who is not heard: the members of the
 //! cluster the process's hub does not hear now — carried with every drained
 //! batch and asked of the hub — forwarded (ADR-0065, amendment 2026-10-02).
-//! The members not heard are the event crate's; their words are `observe::Unheard`'s; this
+//! The members not heard are the cluster's delivery's; their words are `observe::Unheard`'s; this
 //! writes them in the header's JSON once, for a batch, the hub and the
 //! subscriptions list alike.
 #![allow(unsafe_code)]
@@ -13,7 +13,7 @@ use abi::operate::event::EventBatch;
 use observe::Unheard;
 use serde_json::{Value, json};
 #[cfg(feature = "node")]
-use xevent::hub::Hub;
+use xcluster::delivery::hub::Hub;
 
 #[cfg(feature = "node")]
 use super::hub::Batch;
@@ -77,7 +77,7 @@ unsafe fn event_batch_unheard(
     status::OK
 }
 
-/// `xevent::hub::Hub::unheard` on the process's hub, forwarded.
+/// `xcluster::delivery::hub::Hub::unheard` on the process's hub, forwarded.
 ///
 /// # Safety
 /// `out` has room for `cap` bytes; `out_len` is writable.

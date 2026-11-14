@@ -1,91 +1,20 @@
-//! When a queue's earliest retry is due, kept per queue rather than per
-//! Message waiting (the owner, 2026-10-16; open problem 43): what the send
-//! step wakes for, and how many wait, as each queue's last read showed and
-//! as each hand-on since that read began noted.
-//!
-//! **Counted by the newest read** (corrected 2026-11-12). How many wait is
-//! what the latest begun of two reads said: a read of the whole queue, and
-//! the read of its retries a hand-on that set a Message waiting makes once
-//! Xmip Storage took it (`super::reading::waiting`), which begins after that
-//! hand-on and so counts it, once. A read begun before the one that set the
-//! count says nothing of how many wait, however late it ends. Until
-//! 2026-11-12 a read's count replaced the count and each hand-on added one
-//! to it, so a read begun before a hand-on landed lost it and one that
-//! ended between a hand-on and its note counted it twice; that day's first
-//! correction kept the count no lower than the hand-ons noted since the
-//! read began, which said three where three were found and a fourth noted.
+//! The send step's queues' due times, kept under its lock: when each
+//! queue's earliest retry is due and how many wait, as `xmip-core-schedule`
+//! decides them ([`Due`], counted by the newest read; ADR-0058, amendment
+//! 2026-11-13), read from Xmip Storage and woken for here. A hand-on that
+//! set a Message waiting is read again once Xmip Storage took it
+//! (`super::reading::waiting`), which begins after that hand-on and so
+//! counts it, once.
 
 use std::time::Instant;
-/// When a queue's earliest retry is due, on this node's clock — Xmip
-/// Storage's due time read as a duration from when the read was asked, or
-/// a hand-on's backoff from when Xmip Storage took it — and how many wait
-/// for one, as its last read showed: what the node wakes for, one per
-/// queue however many wait.
-#[derive(Clone, Debug)]
-pub(super) struct Due {
-    pub(super) port: String,
-    pub(super) at: Option<Instant>,
-    pub(super) waiting: u64,
-    /// The earliest due time a hand-on noted since the queue's last read
-    /// began: a read of the whole queue may have passed its place before
-    /// Xmip Storage took that hand-on, so the read's answer does not drop
-    /// it. Until 2026-10-16 it did, and a short backoff waited for the
-    /// next `[tuning] send_scan`, a second by default, after it was due.
-    noted: Option<Instant>,
-    /// When the read that set `waiting` began.
-    counted: Option<Instant>,
-}
 
-impl Due {
-    /// None waiting yet, in the queue of the Send Port `port`.
-    pub(super) fn of(port: &str) -> Self {
-        Self {
-            port: port.to_string(),
-            at: None,
-            waiting: 0,
-            noted: None,
-            counted: None,
-        }
-    }
-
-    /// Woken for at `at`, the earliest kept: a retry the queue's read found
-    /// not yet due, which the read counts by Xmip Storage's count of them
-    /// (`super::reading`).
-    pub(super) fn wakes_at(&mut self, at: Instant) {
-        self.at = Some(earlier(self.at, at));
-    }
-
-    /// `waiting` wait, as a read begun at `began` found them: kept where no
-    /// read begun later counted them.
-    pub(super) fn count(&mut self, began: Instant, waiting: u64) {
-        if self.counted.is_none_or(|counted| began >= counted) {
-            self.waiting = waiting;
-            self.counted = Some(began);
-        }
-    }
-
-    /// Woken for at `at`, kept across the read under way, and not counted:
-    /// a retry a scan's claim found not yet due, which the queue's read
-    /// counts (`runtime-model.md` section 10, corrected 2026-10-17).
-    pub(super) fn wakes(&mut self, at: Instant) {
-        self.at = Some(earlier(self.at, at));
-        self.noted = Some(earlier(self.noted, at));
-    }
-}
-
-/// The earlier of `was`, where there is one, and `at`.
-fn earlier(was: Option<Instant>, at: Instant) -> Instant {
-    was.map_or(at, |was| was.min(at))
-}
+use schedule::due::{Due, earliest};
 
 impl super::State {
     /// When the dispatching wakes with nothing handed or asked: the
     /// earliest retry due in any queue, or `until`, the next scan.
     pub(super) fn wakes_at(&self, until: Instant) -> Instant {
-        self.due
-            .values()
-            .filter_map(|due| due.at)
-            .fold(until, Instant::min)
+        earliest(self.due.values(), until)
     }
 }
 
@@ -95,7 +24,7 @@ impl super::SendStep {
     pub(super) fn reading(&self, queue: u128) -> Instant {
         let began = Instant::now();
         if let Some(due) = self.lock().due.get_mut(&queue) {
-            due.noted = None;
+            due.reading();
         }
         began
     }
@@ -117,7 +46,7 @@ impl super::SendStep {
         let due = state.due.entry(queue).or_insert_with(|| Due::of(port));
         match read {
             Ok(waiting) => due.count(began, waiting),
-            Err(_) => due.waiting += 1,
+            Err(_) => due.unanswered(),
         }
         drop(state);
         self.wake.notify_all();
@@ -134,31 +63,14 @@ impl super::SendStep {
         self.wake.notify_all();
     }
 
-    /// What a scan of `queue`, begun at `began`, found waiting, `waits`: the
-    /// queue's due time as it found it where it read `whole` the queue —
-    /// with every due time a hand-on noted since the read began — and how
-    /// many wait where no read begun later counted them; else the earlier
-    /// of its due time and what it found.
+    /// What a scan of `queue`, begun at `began`, found waiting, `waits`,
+    /// reading `whole` the queue or part of it (`Due::found`).
     pub(super) fn waited(&self, queue: u128, (waits, began): (Due, Instant), whole: bool) {
-        let mut state = self.lock();
-        let due = state
+        self.lock()
             .due
             .entry(queue)
-            .or_insert_with(|| Due::of(&waits.port));
-        if whole {
-            let noted = due.noted;
-            due.at = waits.at;
-            due.noted = None;
-            due.count(began, waits.waiting);
-            if let Some(at) = noted {
-                due.at = Some(earlier(due.at, at));
-                due.noted = noted;
-            }
-        } else if let Some(at) = waits.at {
-            due.at = Some(earlier(due.at, at));
-            due.waiting = due.waiting.max(waits.waiting);
-        }
-        drop(state);
+            .or_insert_with(|| Due::of(&waits.port))
+            .found(&waits, began, whole);
         self.wake.notify_all();
     }
 }
@@ -202,8 +114,8 @@ mod tests {
 
     use persist::fixture::crowd::{QUEUE, crowded};
     use persist::storage::XmipStorage;
+    use schedule::due::Due;
 
-    use super::Due;
     use crate::send_step::SendStep;
     use crate::send_step::fixture::step;
     use crate::tuning::Tuning;

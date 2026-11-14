@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 mod act;
+mod cluster;
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -18,15 +19,58 @@ use abi::ffi::{Str, status};
 use abi::operate::remote::Remote as RemoteHandle;
 
 pub use act::{xmip_remote_act_v1, xmip_secret_v1, xmip_secrets_v1};
+pub use cluster::xmip_remote_cluster_v1;
 
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
 use crate::plane::Remote;
+use crate::plane::remote::Follows;
 
-/// A remote, and a publication read whole but not yet handed over whole.
+/// A remote, and the node's publication and the cluster's it gathered,
+/// each read whole but not yet handed over whole.
 struct Held {
     remote: Remote,
     pending: Mutex<Option<(u64, String)>>,
+    clustered: Mutex<Option<(u64, String)>>,
+}
+
+/// A text read whole and its revision — `read` asked only where nothing
+/// is `pending` — written into `out`, its true length into `out_len`; one
+/// that did not fit kept in `pending` and handed whole at the next call
+/// without asking the node again. Where `read` fails, its status and its
+/// words in `out`.
+///
+/// # Safety
+/// `out` has room for `cap` bytes; `out_len` and `out_revision` are
+/// writable.
+unsafe fn handed_text(
+    pending: &Mutex<Option<(u64, String)>>,
+    read: impl FnOnce() -> Result<(u64, String), (i32, String)>,
+    (out, cap, out_len): (*mut u8, usize, *mut usize),
+    out_revision: *mut u64,
+) -> i32 {
+    let mut pending = pending.locked();
+    let (revision, text) = match pending.take() {
+        Some(kept) => kept,
+        None => match read() {
+            Ok(read) => read,
+            Err((failed, said)) => {
+                // SAFETY: `out` and `out_len` per the contract.
+                unsafe { refuse(&said, out, cap, out_len) };
+                return failed;
+            }
+        },
+    };
+    // SAFETY: `out`, `out_len` and `out_revision` per the contract.
+    unsafe {
+        refuse(&text, out, cap, out_len);
+        *out_revision = revision;
+    }
+    if text.len() > cap {
+        *pending = Some((revision, text));
+        return status::TRUNCATED;
+    }
+    status::OK
 }
 
 /// The identity three PEM texts make, or why not.
@@ -164,6 +208,7 @@ pub(crate) unsafe fn handed(
             let held = Box::new(Held {
                 remote,
                 pending: Mutex::new(None),
+                clustered: Mutex::new(None),
             });
             // SAFETY: `out` and `out_len` are writable per the contract.
             unsafe {
@@ -225,33 +270,22 @@ unsafe fn remote_publication(
     let Some(held) = (unsafe { held(remote) }) else {
         return status::INVALID;
     };
-    let mut pending = held.pending.locked();
-    let (revision, text) = match pending.take() {
-        Some(kept) => kept,
-        None => match held.remote.publication() {
-            Ok(read) => read,
-            Err(said) => {
-                // SAFETY: `out` and `out_len` per the contract.
-                unsafe { refuse(&said, out, cap, out_len) };
-                return status::UNAVAILABLE;
-            }
-        },
+    let read = || {
+        held.remote
+            .publication()
+            .map_err(|said| (status::UNAVAILABLE, said))
     };
-    // SAFETY: `out`, `out_len` and `out_revision` per the contract.
-    unsafe {
-        refuse(&text, out, cap, out_len);
-        *out_revision = revision;
-    }
-    if text.len() > cap {
-        *pending = Some((revision, text));
-        return status::TRUNCATED;
-    }
-    status::OK
+    // SAFETY: per the contract above.
+    unsafe { handed_text(&held.pending, read, (out, cap, out_len), out_revision) }
 }
 
 /// Wait until a follower has been told more than `seen` times, or for
-/// `timeout_ms`: how many times, the revision, whether the node is
-/// reached and, where it is not, why.
+/// `timeout_ms`, following the publication `follows` names — the node's
+/// own (0), the cluster's it gathered (1), or the cluster's where the node
+/// answers one and else its own (2), the first wait naming which the handle
+/// follows: how many times, the revision, whether the node is reached,
+/// which it follows (2 until the node's answer decided) and, where it is
+/// not reached, why.
 ///
 /// # Safety
 /// `remote` is a live handle; every `out_` is writable; `reason` has room
@@ -259,11 +293,13 @@ unsafe fn remote_publication(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xmip_remote_wait_v1(
     remote: *const RemoteHandle,
+    follows: u32,
     seen: u64,
     timeout_ms: u32,
     out_told: *mut u64,
     out_revision: *mut u64,
     out_reachable: *mut u8,
+    out_follows: *mut u32,
     reason: *mut u8,
     cap: usize,
     reason_len: *mut usize,
@@ -272,11 +308,8 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
     abi::guarded(status::PANIC, || unsafe {
         remote_wait(
             remote,
-            seen,
-            timeout_ms,
-            out_told,
-            out_revision,
-            out_reachable,
+            (follows, seen, timeout_ms),
+            (out_told, out_revision, out_reachable, out_follows),
             reason,
             cap,
             reason_len,
@@ -285,30 +318,33 @@ pub unsafe extern "C" fn xmip_remote_wait_v1(
 }
 
 /// [`xmip_remote_wait_v1`] within its guard.
-#[expect(clippy::too_many_arguments, reason = "the export's own parameters")]
 unsafe fn remote_wait(
     remote: *const RemoteHandle,
-    seen: u64,
-    timeout_ms: u32,
-    out_told: *mut u64,
-    out_revision: *mut u64,
-    out_reachable: *mut u8,
+    (follows, seen, timeout_ms): (u32, u64, u32),
+    (out_told, out_revision, out_reachable, out_follows): (*mut u64, *mut u64, *mut u8, *mut u32),
     reason: *mut u8,
     cap: usize,
     reason_len: *mut usize,
 ) -> i32 {
     // SAFETY: per the contract above.
-    let Some(held) = (unsafe { held(remote) }) else {
+    let (Some(held), Some(follows)) = (unsafe { held(remote) }, Follows::from_wire(follows)) else {
         return status::INVALID;
     };
-    let state = held
-        .remote
-        .wait(seen, Duration::from_millis(u64::from(timeout_ms)));
+    let within = Duration::from_millis(u64::from(timeout_ms));
+    let state = match held.remote.follow(follows, seen, within) {
+        Ok(state) => state,
+        Err(said) => {
+            // SAFETY: per the contract above.
+            unsafe { refuse(&said, reason, cap, reason_len) };
+            return status::STATE;
+        }
+    };
     // SAFETY: per the contract above.
     unsafe {
         *out_told = state.told;
         *out_revision = state.revision;
         *out_reachable = u8::from(state.reachable);
+        *out_follows = state.follows as u32;
         refuse(&state.reason, reason, cap, reason_len);
     }
     status::OK

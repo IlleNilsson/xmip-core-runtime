@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{
-    AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed, DeadEntry, DeadQueue,
-    DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord, KeptAudit,
-    MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
-    StreamRecord, Waiter, XmipStorage,
+    ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed,
+    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue,
+    JourneyRecord, KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed,
+    StreamChunk, StreamRecord, Waiter, XmipStorage,
 };
 use xcore::lock::Locked;
 use xcore::{AuditId, JourneyId, MessageId, StreamId};
@@ -273,6 +273,37 @@ impl XmipStorage for Failing {
 
     fn list_secrets(&self) -> Result<Vec<persist::storage::SecretEntry>, PersistError> {
         self.beneath.list_secrets()
+    }
+
+    fn write_member(&self, member: &persist::storage::MemberRecord) -> Result<(), PersistError> {
+        let asked = self.asked(Operation::WriteMember)?;
+        let answer = self.beneath.write_member(member);
+        self.answered(Operation::WriteMember, asked, answer)
+    }
+
+    fn read_members(&self) -> Result<Vec<persist::storage::MemberRecord>, PersistError> {
+        self.beneath.read_members()
+    }
+
+    fn ask_act(&self, act: &ActRecord) -> Result<ActRecord, PersistError> {
+        self.beneath.ask_act(act)
+    }
+
+    fn decide_act(
+        &self,
+        act: u128,
+        decided: (ActOutcome, &str),
+    ) -> Result<ActRecord, PersistError> {
+        self.beneath.decide_act(act, decided)
+    }
+
+    fn read_acts(
+        &self,
+        node: &str,
+        page: (u64, u32),
+        open: bool,
+    ) -> Result<Vec<ActRecord>, PersistError> {
+        self.beneath.read_acts(node, page, open)
     }
 
     fn query(&self, query: &Query) -> Result<Vec<u128>, PersistError> {

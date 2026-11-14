@@ -94,12 +94,17 @@ impl Role {
 
 /// Who may call each method of a node's operate listener, by the role the
 /// caller holds (`authorize::plane`, the one admission every plane Xmip
-/// serves its own parts asks): the publication and its wait to anyone
-/// proven, an act and a secret set, and the secrets' listing, to an
-/// Operator and up.
+/// serves its own parts asks): the publication and its wait, and the
+/// cluster's a monitoring node gathered and its wait, to anyone proven
+/// holding a role — a monitoring node reading another is an Observer there,
+/// listed in its `[operate] observers` (ADR-0009, amendment 2026-11-13) —
+/// an act and a secret set, and the secrets' listing, to an Operator and
+/// up.
 pub const RULES: &[Rule] = &[
     Rule::new("read", call::PUBLICATION, Role::Observer as u8),
     Rule::new("read", call::WAIT, Role::Observer as u8),
+    Rule::new("read", call::CLUSTER, Role::Observer as u8),
+    Rule::new("read", call::CLUSTER_WAIT, Role::Observer as u8),
     Rule::new("read", call::SECRETS, Role::Operator as u8),
     Rule::new("act", call::ACT, Role::Operator as u8),
     Rule::new("act", call::SECRET, Role::Operator as u8),
@@ -108,7 +113,9 @@ pub const RULES: &[Rule] = &[
 /// What a method of the listener does, as [`RULES`] names it.
 fn action(method: &str) -> &'static str {
     match method {
-        call::PUBLICATION | call::WAIT | call::SECRETS => "read",
+        call::PUBLICATION | call::WAIT | call::CLUSTER | call::CLUSTER_WAIT | call::SECRETS => {
+            "read"
+        }
         _ => "act",
     }
 }
@@ -222,6 +229,11 @@ mod tests {
         // Operator.
         let read = ("read", "the publication");
         assert!(admitted(a, observer, call::PUBLICATION, read).is_ok());
+        // The cluster's a monitoring node gathered, to an Observer too: what
+        // a monitoring node reading another is.
+        for method in [call::CLUSTER, call::CLUSTER_WAIT] {
+            assert!(admitted(a, observer, method, read).is_ok(), "{method}");
+        }
         let names = ("list", "the secrets");
         assert!(admitted(a, observer, call::SECRETS, names).is_err());
         assert!(admitted(a, operator, call::SECRETS, names).is_ok());
@@ -231,7 +243,13 @@ mod tests {
     #[test]
     fn a_proven_caller_granted_no_role_reads_nothing_and_acts_on_nothing() {
         let a = caller(Verified::Proven);
-        for method in [call::PUBLICATION, call::WAIT, call::ACT, call::SECRET] {
+        let every = [
+            call::PUBLICATION,
+            call::WAIT,
+            call::CLUSTER,
+            call::CLUSTER_WAIT,
+        ];
+        for method in every.into_iter().chain([call::ACT, call::SECRET]) {
             let refused = admitted(Some(&a), None, method, ("read", "x")).unwrap_err();
             assert!(
                 refused.starts_with("REFUSED. CN=a may not read x: no role on this node"),

@@ -54,6 +54,8 @@
 //! and the node have room for, and the bytes carries hold within the node's
 //! budget; `sending.rs` the test node that sends they run, and its far end;
 //! `untold.rs` a far end that could not be told, audited once per reason;
+//! `turned_away.rs` a caller past a bound turned away and audited while its
+//! Location serves the next, and a listener that cannot bind stopping it;
 //! `audited.rs` a Publication's audit record carrying its Message and its
 //! Stream's bytes, verified when read (ADR-0070); `work_process.rs` a Work
 //! Process's Instances correlated, batched and finished after a kill;
@@ -111,6 +113,7 @@ mod send_streamed;
 mod send_waiting;
 mod sending;
 mod stream_order;
+mod turned_away;
 mod unsynced;
 mod untold;
 mod woken;

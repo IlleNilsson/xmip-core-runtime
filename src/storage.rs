@@ -656,6 +656,20 @@ mod tests {
             .expect("opened")
     }
 
+    /// The two Storage nodes listed, places 0 and 1, `open`ed together, as
+    /// a cluster starts its nodes. A Storage node settles a primary only
+    /// once every one listed answers, and its start waits that long —
+    /// `[tuning] storage_silence` and `storage_timeout`, 5.3 s here — so
+    /// the first opened before the second waited all of it for a peer not
+    /// yet started (2026-11-13).
+    fn together(open: impl Fn(usize) -> Reached + Sync) -> (Reached, Reached) {
+        std::thread::scope(|both| {
+            let first = both.spawn(|| open(0));
+            let second = open(1);
+            (first.join().expect("the first Storage node opened"), second)
+        })
+    }
+
     #[test]
     fn a_node_reaches_the_storage_nodes_listed_and_waits_for_the_primary_gone_to_return() {
         let authority = crate::fixture::Authority::new();
@@ -671,7 +685,7 @@ mod tests {
             );
             opened(&document, &path)
         };
-        let (first, second) = (storage(0), storage(1));
+        let (first, second) = together(storage);
         let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
         let reaching = opened(&document, &path);
         assert!(
@@ -758,7 +772,7 @@ mod tests {
             let (document, path) = reaching_node(&directory, (place, "storage"), &listed, at);
             opened(&document, &path)
         };
-        let (first, second) = (storage(0), storage(1));
+        let (first, second) = together(storage);
         let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
         let reaching = opened(&document, &path);
         let journey = persist::storage::JourneyRecord {

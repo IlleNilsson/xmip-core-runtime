@@ -166,6 +166,10 @@ pub struct Outcomes {
     /// Never Xmip's, and never held to the millisecond (ADR-0018,
     /// amendment 2026-11-09); `None` where `own_share` is.
     pub disk_sync: Option<Duration>,
+    /// Where its stop in order left its membership row saying it runs, why,
+    /// in one sentence (`crate::membership::Joined::stop`): what its stop
+    /// record says, since the cluster then says it did not answer.
+    pub membership: Option<&'static str>,
 }
 
 /// What one sent Message took, measured from its transport handing it over
@@ -303,6 +307,7 @@ impl Tally {
             not_sent: read(&self.not_sent),
             own_share,
             disk_sync,
+            membership: None,
         }
     }
 }

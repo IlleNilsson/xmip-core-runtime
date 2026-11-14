@@ -1,8 +1,10 @@
 //! `xmip_operate.h` section 13: a System Process, declared (ADR-0053
-//! clause 3). The exports only — the file, its directory, its words and its
-//! reading are `node`'s ([`node::Declaration`], [`node::standing`]); a .NET
-//! program declares itself and the estate's tooling lists the declarations
-//! here, and neither writes nor reads a file of its own.
+//! clause 3). The exports only — the words and the text are `node`'s
+//! ([`node::Declaration`], [`node::Standing`]), the file, its directory and
+//! its reading the runtime's ([`crate::declared`]); a .NET program declares
+//! itself and takes its declaration away here, the estate's tooling lists
+//! the declarations and takes away those whose process is gone, and neither
+//! writes, reads nor removes a file of its own.
 //!
 //! In `ffi/`, the one folder of the runtime that may hold unsafe code
 //! (ADR-0050, refined 2026-09-25): it reads what a surface handed over and
@@ -14,11 +16,12 @@ use std::path::PathBuf;
 use abi::ffi::{Str, status};
 use serde_json::{Map, Value, json};
 
+use crate::declared;
 use crate::ffi::audit::pairs;
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
 
-/// `xmip_process_declare_v1`: [`node::Declaration::declare`], the file left
+/// `xmip_process_declare_v1`: [`declared::declare`], the file left
 /// standing for the caller to take away where its process ends.
 ///
 /// # Safety
@@ -77,16 +80,16 @@ unsafe fn process_declare(
         return status::MALFORMED;
     };
 
-    let declared = node::Purpose::declared(purpose).and_then(|purpose| {
+    let said = node::Purpose::declared(purpose).and_then(|purpose| {
         said.iter().try_fold(
             node::Declaration::new(name, location, purpose)?,
             |declaration, (key, value)| declaration.with(key, value.as_str()),
         )
     });
 
-    let (code, text) = match declared {
+    let (code, text) = match said {
         Err(refusal) => (status::INVALID, refusal),
-        Ok(declaration) => match declaration.declare() {
+        Ok(declaration) => match declared::declare(&declaration) {
             Ok(standing) => (status::OK, standing.handed_over().display().to_string()),
             Err(error) => (status::IO, error.to_string()),
         },
@@ -97,7 +100,8 @@ unsafe fn process_declare(
     code
 }
 
-/// `xmip_process_declarations_v1`: [`node::standing`], as the header's JSON.
+/// `xmip_process_declarations_v1`: [`declared::standing`], as the header's
+/// JSON.
 ///
 /// # Safety
 /// As the header states: `directory` readable for its length, `out` room
@@ -127,12 +131,12 @@ unsafe fn process_declarations(
         return status::MALFORMED;
     };
     let directory = if directory.is_empty() {
-        node::declaration::directory()
+        declared::directory()
     } else {
         PathBuf::from(directory)
     };
 
-    let processes: Vec<Value> = node::standing(&directory)
+    let processes: Vec<Value> = declared::standing(&directory)
         .into_iter()
         .map(|standing| {
             let said: Map<String, Value> = standing
@@ -164,6 +168,46 @@ unsafe fn process_declarations(
     status::OK
 }
 
+/// `xmip_process_undeclare_v1`: [`declared::undeclare`], the declaration
+/// standing in `file` taken away — by its holder where its process ends, or
+/// by a reader whose listing found its process gone.
+///
+/// # Safety
+/// As the header states: `file` readable for its length, `out` room for
+/// `cap` bytes, `out_len` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmip_process_undeclare_v1(
+    file: Str,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract is this export's, passed on whole.
+    abi::guarded(status::PANIC, || unsafe {
+        process_undeclare(file, out, cap, out_len)
+    })
+}
+
+/// [`xmip_process_undeclare_v1`] within its guard.
+unsafe fn process_undeclare(file: Str, out: *mut u8, cap: usize, out_len: *mut usize) -> i32 {
+    // SAFETY: the caller upholds the header's contract on `file`.
+    let Some(file) = (unsafe { scope_text(file) }) else {
+        return status::MALFORMED;
+    };
+
+    let (code, text) = match declared::undeclare(std::path::Path::new(file)) {
+        Ok(()) => (status::OK, String::new()),
+        Err(refused) if refused.kind() == std::io::ErrorKind::InvalidInput => {
+            (status::INVALID, refused.to_string())
+        }
+        Err(error) => (status::IO, error.to_string()),
+    };
+
+    // SAFETY: `out` has room for `cap` bytes and `out_len` is writable.
+    unsafe { refuse(&text, out, cap, out_len) };
+    code
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +217,7 @@ mod tests {
     fn the_exports_have_the_shapes_the_binding_declares() {
         let _: abi::operate::process::DeclareFn = xmip_process_declare_v1;
         let _: abi::operate::process::DeclarationsFn = xmip_process_declarations_v1;
+        let _: abi::operate::process::UndeclareFn = xmip_process_undeclare_v1;
     }
 
     fn answer(code: i32, buffer: &[u8], length: usize) -> (i32, String) {
@@ -235,6 +280,53 @@ mod tests {
         assert_eq!(process["purpose"], "test");
         assert_eq!(process["said"]["stress"], "calm");
         assert_eq!(process["pid"], std::process::id());
+
+        let held = within.display().to_string();
+        // SAFETY: as above.
+        let (code, said) = answer(
+            unsafe {
+                xmip_process_undeclare_v1(
+                    borrow(&held),
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &raw mut length,
+                )
+            },
+            &buffer,
+            length,
+        );
+        assert_eq!(code, status::OK, "{said}");
+        assert!(!within.exists(), "taken away by its holder");
+        std::fs::remove_dir_all(&directory).expect("cleaned");
+    }
+
+    #[test]
+    fn a_file_that_is_no_declarations_is_refused_in_a_sentence_and_kept() {
+        let directory = std::env::temp_dir().join("xmip-process-ffi-refused");
+        std::fs::create_dir_all(&directory).expect("made");
+        let kept = directory.join("other-7.toml");
+        std::fs::write(&kept, "kept").expect("written");
+        let named = kept.display().to_string();
+        let mut buffer = vec![0u8; 512];
+        let mut length = 0usize;
+
+        // SAFETY: the string is alive for the call; the buffer has room.
+        let (code, said) = answer(
+            unsafe {
+                xmip_process_undeclare_v1(
+                    borrow(&named),
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &raw mut length,
+                )
+            },
+            &buffer,
+            length,
+        );
+
+        assert_eq!(code, status::INVALID);
+        assert!(said.starts_with("REFUSED"), "{said}");
+        assert!(kept.exists(), "not a declaration's, so not removed");
         std::fs::remove_dir_all(&directory).expect("cleaned");
     }
 
