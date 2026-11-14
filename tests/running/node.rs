@@ -7,13 +7,12 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use http::HttpTransport;
 use tcp::TcpTransport;
 use transport::{Configured, Transport};
 use xcore::settings::{Applies, Given};
-use xmip_core_runtime::fixture::{Always, Open};
+use xmip_core_runtime::fixture::{Always, Open, until_listening};
 use xmip_core_runtime::linked::{Linked, LinkedTransport, OnNode, Opened};
 
 thread_local! {
@@ -171,18 +170,8 @@ pub fn path_text(path: &Path) -> &str {
     path.to_str().expect("a UTF-8 path")
 }
 
-/// Send `payload` to the node at `target` by `sender`, asking again while
-/// its Receive Location has not yet bound — it binds on its first receive,
-/// and nothing else says when that was. Bounded, and never a sleep.
+/// Send `payload` to the node at `target` by `sender`, asked again while
+/// its Receive Location has not yet bound (`fixture::until_listening`).
 pub fn deliver(sender: &dyn Transport, target: &str, payload: &[u8]) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match sender.send(target, payload) {
-            Ok(()) => return,
-            Err(refused) if refused.retryable && Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            Err(failed) => panic!("the node took nothing at {target}: {failed:?}"),
-        }
-    }
+    until_listening(target, || sender.send(target, payload));
 }

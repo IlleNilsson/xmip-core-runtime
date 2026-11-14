@@ -98,10 +98,6 @@ impl SendStep {
             .into_iter()
             .filter_map(|(id, to, queue, claim)| Some((id, to, queue, held(&claim)?)))
             .collect();
-        lined.claims = std::mem::take(&mut lined.claims)
-            .into_iter()
-            .filter_map(|claim| held(&claim))
-            .collect();
         let gone = before - lined.claimed.len();
         lined.admitted = lined.admitted.saturating_sub(gone);
         self.withdraw(gone);

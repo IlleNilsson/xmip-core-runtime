@@ -163,6 +163,16 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
             ),
             "holds no Stream to a contract at arrival yet",
         ),
+        (
+            // The tests' program links no retry guard (ADR-0048, amendment
+            // 2026-11-14).
+            base.replace(
+                "[[xmip_applications.send_ports]]\nname = \"Out\"\n",
+                "[[xmip_applications.send_ports]]\nname = \"Out\"\n\
+                 retry = { attempts = 2, backoff = \"5s\" }\n",
+            ),
+            "the Send Port 'Out' states a retry, and this node carries no retry guard",
+        ),
     ];
 
     for (configuration, reason) in cases {

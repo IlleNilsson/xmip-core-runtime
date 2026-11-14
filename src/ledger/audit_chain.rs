@@ -141,7 +141,7 @@ mod tests {
                 message: None,
                 properties: BTreeMap::new(),
             };
-            let mut entry = audit_entry(&record);
+            let mut entry = audit_entry(record);
             if number == 2 {
                 entry.audited = Some(Audited {
                     message: b"the Message".to_vec(),

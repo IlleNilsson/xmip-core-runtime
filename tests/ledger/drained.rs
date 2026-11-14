@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use tcp::TcpTransport;
 use transport::{Arrivals, Arrived, Directions, Transport, Waiting};
+use xmip_core_runtime::fixture::until_listening;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::receiving::Receiving;
 use xmip_core_runtime::stopping::Stopping;
@@ -45,19 +46,10 @@ struct Backlogged {
     filled: AtomicBool,
 }
 
-/// Send `payload` to `address`, asking again while nothing listens there
-/// yet. Bounded, and never a sleep.
+/// Send `payload` to `address`, asked again while nothing listens there yet
+/// (`fixture::until_listening`).
 fn deliver(address: &str, payload: &[u8]) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match TcpTransport::loopback().send(address, payload) {
-            Ok(()) => return,
-            Err(refused) if refused.retryable && Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            Err(failed) => panic!("nothing took it at {address}: {failed:?}"),
-        }
-    }
+    until_listening(address, || TcpTransport::loopback().send(address, payload));
 }
 
 impl Transport for Backlogged {

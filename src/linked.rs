@@ -6,7 +6,8 @@
 //! feature (ADR-0018, amendment 2026-09-26), a test links the ones it
 //! exercises — and hands them over here. The node takes from them only what
 //! its configuration names (ADR-0025): a Location's transport, a filter's
-//! route technology, an accepted mechanism's authenticator.
+//! route technology, an accepted mechanism's authenticator, the retry guard
+//! a Send Port's `retry` is built as.
 //!
 //! A module loaded from its library instead is named in the configuration's
 //! `[[modules]]`, and the node opens it through the C ABI (ADR-0057); this is
@@ -14,6 +15,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use authenticate::Authenticator;
 use authorize::Authorizer;
@@ -36,14 +38,17 @@ pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 /// The node a Location's transport is built on: its location, the guard
 /// its receives terminate TLS with, where its configuration gives one
 /// (`crate::receive_certificate`), the keys its far ends are held to,
-/// pinned on first contact under its data directory (`PINNED`), and the
+/// pinned on first contact under its data directory (`PINNED`), the
 /// secret the Location names, read from the node's Xmip Storage as it
-/// connects (ADR-0019, amendment 2026-10-29).
+/// connects (ADR-0019, amendment 2026-10-29), and the most one caller's
+/// turn on its receives takes, `[tuning] receive_turn` (ADR-0018,
+/// amendment 2026-11-14).
 pub type OnNode<'a> = (
     &'a NodeLocation,
     Option<&'a Guard>,
     &'a Arc<Pinned>,
     Option<Secured>,
+    std::time::Duration,
 );
 
 /// The file under a node's data directory its far ends' pinned keys are
@@ -163,11 +168,13 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
 
 /// `T` built from a Location and given its node, once, as it is built (the
 /// owner, 2026-10-03; `transport::Configured::on_node`), the keys its far
-/// ends are held to (`transport::Configured::pinned_by`), the guard its
-/// receives terminate TLS with (`transport::Configured::guarded_by`), and
-/// the secret its Location names (`transport::Configured::secured_by`).
-/// Public so a test's [`Open`] can wrap it, as the running tests count
-/// what a node builds.
+/// ends are held to (`transport::Configured::pinned_by`), the most one
+/// caller's turn on its receives takes
+/// (`transport::Configured::turning_within`), the guard its receives
+/// terminate TLS with (`transport::Configured::guarded_by`), and the
+/// secret its Location names (`transport::Configured::secured_by`). Public
+/// so a test's [`Open`] can wrap it, as the running tests count what a
+/// node builds.
 ///
 /// # Errors
 ///
@@ -177,11 +184,12 @@ pub fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
-    (node, guard, pins, secured): OnNode<'_>,
+    (node, guard, pins, secured, turn): OnNode<'_>,
 ) -> Opened {
     let built = T::open(address, side, given)?
         .on_node(node)?
         .pinned_by(pins)
+        .turning_within(turn)
         .guarded_by(guard)?;
     Ok(Box::new(match secured {
         Some(secured) => built.secured_by(secured)?,
@@ -271,6 +279,11 @@ pub struct Started<'a> {
 /// (ADR-0050 section 5; the owner, 2026-10-19).
 pub type LocationPolicy = fn(Started<'_>) -> Box<dyn Authorizer>;
 
+/// How the retry guard the program linked is built for a Send Port's
+/// `retry` (ADR-0048, amendment 2026-11-14): its tries in all, and how long
+/// after each one that failed the next is due.
+pub type RetryGuard = fn(u32, Duration) -> Box<dyn resilience::Guard>;
+
 /// Everything a program linked that a node may use.
 ///
 /// Each list is what the program was built with, not what the node runs: the
@@ -291,6 +304,10 @@ pub struct Linked {
     /// Policies set up from the Locations the node starts, added to
     /// [`Linked::policies`] as it starts.
     pub location_policies: Vec<LocationPolicy>,
+    /// The retry guard the program linked, which each Send Port stating
+    /// `retry` is given as the node starts (`crate::sending::guards`); a
+    /// node whose program linked none refuses such a Port.
+    pub retry: Option<RetryGuard>,
     pub transport_identifiers: Vec<Box<dyn TransportIdentifier>>,
     pub message_identifiers: Vec<Box<dyn MessageIdentifier>>,
     /// The runtime database's engine, where the program was built with

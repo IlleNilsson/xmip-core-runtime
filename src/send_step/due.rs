@@ -4,11 +4,16 @@
 //! 2026-11-13), read from Xmip Storage and woken for here. A hand-on that
 //! set a Message waiting is read again once Xmip Storage took it
 //! (`super::reading::waiting`), which begins after that hand-on and so
-//! counts it, once.
+//! counts it, once. A read that starts from what a wake brought began when
+//! that wait was asked: what is due was read for it then or after, and maybe
+//! before a hand-on noted since (corrected 2026-11-14: such a page, read
+//! before a hand-on and scanned after its note, counted none waiting).
 
 use std::time::Instant;
 
 use schedule::due::{Due, earliest};
+
+use crate::queue_watch::Woken;
 
 impl super::State {
     /// When the dispatching wakes with nothing handed or asked: the
@@ -19,9 +24,16 @@ impl super::State {
 }
 
 impl super::SendStep {
-    /// A read of `queue` begins: what a hand-on noted before now, the read
-    /// finds in Xmip Storage. When it began.
-    pub(super) fn reading(&self, queue: u128) -> Instant {
+    /// A read of `queue` begins, from what `woken` brought of it where a
+    /// wake brought what is due: when it began. One Xmip Storage answers
+    /// now finds what a hand-on noted before now. One from a wake's page
+    /// began as that wait was asked, and keeps every due time noted, which
+    /// the page may not hold: it neither counts over a newer note nor
+    /// forgets one.
+    pub(super) fn reading(&self, queue: u128, woken: Option<&Woken>) -> Instant {
+        if let Some(woken) = woken.filter(|woken| woken.due.is_some()) {
+            return woken.asked;
+        }
         let began = Instant::now();
         if let Some(due) = self.lock().due.get_mut(&queue) {
             due.reading();
@@ -113,9 +125,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use persist::fixture::crowd::{QUEUE, crowded};
-    use persist::storage::XmipStorage;
+    use persist::storage::{DueQueue, XmipStorage};
     use schedule::due::Due;
 
+    use crate::queue_watch::Woken;
     use crate::send_step::SendStep;
     use crate::send_step::fixture::step;
     use crate::tuning::Tuning;
@@ -152,7 +165,7 @@ mod tests {
     #[test]
     fn a_hand_on_during_a_read_is_woken_for_at_its_due_time() {
         let step = step();
-        let began = step.reading(QUEUE);
+        let began = step.reading(QUEUE, None);
         let due = Instant::now() + Duration::from_millis(20);
         step.noted(("Out", QUEUE), due);
         step.waited(QUEUE, (Due::of("Out"), began), true);
@@ -182,7 +195,7 @@ mod tests {
     #[test]
     fn a_hand_on_after_a_read_that_found_two_waiting_counts_three() {
         let step = over(3);
-        let began = step.reading(QUEUE);
+        let began = step.reading(QUEUE, None);
         step.waited(QUEUE, (found(2), began), true);
         assert_eq!(waiting(&step), 2, "as the read found");
         noted(&step);
@@ -194,11 +207,11 @@ mod tests {
     #[test]
     fn a_read_begun_before_the_count_says_nothing_of_how_many_wait() {
         let step = over(2);
-        let stale = step.reading(QUEUE);
+        let stale = step.reading(QUEUE, None);
         noted(&step);
         step.waited(QUEUE, (found(1), stale), true);
         assert_eq!(waiting(&step), 2, "the newer count kept");
-        let fresh = step.reading(QUEUE);
+        let fresh = step.reading(QUEUE, None);
         step.waited(QUEUE, (found(5), fresh), true);
         assert_eq!(waiting(&step), 5, "a newer read's count");
     }
@@ -209,10 +222,38 @@ mod tests {
     fn a_read_begun_after_a_hand_on_answers_for_it() {
         let step = step();
         noted(&step);
-        let began = step.reading(QUEUE);
+        let began = step.reading(QUEUE, None);
         step.waited(QUEUE, (Due::of("Out"), began), true);
 
         assert_eq!(step.lock().due[&QUEUE].at, None);
         assert_eq!(waiting(&step), 0);
+    }
+
+    /// A wake's page read before a hand-on landed, scanned after the
+    /// hand-on was noted: the scan began as its wait was asked, so the one
+    /// waiting the hand-on counted stands and its due time is kept. Until
+    /// 2026-11-14 the scan began as it started, after the note, and its
+    /// page counted none waiting until the next scan.
+    #[test]
+    fn a_wake_s_page_read_before_a_hand_on_counts_nothing_over_it() {
+        let step = over(1);
+        let woken = Woken {
+            due: Some(DueQueue {
+                held: Vec::new(),
+                retrying: 0,
+                next_due_unix_nanos: None,
+                read_unix_nanos: 0,
+            }),
+            at: Instant::now(),
+            asked: Instant::now(),
+        };
+        noted(&step);
+        assert_eq!(waiting(&step), 1, "the hand-on counted");
+
+        let began = step.reading(QUEUE, Some(&woken));
+        step.waited(QUEUE, (found(0), began), true);
+
+        assert_eq!(waiting(&step), 1, "the older page counts nothing over it");
+        assert!(step.lock().due[&QUEUE].at.is_some(), "its due time kept");
     }
 }

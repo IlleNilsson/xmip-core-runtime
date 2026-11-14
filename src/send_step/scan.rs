@@ -48,7 +48,10 @@ pub(super) fn scan(
     woken: Option<(Woken, Instant)>,
 ) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
-    let began = runtime.send.reading(queue);
+    // Begun as its first page was read: where a wake brought it, as that
+    // wait was asked (`super::due`).
+    let brought = woken.as_ref().map(|(woken, _)| woken);
+    let began = runtime.send.reading(queue, brought);
     let (found, whole) = scanning(runtime, (to, queue), &mut waits, woken);
     runtime.send.waited(queue, (waits, began), whole);
     found

@@ -11,17 +11,28 @@
 //! its own, opened at its Publication. Each Port's
 //! policy — `retry` and `failover` (ADR-0031, amendment 2026-10-01) — is
 //! its design's; the Correlation it names is the sequence its Messages
-//! pass it in, one at a time per key (`crate::sequence`).
+//! pass it in, one at a time per key (`crate::sequence`). Its `retry` is
+//! the retry guard its program linked, built once as the node starts
+//! ([`guards`]), which judges every try of it that did not send (ADR-0048,
+//! amendment 2026-11-14).
 
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use configure::{ConfiguredLocation, DesignedSendPort, SendPortGroup};
 use persist::storage::named;
+use resilience::{Attempt, Decision, Guard, judged};
 use route::Subscriber;
 use send::SendChain;
 use transport::Transport;
+use xcore::Failure;
 
+use crate::departure::{Departed, said};
+use crate::linked::RetryGuard;
 use crate::sequence::{Point, PointKind};
+
+/// Each Send Port's guards, by its name, in the order they are asked.
+pub type SendGuards = BTreeMap<String, Vec<Box<dyn Guard>>>;
 
 /// A Send Location running: its configuration, the chain that resolves the
 /// identity it presents (ADR-0006), and the transport built for it once,
@@ -50,24 +61,6 @@ pub struct Port<'a> {
 }
 
 impl Port<'_> {
-    /// How often the active Send Location is tried: once, and again as
-    /// often as `retry.attempts` says.
-    #[must_use]
-    pub fn tries(&self) -> u32 {
-        self.policy
-            .and_then(|policy| policy.retry.as_ref())
-            .map_or(1, |retry| retry.attempts.saturating_add(1))
-    }
-
-    /// How long after a failed try the next is due: `retry.backoff`.
-    #[must_use]
-    pub fn backoff(&self) -> Duration {
-        self.policy
-            .and_then(|policy| policy.retry.as_ref())
-            .and_then(|retry| xcore::settings::duration(&retry.backoff).ok())
-            .unwrap_or(Duration::ZERO)
-    }
-
     /// Whether a Send Location that failed its tries hands on to the next:
     /// `failover = "next"`.
     #[must_use]
@@ -100,9 +93,48 @@ pub struct Sends {
     /// The sequences of the Send Ports, the Send Locations and the Work
     /// Processes that name a Correlation, each by its kind and name.
     pub points: Vec<Point>,
+    /// Each Send Port's guards, which judge every try of it that did not
+    /// send ([`guards`]).
+    pub guards: SendGuards,
 }
 
 impl Sends {
+    /// How long until the active Send Location of the Send Port `port` is
+    /// tried again after its try `number`, begun at `began` and come to
+    /// `tried`, not sent: the wait the Port's guards ask for, asked as
+    /// `resilience::execute` asks after an attempt (ADR-0048, amendment
+    /// 2026-11-14), the try's failure retryable only where its transport
+    /// said so. None where they let the try stand — a Port with no guards
+    /// lets every try stand — and it fails over or is given up.
+    #[must_use]
+    pub fn again(
+        &self,
+        port: &str,
+        (number, began): (u32, Instant),
+        tried: &Departed,
+    ) -> Option<Duration> {
+        let guards = self.guards.get(port)?;
+        let retryable = matches!(
+            tried,
+            Departed::Failed {
+                retryable: true,
+                ..
+            }
+        );
+        let attempt = Attempt {
+            number,
+            elapsed: began.elapsed(),
+            failure: Some(Failure {
+                message: said(std::slice::from_ref(tried)),
+                retryable,
+            }),
+        };
+        match judged(guards.iter().map(AsRef::as_ref), &attempt) {
+            Decision::Wait(after) => Some(after),
+            Decision::Proceed | Decision::Refuse(_) | Decision::Fallback => None,
+        }
+    }
+
     /// Where `to` is sent on this node.
     #[must_use]
     pub fn to<'a>(&'a self, to: &'a Subscriber) -> Destination<'a> {
@@ -203,4 +235,151 @@ impl Sends {
 #[must_use]
 pub fn queue(cluster: &str, to: &Subscriber) -> u128 {
     named(&format!("{cluster}/{}/{}", to.kind(), to.name()))
+}
+
+/// Each of `ports`' guards, built once as the node starts from what its
+/// program linked: a Port's `retry` as the retry guard `retry` builds, for
+/// one try and `attempts` more, `backoff` after each that failed, flat
+/// (ADR-0048, amendment 2026-11-14). A Port without `retry` is given none,
+/// and is tried once.
+///
+/// # Errors
+/// Each Port stating `retry` where the program linked no retry guard, in
+/// words.
+pub fn guards(
+    ports: &[DesignedSendPort],
+    retry: Option<RetryGuard>,
+) -> Result<SendGuards, Vec<String>> {
+    let mut guards = SendGuards::new();
+    let mut problems = Vec::new();
+    for port in ports {
+        let Some(policy) = &port.retry else {
+            continue;
+        };
+        let Some(built) = retry else {
+            problems.push(format!(
+                "the Send Port '{}' states a retry, and this node carries no retry guard",
+                port.name
+            ));
+            continue;
+        };
+        // Refused as the configuration is read where it is no duration
+        // (`configure`'s Send Port problems).
+        let backoff = xcore::settings::duration(&policy.backoff).unwrap_or(Duration::ZERO);
+        let tries = policy.attempts.saturating_add(1);
+        guards
+            .entry(port.name.clone())
+            .or_default()
+            .push(built(tries, backoff));
+    }
+    if problems.is_empty() {
+        Ok(guards)
+    } else {
+        Err(problems)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use configure::{DesignedSendPort, Retry};
+    use resilience::Guard;
+    use route::Subscriber;
+
+    use super::{Sends, guards};
+    use crate::departure::Departed;
+
+    /// The retry guard, as a program links it.
+    fn retry(tries: u32, backoff: Duration) -> Box<dyn Guard> {
+        Box::new(::retry::Retry::new(tries, backoff))
+    }
+
+    /// The Send Port `Out`, retrying `retry`.
+    fn out(retry: Option<Retry>) -> DesignedSendPort {
+        DesignedSendPort {
+            name: "Out".to_string(),
+            send_locations: Vec::new(),
+            retry,
+            failover: None,
+            correlation: None,
+            prepare: Vec::new(),
+            transform: None,
+            promote: None,
+            demote: None,
+            debatch: None,
+        }
+    }
+
+    /// A try of `Out` its transport failed, `retryable` or not.
+    fn failed(retryable: bool) -> Departed {
+        Departed::Failed {
+            to: Subscriber::SendPort("Out".to_string()),
+            retryable,
+            detail: "the far end is down".to_string(),
+        }
+    }
+
+    /// How long after its try `number`, failed `retryable` or not, `Out`
+    /// is tried again.
+    fn again(sends: &Sends, number: u32, retryable: bool) -> Option<Duration> {
+        sends.again("Out", (number, Instant::now()), &failed(retryable))
+    }
+
+    fn guarded(ports: &[DesignedSendPort]) -> Sends {
+        Sends {
+            guards: guards(ports, Some(retry)).expect("built"),
+            ..Sends::default()
+        }
+    }
+
+    #[test]
+    fn a_retrying_send_port_is_tried_once_and_again_as_often_as_it_says_after_its_backoff() {
+        let sends = guarded(&[out(Some(Retry {
+            attempts: 2,
+            backoff: "5s".to_string(),
+        }))]);
+        let backoff = Some(Duration::from_secs(5));
+
+        assert_eq!(again(&sends, 1, true), backoff);
+        assert_eq!(again(&sends, 2, true), backoff, "flat");
+        assert_eq!(
+            again(&sends, 3, true),
+            None,
+            "once, and again twice: the third try stands"
+        );
+        assert_eq!(
+            again(&sends, 1, false),
+            None,
+            "a permanent failure is never tried again"
+        );
+        let refused = Departed::NoSuchDestination {
+            to: Subscriber::SendPort("Out".to_string()),
+        };
+        assert_eq!(
+            sends.again("Out", (1, Instant::now()), &refused),
+            None,
+            "nor a try that never reached the transport"
+        );
+    }
+
+    #[test]
+    fn a_send_port_without_retry_is_given_no_guard_and_every_try_stands() {
+        let sends = guarded(&[out(None)]);
+        assert!(sends.guards.is_empty());
+        assert_eq!(again(&sends, 1, true), None);
+    }
+
+    #[test]
+    fn a_retrying_send_port_is_refused_where_the_program_linked_no_retry_guard() {
+        let retrying = out(Some(Retry {
+            attempts: 1,
+            backoff: "1s".to_string(),
+        }));
+        let refused = guards(&[retrying, out(None)], None).err().expect("refused");
+        assert_eq!(
+            refused,
+            ["the Send Port 'Out' states a retry, and this node carries no retry guard"]
+        );
+    }
 }

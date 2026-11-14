@@ -24,8 +24,9 @@ use crate::sending::Destination;
 pub enum Ended {
     /// Sent to every Port: written Completed, and out of its queue.
     Completed(Vec<Departed>),
-    /// A Location is tried again after `after`: written Recovering, its due
-    /// time kept at its place in its queue, its claim released.
+    /// A Location is tried again after `after`, the wait its Send Port's
+    /// guards asked for: written Recovering, its due time kept at its place
+    /// in its queue, its claim released.
     Waiting {
         after: Duration,
         departed: Vec<Departed>,
@@ -152,8 +153,12 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     let (state, kept) = if progress.sent {
         (JourneyState::Completed, None)
     } else if progress.waiting() {
-        let after = backoff(runtime, &departure.to);
-        (JourneyState::Recovering, Some(after))
+        // As long as its Port's guards asked of its last try; a pass that
+        // stopped before they were asked waits for nothing.
+        (
+            JourneyState::Recovering,
+            Some(progress.after.unwrap_or_default()),
+        )
     } else {
         (JourneyState::Failed, None)
     };
@@ -276,15 +281,6 @@ fn written(
             "Xmip Storage did not take the send of the Message of the Journey {}: {error}",
             journey.journey_id()
         )),
-    }
-}
-
-/// How long the Send Port `to` waits before its active Location is tried
-/// again.
-fn backoff(runtime: &Runtime<'_>, to: &Subscriber) -> Duration {
-    match to {
-        Subscriber::SendPort(port) => runtime.sends.port(port).backoff(),
-        Subscriber::SendGroup(_) | Subscriber::WorkProcess(_) => Duration::ZERO,
     }
 }
 

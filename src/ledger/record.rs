@@ -13,7 +13,7 @@ use node::Scope;
 use persist::storage::{
     AuditEntry, AuditFacts, Audited, JourneyFacts, JourneyRecord, MessageFacts, MessageRecord,
 };
-use xaudit::audit_record::AuditRecord;
+use xaudit::audit_record::{AuditRecord, Properties};
 use xcore::StreamId;
 
 use crate::sequence::lets_go;
@@ -118,28 +118,36 @@ pub(crate) fn audited(message: &Message, body: &[u8]) -> Audited {
 /// location says them, by the one rule (`node::Scope`) the audit reader
 /// reads them by — and the execution it belongs to: its Journey, its
 /// Message and its artifact, spelled out; and whose audit chain it is in,
-/// by the one rule (`Origin::writer`; ADR-0070 clause 5).
-pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
+/// by the one rule (`Origin::writer`; ADR-0070 clause 5). Its properties a
+/// map of them, or an act's own, typed (`Properties`). The record is taken:
+/// what it says is moved into the entry, never copied.
+pub(crate) fn audit_entry<P: Properties>(record: AuditRecord<P>) -> AuditEntry {
+    let body = record.toml().into_bytes();
+    let failed = record.is_failure();
     let scope = record.scope.as_ref();
     let artifact = scope.map(|scope| &scope.artifact);
-    let origin = &record.origin;
+    let origin = record.origin;
+    let writer = origin.writer();
     let location = origin.location.as_deref().map(Scope::new);
+    let node = location.and_then(Scope::node).map(str::to_string);
+    let cluster = location.and_then(|scope| scope.segments().next());
+    let cluster = cluster.map(str::to_string);
     AuditEntry {
         id: record.audit_id,
-        body: record.toml().into_bytes(),
+        body,
         audited: None,
         facts: AuditFacts {
             occurred_unix_nanos: u64::try_from(record.timestamp_unix_nanos.max(0))
                 .unwrap_or(u64::MAX),
-            action: record.action.clone(),
+            action: record.action,
             phase: record.phase.word().to_string(),
             severity: record.severity.word().to_string(),
-            failed: record.is_failure(),
-            text: record.message.clone(),
-            program: origin.program.clone(),
-            host: origin.host.clone(),
+            failed,
+            text: record.message,
+            program: origin.program,
+            host: origin.host,
             process: origin.process,
-            location: origin.location.clone(),
+            location: origin.location,
             hidden: origin.hidden,
             execution: scope.map(|scope| scope.execution_id.value()),
             journey: scope.map(|scope| scope.journey_id.value()),
@@ -147,15 +155,9 @@ pub(crate) fn audit_entry(record: &AuditRecord) -> AuditEntry {
             artifact_kind: artifact.map(|artifact| artifact.artifact_type.to_string()),
             artifact_name: artifact.map(|artifact| artifact.name.clone()),
             artifact_version: artifact.and_then(|artifact| artifact.version.clone()),
-            node: location
-                .as_ref()
-                .and_then(|scope| scope.node())
-                .map(str::to_string),
-            cluster: location
-                .as_ref()
-                .and_then(|scope| scope.segments().next())
-                .map(str::to_string),
-            writer: origin.writer(),
+            node,
+            cluster,
+            writer,
             ..AuditFacts::default()
         },
     }
@@ -237,7 +239,7 @@ mod tests {
             message: Some("refused".to_string()),
             properties: std::collections::BTreeMap::new(),
         };
-        let facts = audit_entry(&record).facts;
+        let facts = audit_entry(record).facts;
         assert!(facts.failed);
         assert_eq!(
             (facts.phase.as_str(), facts.occurred_unix_nanos),
@@ -301,7 +303,7 @@ mod tests {
             message: None,
             properties: std::collections::BTreeMap::new(),
         };
-        let mut entry = audit_entry(&record);
+        let mut entry = audit_entry(record);
         entry.audited = Some(audited(&message, &message.record()));
         storage.write_audit(&entry).expect("written");
         storage.keep_audit(10, crate::ledger::CHUNK).expect("kept");

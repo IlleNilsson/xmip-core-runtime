@@ -51,7 +51,7 @@ use xcore::lock::Locked;
 use crate::ledger::Opened;
 use message::Message;
 use persist::storage::{Hold, Position, Watched, XmipStorage, named};
-use route::{Gathering, Promoted};
+use route::Promoted;
 use xcore::JourneyId;
 
 use crate::sending::{Destination, Sends};
@@ -162,15 +162,15 @@ impl Point {
 
 /// Where a Stream received at `location` of `port` as `message` came in,
 /// and every place its origin takes in the end-to-end sequences `points`,
-/// in the cluster at `cluster`, the keys read through `gathering`.
+/// in the cluster at `cluster`, the keys read from `promoted`, what arrival
+/// promoted of it: the Message is promoted once.
 ///
 /// # Errors
-/// A key part the Message lacks, or a source refusing it, in words.
+/// A key part the Message lacks, in words.
 pub fn received(
     cluster: &str,
     (location, port, points): (&str, &str, &[Point]),
-    gathering: &Gathering,
-    message: &Message,
+    (message, promoted): (&Message, &Promoted),
 ) -> Result<(Received, Vec<Hold>), String> {
     let origin = message.message_id().value();
     let mut received = Received {
@@ -182,11 +182,10 @@ pub fn received(
             .iter()
             .any(|point| point.on_failure == OnFailure::Skip),
     };
-    let promoted = gathering.promote(message).map_err(|why| why.to_string())?;
     let probe = Journey::new(JourneyId::new(0)).received_as(received.clone());
     let mut places = Vec::with_capacity(points.len());
     for point in points {
-        let place = point.place(cluster, origin, (&probe, &promoted))?;
+        let place = point.place(cluster, origin, (&probe, promoted))?;
         received.sequences.push(place.queue);
         places.push(place);
     }

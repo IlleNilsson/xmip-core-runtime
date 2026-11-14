@@ -52,6 +52,7 @@
 
 use std::cell::Cell;
 use std::io::Read;
+use std::time::{Duration, Instant};
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
@@ -65,7 +66,7 @@ use xcore::spent::on_io;
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
-use crate::sending::{Destination, Port, Sending};
+use crate::sending::{Destination, Port, Sending, Sends};
 
 /// What waits until a departure's Message is durable in the Ledger, and
 /// why it could not be, in words.
@@ -130,6 +131,8 @@ pub struct Progress {
     pub tries: u32,
     /// Every Location failed its tries: why, in words. Not tried again.
     pub given_up: Option<String>,
+    /// Its backoff: how long its Port's guards asked it to wait after a try.
+    pub after: Option<Duration>,
     /// The fence of the claim this pass is made under, handed to the far
     /// end beside the deduplication key; zero where it is made under none.
     pub fence: u64,
@@ -222,22 +225,21 @@ fn depart_port(
             return departed;
         };
         let asked = (*sending, owned, kept, standing.fence);
+        let trying = Instant::now();
         let Some(one) = depart_one(runtime, (work, facts), to.clone(), asked) else {
             return departed;
         };
         standing.tries += 1;
-        let again = match &one {
-            Departed::Sent { .. } => {
-                standing.sent = true;
-                departed.push(one);
-                return departed;
-            }
-            Departed::Failed { retryable, .. } => *retryable,
-            _ => false,
-        };
+        if let Departed::Sent { .. } = one {
+            standing.sent = true;
+            departed.push(one);
+            return departed;
+        }
         let said = said(std::slice::from_ref(&one));
+        // Its Port's guards judge the try (ADR-0048, amendment 2026-11-14).
+        standing.after = Sends::again(runtime.sends, port.name, (standing.tries, trying), &one);
         departed.push(one);
-        if again && standing.tries < port.tries() {
+        if standing.after.is_some() {
             return departed;
         }
         if port.fails_over() && standing.location + 1 < port.locations.len() {

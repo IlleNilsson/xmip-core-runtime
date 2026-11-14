@@ -91,6 +91,11 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # again, and when a Send Port queue's earliest retry is due. Decided there,
 # waited for here (ADR-0058, amendment 2026-11-13).
 schedule = { package = "xmip-core-schedule", git = "https://github.com/IlleNilsson/xmip-core-schedule", branch = "main", optional = true }
+# Whether and when a Send Port's failed try is tried again: its guards
+# decide, asked after each try (ADR-0048, amendment 2026-11-14). The
+# capability alone; the retry guard a Port's `retry` is built as is the
+# program's to link and hand in (`linked::Linked::retry`).
+resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleNilsson/xmip-core-resilience", branch = "main", optional = true }
 # The runtime store: where a paused Subscription's standing and the Messages
 # it holds are kept, sealed, over whichever engine the program linked, so a
 # pause survives a restart (ADR-0013, amendment 2026-09-30).
@@ -167,6 +172,10 @@ authenticate = { package = "xmip-core-authenticate", git = "https://github.com/I
 # A Work Process the tests run is drawn in BPMN 2.0 and compiled here.
 process-bpmn = { package = "xmip-core-process-bpmn", git = "https://github.com/IlleNilsson/xmip-core-process-bpmn", branch = "main" }
 route-party = { package = "xmip-core-route-party", git = "https://github.com/IlleNilsson/xmip-core-route-party", branch = "main" }
+# The retry guard, handed to a test's node as a program hands it
+# (`linked::Linked::retry`), so a Send Port's `retry` is judged as
+# xmip-service judges it.
+retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
 # The tests write a Subscription's filter as the expression it is (ADR-0066).
 path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
 # One real transport with a loopback far end, so a test starts a node that
@@ -233,6 +242,7 @@ node = [
     "dep:assign",
     "dep:transport",
     "dep:schedule",
+    "dep:resilience",
     "dep:persist",
     "dep:secret",
     "dep:nix",

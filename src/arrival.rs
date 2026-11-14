@@ -234,6 +234,7 @@ pub fn arrive(runtime: &Runtime<'_>, gate: &ReceiveGate, mut received: ReceivedS
             work,
             facts,
             routing,
+            promoted,
         },
         Dispatch::Unroutable => Arrived::Unroutable {
             work,
@@ -763,6 +764,7 @@ mod tests {
             work,
             facts,
             routing,
+            ..
         } = arrived
         else {
             panic!("expected a route, got {arrived:?}");
@@ -1146,6 +1148,7 @@ filter = "xmip.party = '{party}'"
             work,
             facts,
             routing,
+            ..
         } = &arrived
         else {
             panic!("expected a route, got {arrived:?}");
@@ -1218,6 +1221,7 @@ filter = "xmip.party = '{party}'"
             work,
             facts,
             routing,
+            ..
         } = &arrived
         else {
             panic!("expected a route, got {arrived:?}");
@@ -1257,6 +1261,7 @@ filter = "xmip.party = '{party}'"
             work,
             facts,
             routing,
+            ..
         } = &arrived
         else {
             panic!("expected a route, got {arrived:?}");
