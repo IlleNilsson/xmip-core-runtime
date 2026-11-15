@@ -8,12 +8,14 @@
 //! woken by the wait on its queue — its scan an hour — beside the same
 //! carried by the sending node itself, over the same wire, the two in turn;
 //! each call either node made of Xmip Storage timed
-//! (`fixture::Failing::taken`), the median of each said. Until 2026-11-12
-//! the case ran in process, where the calls a delivery across nodes adds
-//! cost next to nothing.
+//! (`fixture::Failing::taken`) and said. Until 2026-11-12 the case ran in
+//! process, where the calls a delivery across nodes adds cost next to
+//! nothing.
 //!
 //! What it holds: the delivery across nodes within a millisecond of the
-//! delivery on one node, the medians. The calls the sending node makes only
+//! delivery on one node, beside it in the same rounds, the fastest of five
+//! of each (`xcore::latency::spread`); until 2026-11-15 the medians, which
+//! a busy moment moves. The calls the sending node makes only
 //! because another node published it — the claim, and the Message's place,
 //! its Journey and its Message read again under the claim, one request —
 //! mostly overlap
@@ -28,6 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use persist::storage::{StorageClient, StorageServer, XmipStorage, client};
+use xcore::latency::spread;
 use xcore::lock::Locked;
 use xmip_core_runtime::fixture::{Authority, Failing, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
@@ -72,8 +75,8 @@ type Path<'a, 'r> = (&'a Runtime<'r>, &'a Pickup, &'a ReceiveGate);
 /// [`ROUNDS`] Messages carried on `own`, the node that sends `Out`, and as
 /// many on `other`, one after another in turn, each once the far end took
 /// the one before, so whatever the machine does meanwhile falls on both
-/// alike: the median from each carry to the far end taking it, on `own`
-/// and on `other`.
+/// alike: from each carry to the far end taking it, on `own` and on
+/// `other`, the fastest of five of each (`xcore::latency::spread`).
 fn carried(own: Path<'_, '_>, other: Path<'_, '_>, took: &Mutex<Vec<Instant>>) -> [Duration; 2] {
     let mut taken = [Vec::new(), Vec::new()];
     for number in 0..ROUNDS * 2 {
@@ -88,20 +91,30 @@ fn carried(own: Path<'_, '_>, other: Path<'_, '_>, took: &Mutex<Vec<Instant>>) -
         until(|| took.locked().len() > number, "taken");
         taken[number % 2].push(took.locked()[number] - began);
     }
-    taken.map(|mut taken| median(&mut taken))
+    let [alone, across] = taken;
+    let said = "from a carry to the far end taking it over the wire";
+    [
+        spread(
+            &format!("{said}, published by the node that sends its Send Port"),
+            alone,
+        ),
+        spread(&format!("{said}, published by another node"), across),
+    ]
+    .map(|taken| taken.fastest_of_five)
 }
 
-fn median(taken: &mut [Duration]) -> Duration {
-    taken.sort();
-    taken.get(taken.len() / 2).copied().unwrap_or_default()
-}
-
-/// The median of each `operation` `storage` answered since last asked.
-fn medians(storage: &Failing, operations: &[Operation]) -> Vec<(Operation, Duration)> {
-    operations
-        .iter()
-        .map(|&operation| (operation, median(&mut storage.taken(operation))))
-        .collect()
+/// Each `operation` `storage` answered since last asked, printed under
+/// `whose`, as `xcore::latency` spreads it: said beside the delivery and
+/// held by nothing.
+fn said(storage: &Failing, whose: &str, operations: &[Operation]) {
+    for &operation in operations {
+        let taken = storage.taken(operation);
+        if taken.is_empty() {
+            println!("{whose} {operation:?}: never asked");
+        } else {
+            let _ = spread(&format!("{whose} {operation:?}"), taken);
+        }
+    }
 }
 
 /// A node's Xmip Storage: the Storage node served at `at`, reached over
@@ -158,22 +171,24 @@ fn a_message_another_node_published_is_sent_over_the_wire_within_a_millisecond_o
         0,
         "what is due came with each wake, never read after it"
     );
-    let own = medians(
+    let sending_node = "the node that sends its Send Port asked";
+    said(
         &sends,
+        sending_node,
         &[Operation::Publish, Operation::ReadChunk, Operation::HandOn],
     );
-    let added = medians(&sends, &ACROSS);
-    let published = medians(&publishes, &[Operation::Publish]);
-    eprintln!(
-        "LATENCY from a carry to the far end taking it over the wire, the median: published by \
-         the node that sends its Send Port {alone:?} ({own:?}), by another node {across:?} \
-         ({published:?}); the sending node's Storage calls for it {added:?}"
+    said(
+        &sends,
+        &format!("{sending_node}, for another node's"),
+        &ACROSS,
     );
+    said(&publishes, "the other node asked", &[Operation::Publish]);
     let beyond = across.saturating_sub(alone);
     server.stop();
     let _ = std::fs::remove_dir_all(&place);
     assert!(
         beyond < Duration::from_millis(1),
-        "another node's Publication sent {beyond:?} later"
+        "another node's Publication sent {beyond:?} later than its own {alone:?}, the fastest \
+         of five each"
     );
 }

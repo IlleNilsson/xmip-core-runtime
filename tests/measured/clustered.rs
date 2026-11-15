@@ -122,16 +122,11 @@ fn a_monitoring_node_answers_the_cluster_from_its_gathered_view_within_the_milli
 
     let mut rounds = Rounds::crossing(WAKES);
     for _ in 0..200 {
-        let asked = Instant::now();
-        let from = ProcessorTime::process();
-        let answered = surface.cluster();
-        rounds.took.push(asked.elapsed());
-        rounds.worked.push(from.elapsed());
+        let answered = rounds.round(|| surface.cluster());
         assert!(
             matches!(&answered, Ok(Clustered::Gathered(1, read)) if read.len() == text.len()),
             "{answered:?}"
         );
-        rounds.beside();
     }
     rounds.hold("Cluster answered from the gathered view of nine members");
 }

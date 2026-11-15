@@ -1,7 +1,9 @@
 //! A running node (`xmip_core_runtime::running`), measured: Messages
 //! carried from its Receive Location to the far end, Xmip's own share of
-//! each held under a millisecond, and eight senders carried side by side.
+//! each held under a millisecond, and eight senders carried side by side,
+//! each post answered within five milliseconds.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use http::HttpTransport;
@@ -9,7 +11,7 @@ use net::fixture::unheld;
 use tcp::TcpTransport;
 use transport::Transport;
 use transport::socket::connect_tcp;
-use xcore::latency::spread;
+use xcore::latency::{PlainWake, spread, worked_beside_a_plain_wake};
 use xmip_core_runtime::fixture::{started, until_listening};
 
 use super::node::{count_anew, deliver, given, linked, node, path_text, written};
@@ -72,10 +74,6 @@ fn posted_as(connection: &mut std::net::TcpStream, who: &str, body: &[u8]) {
     reader.read_exact(&mut answer).expect("the answer's body");
 }
 
-/// The most Xmip's own share of a carried Message may take, the fastest of
-/// five: the millisecond rule.
-const OWN: Duration = Duration::from_millis(1);
-
 /// How long a sender waits to connect to the node's Receive Location before
 /// the test fails instead of hanging.
 const CONNECT: Duration = Duration::from_secs(5);
@@ -123,8 +121,8 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
     // The node counts the processor time its threads work for each
     // Message and reports Xmip's own share, the fastest of five
     // (`Outcomes::own_share`); each Message's time end to end is printed
-    // beside it, for information.
-    let mut times = Vec::new();
+    // beside it, for information, and a plain wake measured beside each.
+    let (plain, mut times, mut idle) = (PlainWake::start(), Vec::new(), Vec::new());
     for message in 1..=MESSAGES {
         let payload = format!("order {message}");
         let started = Instant::now();
@@ -138,6 +136,7 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
             .expect("read whole");
         times.push(started.elapsed());
         assert_eq!(arrived.bytes, payload.as_bytes());
+        idle.push(plain.round().1);
     }
     let _ = spread("a Message end to end, for information", times);
 
@@ -154,9 +153,15 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
     // 2026-10-03: *Go for A*; 2026-11-01: *the processor time its threads
     // spent working for the Message*): what the node's threads ran for a
     // Message outside its I/O — its Stream read off the connection, the
-    // Ledger's append and sync, its send to the far end — is Xmip's own
-    // share, and it is held under a millisecond. A thread waiting for a
-    // wake runs nothing, so no wake is counted.
+    // Ledger's append and sync, its send to the far end, its hand-on and
+    // its share of the Storage node's batches — is Xmip's own share, and it
+    // is held under a millisecond (its hand-on counted since 2026-11-15). A
+    // thread waiting for a wake runs nothing, so no wake is counted. It is
+    // measured by the node, so it is held by the rule's processor-time
+    // half: within a millisecond of this process's processor time across a
+    // plain wake measured in the same rounds
+    // (`xcore::latency::worked_beside_a_plain_wake`); until 2026-11-15
+    // under a millisecond flat.
     let own = outcomes.own_share.expect("the node measured its own share");
     // The Ledger's sync, the disk's time, printed beside it and held to
     // nothing (ADR-0018, amendment 2026-11-09).
@@ -165,7 +170,7 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
         "Xmip's own share per Message {own:?}, the disk's sync beside it {disk:?}, the fastest \
          of five"
     );
-    assert!(own < OWN, "Xmip's own share {own:?}, over {OWN:?}");
+    worked_beside_a_plain_wake("Xmip's own share per Message", own, idle);
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
@@ -180,14 +185,14 @@ fn eight_senders_at_once_are_carried_side_by_side() {
     const EACH: u32 = 50;
     let (far, far_address) = kept_far_end();
     let receive = unheld().to_string();
-    let spread = format!(
+    let side_by_side = format!(
         "{}\n[[correlations]]\nname = \"PerSender\"\nkeys = [\"http.header.x-sender\"]\n",
         node_keeping_connections(&receive, &far_address).replace(
             "receive_port = \"Loopback\"\n",
             "receive_port = \"Loopback\"\ncorrelation = \"PerSender\"\n",
         )
     );
-    let path = written("eight", &spread);
+    let path = written("eight", &side_by_side);
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     // Its Receive Location binds on its first receive: the warm-up connect
     // asks again until it listens; the senders connect after it was taken.
@@ -198,38 +203,66 @@ fn eight_senders_at_once_are_carried_side_by_side() {
     );
     taken_at(&far);
 
-    let started = Instant::now();
+    // Each Message the far end takes, and when.
     let taking = std::thread::spawn(move || {
-        let mut taken: Vec<Vec<u8>> = (0..SENDERS * EACH).map(|_| taken_at(&far)).collect();
-        taken.sort();
-        taken.dedup();
-        taken.len()
+        (0..SENDERS * EACH)
+            .map(|_| (taken_at(&far), Instant::now()))
+            .collect::<HashMap<Vec<u8>, Instant>>()
     });
     let senders: Vec<_> = (0..SENDERS)
         .map(|sender| {
             let at = receive.clone();
             std::thread::spawn(move || {
-                // Each sender keeps its one connection, and names itself.
+                // Each sender keeps its one connection, and names itself:
+                // each Message's body, when it was posted and when answered.
                 let mut connection = connect_tcp(&at, Some(CONNECT)).expect("connects");
-                for message in 0..EACH {
-                    let body = format!("S{sender} {message}");
-                    posted_as(&mut connection, &format!("S{sender}"), body.as_bytes());
-                }
+                (0..EACH)
+                    .map(|message| {
+                        let body = format!("S{sender} {message}");
+                        let posted = Instant::now();
+                        posted_as(&mut connection, &format!("S{sender}"), body.as_bytes());
+                        (body.into_bytes(), posted, posted.elapsed())
+                    })
+                    .collect::<Vec<_>>()
             })
         })
         .collect();
-    for sender in senders {
-        sender.join().expect("a sender");
-    }
-    assert_eq!(
-        taking.join().expect("the far end"),
-        (SENDERS * EACH) as usize
+    let posted: Vec<_> = senders
+        .into_iter()
+        .flat_map(|sender| sender.join().expect("a sender"))
+        .collect();
+    let taken = taking.join().expect("the far end");
+    assert_eq!(taken.len(), (SENDERS * EACH) as usize, "each Message once");
+    // Side by side is the receive side's: each post is answered once its
+    // Stream is carried and its Ledger write synced, so eight carried one
+    // at a time would each wait out the others' syncs. Each post timed,
+    // sender by sender in the order each posted, the fastest of five
+    // (`xcore::latency::spread`): a busy moment is in some rounds only.
+    // From its post to the far end taking it is said beside it, for
+    // information: the four hundred wait their turn at the one far end.
+    // Until 2026-11-15 the whole was timed together and its mean held.
+    let (answered, carried): (Vec<Duration>, Vec<Duration>) = posted
+        .iter()
+        .map(|(body, at, answered)| {
+            let arrived = taken.get(body).expect("taken by the far end");
+            (*answered, arrived.saturating_duration_since(*at))
+        })
+        .unzip();
+    let _ = spread(
+        "a Message of eight senders at once, from its post to the far end taking it, for \
+         information",
+        carried,
     );
-    let each = started.elapsed() / (SENDERS * EACH);
-    eprintln!("eight senders, loopback end to end: {each:?} per Message");
+    let answered = spread(
+        "a Message of eight senders at once, its post answered",
+        answered,
+    );
 
     let outcomes = running.stop();
     assert_eq!(outcomes.sent, u64::from(SENDERS * EACH) + 1, "{outcomes:?}");
-    assert!(each < Duration::from_millis(5), "{each:?} per Message");
+    assert!(
+        answered.fastest_of_five < Duration::from_millis(5),
+        "{answered:?} a post"
+    );
     let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

@@ -5,18 +5,23 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use xcore::fastest::FIVE;
-use xcore::latency::{PlainWake, spread};
+use xcore::latency::{PlainWake, spread, woke_beside_a_plain_wake};
 use xmip_core_runtime::directory_watch::DirectoryWatch;
+
+/// What a drop wakes where a plain wake wakes one: the watching thread,
+/// and this one as it joins.
+const WAKES: u32 = 2;
 
 #[test]
 fn a_dropped_watch_ends_its_thread_at_once() {
-    // Held as the fastest of five beside the machine's own wake, round by
-    // round (`xcore::latency`): a drop wakes the watching thread and then
-    // this one as it joins, two wakes, under about a millisecond. Each
-    // watch is dropped once its thread is watching, as a watch is when a
-    // Location stops: told of a change first, so what is measured is the
-    // drop, never the thread's start on a machine with no processor free
-    // for it.
+    // Held by the wall-clock half of the rule beside the machine's own
+    // wake, round by round (`xcore::latency::woke_beside_a_plain_wake`):
+    // the fastest of five under the millisecond plus a plain wake for each
+    // of the two threads a drop wakes; until 2026-11-15 a copy of it
+    // here. Each watch is dropped once its thread is watching, as a watch
+    // is when a Location stops: told of a change first, so what is
+    // measured is the drop, never the thread's start on a machine with no
+    // processor free for it.
     let directory = std::env::temp_dir().join(format!(
         "xmip-directory-watch-dropped-{}",
         std::process::id()
@@ -42,10 +47,11 @@ fn a_dropped_watch_ends_its_thread_at_once() {
     }
     let ended = spread("a watch dropped to its thread joined", ended);
     let usual = spread("a plain channel beside it", woke).fastest_of_five;
-    assert!(
-        ended.fastest_of_five < Duration::from_millis(1) + usual * 2,
-        "the fastest of five {:?}, the machine's own wake {usual:?}",
-        ended.fastest_of_five
+    woke_beside_a_plain_wake(
+        "a watch dropped to its thread joined",
+        ended.fastest_of_five,
+        usual,
+        WAKES,
     );
     let _ = std::fs::remove_dir_all(&directory);
 }

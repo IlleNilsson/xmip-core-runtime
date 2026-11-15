@@ -31,7 +31,7 @@
 //!   time;
 //! - `directory_watch.rs`: a dropped watch ends its thread at once;
 //! - `sequenced_cost.rs` and `work_turn.rs`: what a hop's sequence check
-//!   and a Work Process's turn cost, held in a release build;
+//!   and a Work Process's turn cost, each under the millisecond;
 //! - `woken.rs`: a Message another node published is sent over the wire,
 //!   through one Storage node on `RocksDB`, within a millisecond of one the
 //!   sending node published itself, each Storage call of the sending node
@@ -39,10 +39,17 @@
 //!
 //! What it stands up is the other test programs' own, shared, not copied:
 //! `tests/running/node.rs`, `tests/plane/certified.rs`, `endpoint.rs` and
-//! `browsing.rs`,
-//! and `tests/ledger/receive_cycle.rs`, `sending.rs`, `work_design.rs` and
-//! `said.rs`. Each is written for every test of its own program, so what
-//! this program does not use of it is allowed here as dead.
+//! `browsing.rs`, and `tests/ledger/receive_cycle.rs`, `sending.rs`,
+//! `work_design.rs` and `said.rs`. Each is written for every test of its
+//! own program, so what this program does not use of it is allowed here as
+//! dead.
+//!
+//! Every figure is held by `xcore::latency`, as rust-style.md section 5c
+//! says: a wait that works as it wakes by `Rounds`, or by one of its halves
+//! beside a plain wake measured in the same rounds; a figure with no wake
+//! in it by the fastest of five under its bound, or beside what it is
+//! measured against in the same rounds. The median and the tail are printed
+//! and held by nothing.
 
 #[allow(dead_code)]
 #[path = "../plane/browsing.rs"]

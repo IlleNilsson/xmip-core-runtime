@@ -143,7 +143,7 @@ impl XmipStorage for HaltsAtPublication {
         self.0.release(claim)
     }
 
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
         self.0.hand_on(hand_on)
     }
 

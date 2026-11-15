@@ -41,7 +41,7 @@
 //! storage_kept = 67108864                     # persist's standby::KEPT
 //! storage_wait = "1m"                         # persist's storage::HOLD
 //! storage_unwaited = 16384                    # persist's storage::UNWAITED
-//! storage_due_places = 16384                  # persist's storage::DUE_QUEUES
+//! storage_writer_kept = 16777216              # persist's storage::WRITER_KEPT
 //! local_timeout = "2s"                        # plane::remote::LOCAL_TIMEOUT
 //! operate_connections = 256                   # plane::limits::CONNECTIONS
 //! operate_handshakes = 32                     # plane::limits::HANDSHAKES
@@ -110,7 +110,7 @@ pub struct Tuning {
     pub storage_kept: usize,
     pub storage_wait: Duration,
     pub storage_unwaited: usize,
-    pub storage_due_places: usize,
+    pub storage_writer_kept: usize,
     pub local_timeout: Duration,
     pub operate_connections: usize,
     pub operate_handshakes: usize,
@@ -197,7 +197,7 @@ impl Tuning {
             storage_kept: count("storage_kept"),
             storage_wait: duration("storage_wait"),
             storage_unwaited: count("storage_unwaited"),
-            storage_due_places: count("storage_due_places"),
+            storage_writer_kept: count("storage_writer_kept"),
             local_timeout: duration("local_timeout"),
             operate_connections: count("operate_connections"),
             operate_handshakes: count("operate_handshakes"),
@@ -250,8 +250,8 @@ impl Tuning {
     }
 
     /// What bounds a node's dealings with Storage nodes, and a Storage
-    /// node's with the others, what it keeps of their waits and of its
-    /// queues' due places as their primary among them
+    /// node's with the others, what it keeps of their waits and of the
+    /// records it writes as their primary among them
     /// (`persist::storage::standby`).
     #[must_use]
     pub const fn storage(&self) -> Timings {
@@ -262,7 +262,7 @@ impl Tuning {
             pass_over: self.storage_pass_over,
             kept: self.storage_kept,
             unwaited: self.storage_unwaited,
-            due_places: self.storage_due_places,
+            writer_kept: self.storage_writer_kept,
         }
     }
 
@@ -366,7 +366,7 @@ mod tests {
         );
         assert_eq!(tuning.storage_wait, persist::storage::HOLD);
         assert_eq!(tuning.storage_unwaited, persist::storage::UNWAITED);
-        assert_eq!(tuning.storage_due_places, persist::storage::DUE_QUEUES);
+        assert_eq!(tuning.storage_writer_kept, persist::storage::WRITER_KEPT);
         assert_eq!(tuning.local_timeout, LOCAL_TIMEOUT);
         assert_eq!(tuning.operate(), crate::plane::Limits::default());
         assert_eq!(tuning.sync(), xcluster::Timing::default());
@@ -429,13 +429,13 @@ mod tests {
              send_chunks_per_thread = 9\nstream_stall = \"40ms\"\noperate_connections = 8\n\
              operate_handshakes = 2\noperate_handshake = \"750ms\"\nstorage_wait = \"10s\"\n\
              storage_unwaited = 64\noperate_act = \"250ms\"\nconnect_retransmit = \"300ms\"\n\
-             connect_retransmissions = 0\nstorage_due_places = 32\n",
+             connect_retransmissions = 0\nstorage_writer_kept = 32\n",
         )
         .expect("reads");
-        // Every Storage node's due places kept: the only one's, and a
+        // What every Storage node's writer keeps: the only one's, and a
         // primary's among several, through what bounds its dealings.
-        assert_eq!(tuning.storage_due_places, 32);
-        assert_eq!(tuning.storage().due_places, 32);
+        assert_eq!(tuning.storage_writer_kept, 32);
+        assert_eq!(tuning.storage().writer_kept, 32);
         assert_eq!(tuning.storage_wait, Duration::from_secs(10));
         assert_eq!(tuning.operate_act, Duration::from_millis(250));
         assert_eq!(
@@ -595,28 +595,28 @@ mod tests {
     }
 
     #[test]
-    fn the_due_places_a_storage_writer_keeps_are_as_the_cluster_toml_says_the_node_s_winning() {
+    fn what_a_storage_writer_keeps_is_as_the_cluster_toml_says_the_node_s_winning() {
         let cluster = configure::fixture::test_cluster();
         let (first, second) = (&cluster.node(0).name, &cluster.node(1).name);
         let text = format!(
             "[service]\nname = \"xmip\"\ncluster_name = \"{}\"\n\n\
-             [tuning]\nstorage_due_places = 1024\n\n\
-             [nodes.{first}.tuning]\nstorage_due_places = 0\n\n[nodes.{second}]\n",
+             [tuning]\nstorage_writer_kept = 1024\n\n\
+             [nodes.{first}.tuning]\nstorage_writer_kept = 0\n\n[nodes.{second}]\n",
             cluster.name
         );
         let node = |text: &str, name: &str| {
             let slice = configure::cluster::slice(text, name).expect("sliced");
             let document = configure::parse_toml(&slice).expect("read");
-            Tuning::read(&document.tuning).map(|tuning| tuning.storage().due_places)
+            Tuning::read(&document.tuning).map(|tuning| tuning.storage().writer_kept)
         };
         assert_eq!(node(&text, first), Ok(0), "none kept: each read");
         assert_eq!(node(&text, second), Ok(1024));
-        let unsaid = text.replace("storage_due_places", "storage_unwaited");
-        assert_eq!(node(&unsaid, second), Ok(persist::storage::DUE_QUEUES));
-        for out in ["4194305", "-1", "\"many\""] {
+        let unsaid = text.replace("storage_writer_kept", "storage_unwaited");
+        assert_eq!(node(&unsaid, second), Ok(persist::storage::WRITER_KEPT));
+        for out in ["68719476737", "-1", "\"many\""] {
             let refused = text.replace("1024", out);
             let said = node(&refused, second).expect_err(out).join("\n");
-            assert!(said.contains("storage_due_places"), "{out}: {said}");
+            assert!(said.contains("storage_writer_kept"), "{out}: {said}");
         }
     }
 }

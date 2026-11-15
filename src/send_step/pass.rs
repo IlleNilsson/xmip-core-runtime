@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use configure::OnFailure;
-use journey::{JourneyEntry, JourneyState};
+use journey::{Journey, JourneyEntry, JourneyState};
 use persist::storage::{Durable, Failure, HandOn, Wait};
 use route::Subscriber;
 use xcore::ExecutionId;
@@ -79,6 +79,11 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     if crate::sequence::waits_for_places(runtime.sends, &departure.work.journey, &departure.to) {
         return Ended::Behind;
     }
+    // The send thread works for its Message from here to its hand-on's
+    // answer, its send apart as the payload's I/O (`xcore::spent`): its
+    // sequences read, its send, and its hand-on built and asked (ADR-0018,
+    // amendment 2026-11-15).
+    let entered = departure.spent.as_ref().map(Spent::entered);
     let began = Instant::now();
     let headed = heads(runtime, departure);
     departure.steps.set(Step::Sequences, began.elapsed());
@@ -94,14 +99,9 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
         progress,
         durable,
         claim,
-        spent,
-        measured,
         steps,
         ..
     } = departure;
-    // The send thread works for its Message now, its send apart as the
-    // payload's I/O (`xcore::spent`).
-    let entered = spent.as_ref().map(Spent::entered);
     // The far end is told the claim's fence beside the deduplication key.
     progress.fence = claim.fence;
     let id = work.journey.journey_id();
@@ -130,20 +130,7 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
             .elapsed()
             .saturating_sub(durable_took.unwrap_or_default()),
     );
-    drop(entered);
-    // Sent, its far end has it: Xmip's own share of its Message is read
-    // now, with its share of the Storage node's work on its Publication;
-    // and the disk's time beside it, with its share of that Publication's
-    // sync.
-    if departed.iter().any(Departed::sent)
-        && let Some(spent) = spent
-    {
-        let ledger = durable.as_ref();
-        *measured = Some(Measured {
-            own: spent.own(ledger.map(Durable::worked).unwrap_or_default()),
-            disk_sync: spent.disk_sync(ledger.map(Durable::synced).unwrap_or_default()),
-        });
-    }
+    let sent = departed.iter().any(Departed::sent);
     if step.is_lost(id) {
         return Ended::Lost(departed);
     }
@@ -168,10 +155,14 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     }
     let handing = Instant::now();
     let handed = written(runtime, departure, state, outcome, kept);
+    drop(entered);
     departure.steps.set(Step::HandOn, handing.elapsed());
     match handed {
-        Ok(true) => {}
-        Ok(false) => return Ended::Lost(departed),
+        // Sent, its far end has it, and handed on: Xmip's own share of its
+        // Message is read now (`Departure::measured`).
+        Ok(Some(handed)) if sent => departure.measured(&handed),
+        Ok(Some(_)) => {}
+        Ok(None) => return Ended::Lost(departed),
         Err(why) => return Ended::Unwritten(why),
     }
     match (state, kept) {
@@ -188,6 +179,27 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     }
 }
 
+impl Departure {
+    /// Its Message's own share read, once its hand-on, `handed`, is written:
+    /// what its account counted, with its shares of what the Storage node's
+    /// writer worked on what it was sent under and on its hand-on; and the
+    /// disk's time beside it, with their syncs' shares (ADR-0018, amendment
+    /// 2026-11-15: until then its hand-on was in no one's share). Nothing
+    /// where it has no account, read from the Ledger.
+    fn measured(&mut self, handed: &Durable) {
+        let Some(spent) = &self.spent else {
+            return;
+        };
+        let under = self.durable.as_ref();
+        let worked = under.map_or(Duration::ZERO, Durable::worked) + handed.worked();
+        let synced = under.map_or(Duration::ZERO, Durable::synced) + handed.synced();
+        self.measured = Some(Measured {
+            own: spent.own(worked),
+            disk_sync: spent.disk_sync(synced),
+        });
+    }
+}
+
 /// `departure`, whose send thread panicked before its hand-on, written
 /// Failed with `why` — kept in its queue for an operator, as every Message
 /// that failed is — and its claim ended; released where Xmip Storage did
@@ -200,11 +212,11 @@ pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &
         why.to_string(),
         None,
     ) {
-        Ok(true) => Ended::Failed {
+        Ok(Some(_)) => Ended::Failed {
             reason: format!("{}: {why}", departure.to.name()),
             departed: Vec::new(),
         },
-        Ok(false) => Ended::Lost(Vec::new()),
+        Ok(None) => Ended::Lost(Vec::new()),
         Err(unwritten) => {
             let _ = runtime.storage.release(&departure.claim);
             Ended::Unwritten(unwritten)
@@ -216,16 +228,19 @@ pub(super) fn abandoned(runtime: &Runtime<'_>, departure: &mut Departure, why: &
 /// tried, `outcome`, and its tries; its place let go of where it completed,
 /// or, Failed, entered in its queue's index of failed Messages with
 /// `outcome` as why, or, waiting, its due time `kept` from now kept at its
-/// place; its claim ended. `true` where it was written, and the Journey
-/// kept on `departure`; `false` where the claim was no longer this node's;
-/// in words where Xmip Storage did not take it.
+/// place; its claim ended. Where it was written, its durability, what the
+/// Storage node's batch worked for it (`Durable::worked`); nothing where the
+/// claim was no longer this node's; in words where Xmip Storage did not
+/// take it. The Journey is kept on `departure` as the pass left it, moved
+/// out and back, never copied (2026-11-15): after a hand-on not taken only
+/// its identifier is read, and its Message is read again from the Ledger.
 fn written(
     runtime: &Runtime<'_>,
     departure: &mut Departure,
     state: JourneyState,
     outcome: String,
     kept: Option<Duration>,
-) -> Result<bool, String> {
+) -> Result<Option<Durable>, String> {
     departure.settled();
     // Failed, it waits in its queue for an operator, entered in the queue's
     // index of failed Messages in this same write, with why.
@@ -233,7 +248,8 @@ fn written(
         queue: departure.queue,
         reason: outcome.clone(),
     });
-    let mut journey = departure.work.journey.clone().append(
+    let id = departure.work.journey.journey_id();
+    let mut journey = std::mem::replace(&mut departure.work.journey, Journey::new(id)).append(
         JourneyEntry {
             execution_id: ExecutionId::new(runtime.ids.next_u128()),
             message_id: departure.work.message.message_id(),
@@ -271,15 +287,11 @@ fn written(
         }),
         kept_for_nanos: None,
     };
-    match runtime.storage.hand_on(&hand_on) {
-        Ok(true) => {
-            departure.work.journey = journey;
-            Ok(true)
-        }
-        Ok(false) => Ok(false),
+    departure.work.journey = journey;
+    match runtime.storage.hand_on(hand_on) {
+        Ok((taken, handed)) => Ok(taken.then_some(handed)),
         Err(error) => Err(format!(
-            "Xmip Storage did not take the send of the Message of the Journey {}: {error}",
-            journey.journey_id()
+            "Xmip Storage did not take the send of the Message of the Journey {id}: {error}"
         )),
     }
 }

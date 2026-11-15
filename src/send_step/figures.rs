@@ -250,7 +250,22 @@ impl SendStep {
             read_at: Some((read.next, read.count)),
             oldest: read.failed.iter().map(FailedMessage::of).collect(),
         };
-        self.lock().failing.insert(port.to_string(), window);
+        self.keep_failing(port, window);
+    }
+
+    /// `window`, a read of `port`'s index of failed Messages, kept — unless
+    /// what it keeps was read after it. Reads made side by side, a hand-on's
+    /// each, land in any order, and one landing late kept a count already
+    /// passed (found 2026-11-15: 39 of 40 failed shown after the fortieth).
+    fn keep_failing(&self, port: &str, window: Window) {
+        let mut state = self.lock();
+        let newer = state
+            .failing
+            .get(port)
+            .is_some_and(|kept| kept.after(&window));
+        if !newer {
+            state.failing.insert(port.to_string(), window);
+        }
     }
 
     /// A whole read of `queue` found only `present`, by Journey and place:
@@ -296,4 +311,47 @@ pub(super) struct Window {
     /// stand, nothing failed there or left it since.
     read_at: Option<(u64, u64)>,
     oldest: Vec<FailedMessage>,
+}
+
+impl Window {
+    /// Whether this was read after `other`: the index's next place, and
+    /// how many ever left it — its next place less its count — only grow,
+    /// so a later read has both at least as far, and one of them further.
+    fn after(&self, other: &Self) -> bool {
+        let (Some(this), Some(that)) = (self.read_at, other.read_at) else {
+            return false;
+        };
+        let left = |(next, count): (u64, u64)| next.saturating_sub(count);
+        this != that && this.0 >= that.0 && left(this) >= left(that)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(next: u64, count: u64) -> Window {
+        Window {
+            count,
+            read_at: Some((next, count)),
+            oldest: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_read_of_the_failed_landing_after_a_later_one_keeps_the_later() {
+        let step = super::super::fixture::step();
+        let failing = |step: &SendStep| step.figures().get("Out").map(|f| f.failing);
+        step.keep_failing("Out", read(40, 40));
+        step.keep_failing("Out", read(39, 39));
+        assert_eq!(failing(&step), Some(40), "the read of 39 was made before");
+        step.keep_failing("Out", read(41, 38));
+        assert_eq!(
+            failing(&step),
+            Some(38),
+            "a later read: three left it since"
+        );
+        step.keep_failing("Out", read(41, 38));
+        assert_eq!(failing(&step), Some(38), "the same read again");
+    }
 }

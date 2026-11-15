@@ -23,6 +23,7 @@
 
 use xcore::JourneyId;
 
+use super::reading::Went;
 use super::{State, WorkStep};
 
 /// What an admission answered.
@@ -58,12 +59,19 @@ impl Owning<'_> {
 }
 
 impl Drop for Owning<'_> {
+    /// Its place given back first, then a turn that unwound counted: what
+    /// reads it unwound reads it let go of, so a read asked then takes it up
+    /// (2026-11-15: counted first, a read asked between the two passed it
+    /// over as still in a turn here, and nothing asked again).
     fn drop(&mut self) {
-        let done = self.ended.unwrap_or_else(|| {
+        self.step.disown(
+            self.journey,
+            self.at,
+            (self.ended == Some(true), self.since),
+        );
+        if self.ended.is_none() {
             self.step.unwinding(self.journey, self.at);
-            false
-        });
-        self.step.disown(self.journey, self.at, (done, self.since));
+        }
     }
 }
 
@@ -116,6 +124,39 @@ impl WorkStep {
         self.wake.notify_all();
     }
 
+    /// How the round of the Work Process at `at`, within `share`, went, kept
+    /// for its next: its pass as `went`, its head as `headed`. One that found
+    /// no place waits for one only while none is free, as the lock its turns
+    /// give their places back under says: every turn its round admitted may
+    /// have ended before the round was kept, and then none is left to free
+    /// one (found 2026-11-15: a pass behind a page another node held stood
+    /// waiting for good).
+    pub(super) fn round_went(
+        &self,
+        (at, share): (usize, usize),
+        (went, headed): (Option<Went>, Option<Went>),
+    ) {
+        let mut state = self.lock();
+        let full = state.owned.len() >= self.limits.most.max(1);
+        let room = !full && state.readings[at].held < share;
+        let reading = &mut state.readings[at];
+        if let Some(went) = went {
+            reading.went(went);
+        }
+        match headed {
+            Some(Went::Unanswered) => reading.went(Went::Unanswered),
+            Some(Went::Starved(_)) => {
+                reading.headed();
+                reading.starve();
+            }
+            Some(Went::On(_)) => reading.headed(),
+            None => {}
+        }
+        if room {
+            reading.freed();
+        }
+    }
+
     /// The turn of `journey`, of the Work Process at `at`, unwound past its
     /// own catch: counted and audited at the stage `process`, its claim, if
     /// one was taken, left to lapse.
@@ -150,7 +191,16 @@ pub(super) fn share(most: usize, busy: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::share;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use persist::fixture::Memory;
+    use persist::storage::{Embedded, XmipStorage};
+    use secret::{Held, KekName};
+
+    use super::super::reading::Reading;
+    use super::*;
+    use crate::pool::Limits;
 
     #[test]
     fn the_pool_is_shared_among_the_work_processes_with_work() {
@@ -158,5 +208,75 @@ mod tests {
         assert_eq!(share(8, 3), 3);
         assert_eq!(share(2, 5), 1, "each has one at least");
         assert_eq!(share(0, 0), 1);
+    }
+
+    /// A step of a pool of `most` places, one Work Process's queue being
+    /// read from the start.
+    fn step(most: usize) -> WorkStep {
+        let keys = Held::new(secret::fixture::Memory::default());
+        let kek = KekName::new("storage").expect("a name");
+        let node = Embedded::open(
+            Memory::default(),
+            Memory::default(),
+            Memory::default(),
+            &keys,
+            &kek,
+        );
+        let storage: Arc<dyn XmipStorage> = Arc::new(node.expect("opened"));
+        let cluster = configure::fixture::test_cluster();
+        let limits = Limits {
+            most,
+            idle: Duration::from_secs(60),
+        };
+        let step = WorkStep::new(
+            (&cluster.scope(), &cluster.node_scope(0)),
+            storage,
+            (limits, super::super::WORK_SCAN),
+            None,
+            Vec::new(),
+        );
+        let mut reading = Reading::default();
+        reading.asked(None);
+        let _ = reading.reads();
+        step.lock().readings.push(reading);
+        step
+    }
+
+    fn turn(admitted: Admitted<'_>) -> Owning<'_> {
+        match admitted {
+            Admitted::Turn(owning) => owning,
+            Admitted::Held | Admitted::Full => panic!("admitted for a turn"),
+        }
+    }
+
+    fn reads_on(step: &WorkStep) -> bool {
+        step.lock().readings[0].goes_on()
+    }
+
+    #[test]
+    fn a_round_that_found_no_place_reads_on_where_its_turns_all_ended_before_it_was_kept() {
+        let step = step(2);
+        let ids = [1, 2, 3].map(JourneyId::new);
+        let first = turn(step.admit(ids[0], 0, 2));
+        let second = turn(step.admit(ids[1], 0, 2));
+        assert!(matches!(step.admit(ids[2], 0, 2), Admitted::Full));
+        // Both turns end before the round that admitted them is kept.
+        first.ended(false);
+        second.ended(false);
+        step.round_went((0, 2), (Some(Went::Starved((0, 2))), None));
+        assert!(
+            reads_on(&step),
+            "a place is free, and no turn left to free one"
+        );
+
+        // A round that finds every place held waits, until a turn ends.
+        let _ = step.lock().readings[0].reads();
+        let first = turn(step.admit(ids[0], 0, 2));
+        let second = turn(step.admit(ids[1], 0, 2));
+        step.round_went((0, 2), (Some(Went::Starved((0, 2))), None));
+        assert!(!reads_on(&step), "every place held: it waits for one");
+        first.ended(false);
+        assert!(reads_on(&step), "a turn ended: it reads on");
+        second.ended(false);
     }
 }

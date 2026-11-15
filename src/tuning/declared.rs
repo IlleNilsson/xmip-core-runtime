@@ -269,12 +269,12 @@ pub const TUNING: &Settings = &Settings {
             applies: Applies::Both,
         },
         count(
-            "storage_due_places",
-            (0, 4_194_304),
-            persist::storage::DUE_QUEUES,
-            "How many queues' places by when each is due a Storage node's writer keeps, so a \
-             write into one reads none of them from the store; past it the first kept is let go \
-             and read again by the next write into it.",
+            "storage_writer_kept",
+            (0, 68_719_476_736),
+            persist::storage::WRITER_KEPT,
+            "The bytes of the records it wrote a Storage node's writer keeps, so a write that \
+             decides on one does not read it from the store; past them the first kept is let go \
+             and read again by the next write that asks.",
         ),
         duration(
             "local_timeout",

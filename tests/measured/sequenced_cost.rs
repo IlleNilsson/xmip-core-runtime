@@ -4,19 +4,23 @@
 //! and whether it heads each sequence of the point. A place seen at the
 //! head is remembered, so the check that lets work go costs no Ledger read;
 //! one waiting behind another asks the Ledger once each time it is looked
-//! at. Both are measured here, over places of an in-order Send Port.
+//! at. Both are measured here, over places of an in-order Send Port. A
+//! check waits on no wake, the Ledger read in process, so each is held by
+//! the fastest of five under the millisecond (`xcore::latency::spread`).
+//! Until 2026-11-15 their medians were held in a release build only, which
+//! the estate never builds, so the hold never ran.
 
 use std::time::{Duration, Instant};
 
 use configure::OnFailure;
 use journey::Journey;
+use xcore::latency::spread;
 use xmip_core_runtime::fixture::FarEnd;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 use xmip_core_runtime::sequence::{heads, stream_heads};
 
 use super::receive_cycle::{node, on_node};
-use super::say;
 use super::sending::{in_order, memory, onward, order, out, sender};
 
 /// Every place `journey` holds, checked as a hop checks them.
@@ -27,11 +31,6 @@ fn checked(storage: &dyn persist::storage::XmipStorage, journey: &Journey) -> bo
             .sequences
             .iter()
             .all(|sequenced| heads(storage, sequenced.queue, member).expect("asked"))
-}
-
-fn median(mut spent: Vec<Duration>) -> (Duration, Duration) {
-    spent.sort();
-    (spent[spent.len() / 2], spent[spent.len() - 1])
 }
 
 #[test]
@@ -65,18 +64,14 @@ fn a_hops_check_of_its_sequences_costs_far_under_a_millisecond() {
                 assert!(!checked(storage.as_ref(), journey), "behind the first");
                 waiting.push(began.elapsed());
             }
-            let (ahead, ahead_most) = median(ahead);
-            let (waiting, waiting_most) = median(waiting);
-            say(&format!(
-                "a hop's sequence check: at the head median {ahead:?} (slowest {ahead_most:?}), \
-             behind another median {waiting:?} (slowest {waiting_most:?})"
-            ));
-            // The millisecond rule is a release build's: a debug build's figures
-            // are said and not held to it, as the estate's other figures are.
-            if !cfg!(debug_assertions) {
-                assert!(ahead < Duration::from_millis(1), "at the head: {ahead:?}");
-                assert!(waiting < Duration::from_millis(1), "behind: {waiting:?}");
-            }
+            let ahead = spread("a hop's sequence check at the head", ahead).fastest_of_five;
+            let waiting = spread("a hop's sequence check behind another", waiting);
+            let millisecond = Duration::from_millis(1);
+            assert!(
+                ahead < millisecond,
+                "at the head: {ahead:?}, the fastest of five"
+            );
+            assert!(waiting.fastest_of_five < millisecond, "behind: {waiting:?}");
         },
     );
 }

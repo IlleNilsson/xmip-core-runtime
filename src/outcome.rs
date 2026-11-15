@@ -157,18 +157,21 @@ pub struct Outcomes {
     pub not_sent: u64,
     /// Xmip's own share of a sent Message, the fastest of five
     /// (`xcore::fastest`): the processor time the node's threads worked for
-    /// it from its transport handing it over to its far end having it,
+    /// it from its transport handing it over to its hand-on written,
     /// outside the payload's I/O — its Stream read from its transport, the
-    /// Ledger's appends and syncs, its send — with its share of the Storage
-    /// node's batch (`xcore::spent`). What the millisecond rule holds;
-    /// `None` until a Message carried in memory from its receive is sent.
+    /// Ledger's appends and syncs, its send — with its shares of the
+    /// Storage node's batches of its Publication and its hand-on
+    /// (`xcore::spent`; ADR-0018, amendment 2026-11-15). What the
+    /// millisecond rule holds; `None` until a Message carried in memory
+    /// from its receive is sent.
     pub own_share: Option<Duration>,
     /// The disk's time of a sent Message, the fastest of five, beside its
     /// own share: what its threads waited for a storage device to sync —
-    /// its sent file's and that file's directory's — with its share of the
-    /// Storage node's sync of its Publication (`xcore::spent::on_sync`).
-    /// Never Xmip's, and never held to the millisecond (ADR-0018,
-    /// amendment 2026-11-09); `None` where `own_share` is.
+    /// its sent file's and that file's directory's — with its shares of the
+    /// Storage node's syncs of its Publication and its hand-on
+    /// (`xcore::spent::on_sync`). Never Xmip's, and never held to the
+    /// millisecond (ADR-0018, amendment 2026-11-09); `None` where
+    /// `own_share` is.
     pub disk_sync: Option<Duration>,
     /// Where its stop in order left its membership row saying it runs, why,
     /// in one sentence (`crate::membership::Joined::stop`): what its stop
@@ -177,7 +180,7 @@ pub struct Outcomes {
 }
 
 /// What one sent Message took, measured from its transport handing it over
-/// to its far end having it: Xmip's own share ([`xcore::spent::Spent::own`])
+/// to its hand-on written: Xmip's own share ([`xcore::spent::Spent::own`])
 /// and the disk's time beside it ([`xcore::spent::Spent::disk_sync`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Measured {

@@ -63,7 +63,7 @@ fn publish(storage: &dyn XmipStorage, queue: u128, id: u128) {
 fn taken_out(storage: &dyn XmipStorage, queue: u128, id: u128) {
     let holder = configure::fixture::test_cluster().node_scope(0);
     let claim = storage.claim(JourneyId::new(id), &holder, id, Duration::from_secs(30));
-    let handed = storage.hand_on(&HandOn {
+    let handed = storage.hand_on(HandOn {
         claim: claim.expect("asked").expect("claimed"),
         result: JourneyRecord {
             journey: JourneyId::new(id),
@@ -80,7 +80,7 @@ fn taken_out(storage: &dyn XmipStorage, queue: u128, id: u128) {
         waits: None,
         kept_for_nanos: None,
     });
-    assert!(handed.expect("handed on"));
+    assert!(handed.expect("handed on").0);
 }
 
 /// Wait, bounded, until `holds`.

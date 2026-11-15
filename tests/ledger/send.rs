@@ -5,7 +5,8 @@
 //!   Message with it, kept in its queue for an operator, and the sender of
 //!   the receive was acknowledged all the same: the receive cycle completed
 //!   before anything was sent;
-//! - a send that succeeds is written Completed;
+//! - a send that succeeds is written Completed; one whose hand-on Xmip
+//!   Storage did not take settles Unwritten, and is read again and sent;
 //! - a retry waiting for its backoff holds no thread, no claim and no
 //!   place: its due time is kept at its place in its queue, a stop does not
 //!   wait it out, and a short one is tried again and sent; a restart keeps
@@ -23,14 +24,14 @@ use journey::JourneyState;
 use route::Subscriber;
 use transport::TransportError;
 use xcore::JourneyId;
-use xmip_core_runtime::fixture::FarEnd;
+use xmip_core_runtime::fixture::{FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 
 use super::receive_cycle::{node, on_node};
 use super::sending::{
-    dispatching, in_order, journey, memory, onward, order, out, refusing, sender, taking, took,
-    until, waiting,
+    dispatching, in_order, interleaving, journey, memory, onward, order, out, refusing, sender,
+    taking, took, until, waiting,
 };
 
 #[test]
@@ -88,6 +89,38 @@ fn a_send_that_succeeds_is_written_completed_and_leaves_its_queue() {
                 assert_eq!(took(&taken), ["order 1"]);
                 assert_eq!(waiting(runtime), [] as [JourneyId; 0]);
                 assert_eq!(runtime.send.figures()["Out"].sent, 1);
+            });
+        },
+    );
+}
+
+/// A hand-on Xmip Storage did not take settles Unwritten: its claim lapses,
+/// and its Message is read again from the Ledger and sent again, at least
+/// once and never lost; what the pass that went unwritten appended to its
+/// Journey was never kept (2026-11-15: the pass moves the Journey out of
+/// its departure and back, never copying it).
+#[test]
+fn a_hand_on_xmip_storage_did_not_take_settles_unwritten_and_its_message_is_sent_again() {
+    let (failing, storage) = interleaving();
+    let (far, taken) = FarEnd::answering(taking());
+    let sending = sender(node(), far, out(|_| {}));
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sending,
+        |runtime, pickup, gate| {
+            failing.fail(Operation::HandOn, 1);
+            dispatching(runtime, |told| {
+                let carried = carry(runtime, pickup, gate, order(1));
+                let id = carried.journeys[0].journey_id();
+                told.wait_for(id, "unwritten");
+                told.wait_for(id, "completed");
+                let sent = journey(storage.as_ref(), id);
+                assert_eq!(sent.state, JourneyState::Completed);
+                let sends = sent.entries().iter().filter(|e| e.action == "send");
+                assert_eq!(sends.count(), 1, "the pass written, alone");
+                assert_eq!(took(&taken), ["order 1", "order 1"], "sent again");
+                assert_eq!(waiting(runtime), [] as [JourneyId; 0]);
             });
         },
     );

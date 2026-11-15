@@ -196,11 +196,11 @@ pub struct Departure {
     /// transport handed it over, where its receive cycle handed it on
     /// (`xcore::spent`); `None` where it was read from the Ledger.
     pub spent: Option<Spent>,
-    /// Xmip's own share of its Message, once sent: the processor time its
-    /// threads worked for it outside its I/O, from its transport handing it
-    /// over to its far end having it ([`Spent::own`]); and the disk's time
-    /// beside it, its waits for a storage device to sync
-    /// ([`Spent::disk_sync`]).
+    /// Xmip's own share of its Message, once sent and handed on: the time
+    /// its threads worked for it outside its I/O, from its transport handing
+    /// it over to its hand-on's answer, with its shares of the Storage
+    /// node's batches of its Publication and its hand-on ([`Spent::own`]);
+    /// and the disk's time beside it ([`Spent::disk_sync`]).
     pub measured: Option<Measured>,
     /// What its send took on this node so far, step by step.
     pub steps: Steps,

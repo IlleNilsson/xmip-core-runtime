@@ -203,7 +203,7 @@ impl XmipStorage for Failing {
         self.beneath.read_instance_key(correlation)
     }
 
-    fn hand_on(&self, hand_on: &HandOn) -> Result<bool, PersistError> {
+    fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
         let asked = self.asked(Operation::HandOn)?;
         let answer = self.beneath.hand_on(hand_on);
         self.answered(Operation::HandOn, asked, answer)
