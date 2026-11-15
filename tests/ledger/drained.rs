@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tcp::TcpTransport;
-use transport::{Arrivals, Arrived, Directions, Transport, Waiting};
+use transport::{Arrivals, Arrived, Configured, Directions, Transport, Waiting};
 use xmip_core_runtime::fixture::until_listening;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::receiving::Receiving;

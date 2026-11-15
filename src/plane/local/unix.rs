@@ -1,5 +1,7 @@
 //! The local operate endpoint on Unix: a Unix domain socket in the node's
-//! runtime folder, `/run/xmip/` on Linux and `/var/run/xmip/` on macOS.
+//! folder, in the folder of local endpoints — `/run/xmip/` on Linux and
+//! `/var/run/xmip/` on macOS, or the one `XMIP_RUNTIME_DIRECTORY` names
+//! (ADR-0014, amendment 2026-11-15; `super::folders`).
 //!
 //! **Who may open it**: the node's account and the superuser always, and
 //! each user or group `[operate] admit` names; nobody else. The kernel
@@ -13,10 +15,11 @@
 //! the kernel's word against the admitted the second (the owner,
 //! 2026-10-21, where it was `0666` and the kernel's word the only gate). An
 //! admitted account outside the group is refused by the file system.
-//! **The folder** must be the node's account's or the superuser's and writable
-//! by nobody else, or a stranger could put a socket of their own where a
-//! surface looks; a node refuses to make its endpoint in any other (open
-//! problem 35).
+//! **The folders** must be fit, or a stranger could put a socket of their
+//! own where a surface looks: the node's folder its account's, the folder
+//! above it the node's account's or the superuser's, and neither writable by
+//! anyone else; a node refuses to make its endpoint in any other (open
+//! problem 35; both levels since 2026-11-15, `super::folders::guarded`).
 //!
 //! A socket has a read timeout, so a read waiting on its peer is ended by
 //! `net::watched` looking between short ones, and [`Cancel`] has nothing
@@ -24,7 +27,7 @@
 
 use std::io::{Read, Write};
 #[cfg(feature = "node")]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "node")]
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
@@ -150,7 +153,7 @@ impl Acceptor {
         } else {
             None
         };
-        guarded(path.parent().unwrap_or_else(|| Path::new("/")))?;
+        super::folders::readied(path)?;
         if path.exists() {
             if UnixStream::connect(path).is_ok() {
                 return Err(said(&"another node listens there"));
@@ -195,39 +198,6 @@ impl Drop for Acceptor {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
-}
-
-/// Whether `folder` is fit to hold a node's endpoint: there, the node's
-/// account's or the superuser's, and writable by nobody else.
-///
-/// # Errors
-///
-/// What makes it unfit, in words.
-#[cfg(feature = "node")]
-pub(crate) fn guarded(folder: &Path) -> Result<(), String> {
-    let found = std::fs::metadata(folder).map_err(|error| {
-        format!(
-            "{}: {error}; the service manager makes it for the node's account",
-            folder.display()
-        )
-    })?;
-    let node = nix::unistd::geteuid().as_raw();
-    if found.uid() != node && found.uid() != 0 {
-        return Err(format!(
-            "{} belongs to uid {}, not the node's account or the superuser",
-            folder.display(),
-            found.uid()
-        ));
-    }
-    if found.mode() & 0o022 != 0 {
-        return Err(format!(
-            "{} may be written by others (mode {:o}); a local endpoint is made only in a \
-             folder only its owner writes",
-            folder.display(),
-            found.mode() & 0o7777
-        ));
-    }
-    Ok(())
 }
 
 /// One connection, either end.
@@ -369,6 +339,7 @@ pub(crate) fn wake(path: &Path) -> bool {
 #[cfg(feature = "node")]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn the_node_and_the_superuser_are_admitted_and_others_only_where_named() {
@@ -386,35 +357,31 @@ mod tests {
     }
 
     #[test]
-    fn a_name_nobody_has_is_refused_and_a_folder_others_write_is_unfit() {
+    fn a_name_nobody_has_is_refused() {
         let nobody = Admitted::named(&["xmip-no-such-account".to_string()]).unwrap_err();
         assert!(nobody.contains("knows no user or group"), "{nobody}");
         assert_eq!(
             Admitted::named(&["root".to_string()]).map(|a| a.users),
             Ok(vec![0])
         );
-        let open = std::env::temp_dir().join(format!("xmip-unfit-{}", std::process::id()));
-        std::fs::create_dir_all(&open).expect("a folder");
-        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).expect("open");
-        let unfit = guarded(&open).unwrap_err();
-        assert!(unfit.contains("may be written by others"), "{unfit}");
-        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("shut");
-        assert_eq!(guarded(&open), Ok(()));
-        std::fs::remove_dir(&open).expect("removed");
     }
 
-    /// A folder only its owner writes, for a test's sockets.
+    /// A folder of local endpoints only its owner writes, with a node's
+    /// folder in it, for a test's sockets.
     fn folder(test: &str) -> PathBuf {
         let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).expect("a folder");
-        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("shut");
+        let own = folder.join("node");
+        std::fs::create_dir_all(&own).expect("a folder");
+        for shut in [&folder, &own] {
+            std::fs::set_permissions(shut, std::fs::Permissions::from_mode(0o755)).expect("shut");
+        }
         folder
     }
 
     #[test]
     fn a_socket_others_are_admitted_to_is_0660_of_its_group_and_0600_otherwise() {
         let folder = folder("socket-group");
-        let path = folder.join("node.sock");
+        let path = folder.join("node").join("node.sock");
         let alone = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
         let found = std::fs::metadata(&path).expect("the socket");
         assert_eq!(found.mode() & 0o777, 0o600);

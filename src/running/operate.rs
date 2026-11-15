@@ -24,7 +24,7 @@ use crate::act_watch::{ActWatch, Door};
 use crate::plane::local::Admitting;
 use crate::plane::vouched::Relaying;
 use crate::plane::{Grants, Listener, Published};
-use crate::registration::node_service_name;
+use crate::registration::local_endpoint;
 use crate::running::Running;
 
 impl Running {
@@ -119,13 +119,15 @@ impl Running {
     }
 
     /// The node's local endpoint's name: `[operate] local`, else the name
-    /// its Xmip Service has, `xmip-<node>` (ADR-0053).
+    /// its Xmip Service has, `xmip-<node>` (ADR-0053), by the one rule its
+    /// registration names its folder by (`registration::local_endpoint`).
     #[must_use]
     pub fn local_endpoint(&self) -> String {
-        self.operate
+        let configured = self
+            .operate
             .as_ref()
-            .and_then(|operate| operate.local.clone())
-            .unwrap_or_else(|| node_service_name(&self.node))
+            .and_then(|operate| operate.local.as_deref());
+        local_endpoint(&self.node, configured)
     }
 
     /// `[tuning] local_timeout`: how long a surface's call to the local

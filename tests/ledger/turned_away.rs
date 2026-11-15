@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use http::HttpTransport;
-use transport::Transport;
+use transport::{Configured, Transport};
 use xaudit::program_audit::ProgramAudit;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::receiving::Receiving;
