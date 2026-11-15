@@ -29,7 +29,7 @@ use xmip_core_runtime::work_step::{KeyWord, ResolvedSet};
 use super::receive_cycle::{Sender, subscription};
 
 /// How long a test waits for what it expects before it fails.
-const PATIENCE: Duration = Duration::from_secs(10);
+pub const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A test Storage node in memory.
 pub fn memory() -> Arc<dyn XmipStorage> {

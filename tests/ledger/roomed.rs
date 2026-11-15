@@ -29,6 +29,7 @@ use xmip_core_runtime::tuning::Tuning;
 use super::bounded::{Made, alone};
 use super::receive_cycle::{Sender, node, on_node};
 use super::sending::{onward, until};
+use super::stopped::Stop;
 use super::{directory, test_node};
 
 /// What every Location's far end shares: how many arrivals were taken and
@@ -171,7 +172,12 @@ fn serve_two(test: &str, tuning: Tuning, (items, length): (usize, u64), most: us
                 location("East", east, gate, most),
                 location("West", west, gate, most),
             ];
-            served(runtime, pickup, &locations, || {
+            let left = || {
+                let [east, west] = lefts.each_ref().map(|left| left.locked().len());
+                let untold = counts.untold.load(Ordering::Acquire);
+                format!("{east} and {west} left at the far ends, {untold} taken and untold")
+            };
+            served(runtime, pickup, &locations, &left, || {
                 lefts.iter().all(|left| left.locked().is_empty())
                     && counts.untold.load(Ordering::Acquire) == 0
             });
@@ -181,11 +187,13 @@ fn serve_two(test: &str, tuning: Tuning, (items, length): (usize, u64), most: us
     Arc::try_unwrap(counts).unwrap_or_else(|_| panic!("every far end let go"))
 }
 
-/// Every one of `locations` served on `runtime` until `done`, then stopped.
+/// Every one of `locations` served on `runtime` until `done`, then stopped;
+/// what was `left` said where `done` never came.
 fn served(
     runtime: &Runtime<'_>,
     pickup: &Pickup,
     locations: &[Receiving],
+    left: &dyn Fn() -> String,
     done: impl Fn() -> bool,
 ) {
     let stopping = Stopping::default();
@@ -201,8 +209,10 @@ fn served(
                 })
             })
             .collect();
+        // Raised however the wait ends (`super::stopped`).
+        let stop = Stop::saying(&stopping, left);
         until(done, "every backlog taken and told");
-        stopping.raise();
+        drop(stop);
         for one in serving {
             one.join().expect("served").expect("stopped when asked");
         }

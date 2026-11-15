@@ -13,6 +13,7 @@ use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::receiving::Receiving;
 
 use super::receive_cycle::on_runtime;
+use super::stopped::until_stopped;
 use super::{directory, test_node};
 
 /// Why each of three arrivals' far end could not be told: two alike.
@@ -113,12 +114,10 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
         };
         let stopping = xmip_core_runtime::stopping::Stopping::default();
         let carried = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            location.serve(scope, runtime, pickup, &stopping, |_| {
-                if carried.fetch_add(1, Ordering::AcqRel) + 1 == WHY.len() {
-                    stopping.raise();
-                }
-            })
+        until_stopped(&location, (runtime, pickup), &stopping, |_| {
+            if carried.fetch_add(1, Ordering::AcqRel) + 1 == WHY.len() {
+                stopping.raise();
+            }
         })
     });
     ended.expect("the Location went on, and stopped when asked");

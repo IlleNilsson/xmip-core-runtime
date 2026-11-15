@@ -18,6 +18,7 @@ use xmip_core_runtime::stopping::Stopping;
 
 use super::drained::location;
 use super::receive_cycle::on_runtime;
+use super::stopped::until_stopped;
 use super::{directory, test_node};
 
 /// How long a caller waits on its answer.
@@ -63,7 +64,8 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
         };
         std::thread::scope(|scope| {
             let calling = scope.spawn(|| callers(&address));
-            let ended = location.serve(scope, runtime, pickup, &stopping, |_| stopping.raise());
+            let raise = |_: &_| stopping.raise();
+            let ended = until_stopped(&location, (runtime, pickup), &stopping, raise);
             (ended, calling.join().expect("the callers"))
         })
     });

@@ -216,7 +216,7 @@ impl SendStep {
             .is_some_and(|owned| owned.standing.lost || owned.standing.said);
         let port = departure.to.name().to_string();
         state.figures.entry(port).or_default().lost += 1;
-        state.owned.remove(&id);
+        state.let_go((id, departure.queue), self.watch.asked());
         state.freed();
         drop(state);
         self.wake.notify_all();

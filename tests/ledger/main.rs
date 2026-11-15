@@ -112,6 +112,7 @@ mod send_raced;
 mod send_streamed;
 mod send_waiting;
 mod sending;
+mod stopped;
 mod stream_order;
 mod turned_away;
 mod unsynced;

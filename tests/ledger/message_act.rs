@@ -10,10 +10,13 @@
 //!   words, and so is a word that is no act on a Message;
 //! - the Port's figures say it is blocked while the failed Message waits,
 //!   and neither failing nor blocked once it is acted on, its last failure
-//!   kept apart as history.
+//!   kept apart as history;
+//! - a scan whose read of the queue came before the Message failed takes
+//!   nothing of it once its failure is settled, so an act claims it at
+//!   once, never refused as though another node held it.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 
 use configure::OnFailure;
 use journey::JourneyState;
@@ -21,13 +24,14 @@ use observe::Act;
 use transport::TransportError;
 use xaudit::program_audit::ProgramAudit;
 use xcore::JourneyId;
-use xmip_core_runtime::fixture::{Answer, FarEnd};
+use xmip_core_runtime::fixture::{Answer, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::carry;
 
 use super::receive_cycle::{node, on_node};
 use super::sending::{
-    dispatching, in_order, journey, memory, onward, order, out, sender, took, until, waiting,
+    PATIENCE, dispatching, in_order, interleaving, journey, memory, onward, order, out, sender,
+    took, until, waiting,
 };
 
 /// A far end refusing `order <refused>` for good until `fixed`.
@@ -171,4 +175,79 @@ fn a_dismiss_ends_a_failed_message_dismissed_and_lets_its_sequence_go() {
     );
     assert_eq!(state, JourneyState::Dismissed, "a decision, not a failure");
     assert!(left.is_empty(), "out of its queue");
+}
+
+#[test]
+fn a_scan_whose_read_came_before_a_failure_was_settled_takes_nothing_of_it() {
+    // A scan reads `Out`'s queue while the Message's pass is under way, so
+    // its read shows the Message due and not failed; the failure lands and
+    // is settled, and only then does the scan go on with what it read. Its
+    // read is that pass's past: it takes nothing of the Message, so an act
+    // claims it at once. Until 2026-11-15 such a scan claimed it for a
+    // moment, and an act in that moment was refused as claimed by another.
+    let (interleaved, storage) = interleaving();
+    let fixed = Arc::new(AtomicBool::new(false));
+    let (far, _) = FarEnd::answering(broken_for(1, &fixed));
+    on_node(
+        &storage,
+        (CHUNK, &onward()),
+        sender(node(), far, out(|_| {})),
+        |runtime, pickup, gate| {
+            let id = carry(runtime, pickup, gate, order(1)).journeys[0].journey_id();
+            let (read, was_read) = mpsc::channel::<()>();
+            let (settled, was_settled) = mpsc::channel::<()>();
+            let (scanned, was_scanned) = mpsc::channel::<()>();
+            let (release, released) = mpsc::channel::<()>();
+            let reading = Arc::clone(&interleaved);
+            // Before the pass's hand-on lands, a scan reads the queue, and
+            // holds what it read until that pass is settled.
+            interleaved.before(
+                Operation::HandOn,
+                Box::new(move || {
+                    reading.after(
+                        Operation::ReadDue,
+                        Box::new(move || {
+                            read.send(()).expect("told");
+                            was_settled.recv_timeout(PATIENCE).expect("settled");
+                        }),
+                    );
+                    was_read.recv_timeout(PATIENCE).expect("the queue read");
+                }),
+            );
+            dispatching(runtime, |told| {
+                told.wait_for(id, "failed");
+                // A take of it, were the scan to take one, held at its claim
+                // until it is looked at, so it cannot end unseen.
+                let armed = Arc::new(AtomicBool::new(true));
+                let holding = Arc::clone(&armed);
+                interleaved.before(
+                    Operation::Claim,
+                    Box::new(move || {
+                        if holding.load(Ordering::Acquire) {
+                            let _ = released.recv_timeout(PATIENCE);
+                        }
+                    }),
+                );
+                // The next read of the queue is the next scan's: the scan
+                // that read before the failure has ended by then.
+                interleaved.after(
+                    Operation::ReadDue,
+                    Box::new(move || {
+                        let _ = scanned.send(());
+                    }),
+                );
+                settled.send(()).expect("told");
+                was_scanned.recv_timeout(PATIENCE).expect("scanned again");
+                let taken = runtime.send.takes(id);
+                assert!(!taken, "a scan whose read came before its failure took it");
+                armed.store(false, Ordering::Release);
+                drop(release);
+                fixed.store(true, Ordering::Release);
+                let said = runtime.send.act(&id.to_string(), Act::Retry, "ilian");
+                let said = said.expect("retried, not refused");
+                assert!(said.contains("retried by ilian"), "{said}");
+                told.wait_for(id, "completed");
+            });
+        },
+    );
 }

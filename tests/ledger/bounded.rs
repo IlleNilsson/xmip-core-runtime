@@ -12,7 +12,9 @@
 //! allocate never reaches its figure.
 
 use std::io::Read;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use receive::ReceivedStream;
 use xmip_core_runtime::ledger::CHUNK;
@@ -60,27 +62,61 @@ impl Read for Made {
 /// [`alone`].
 const ALONE: &str = "XMIP_LEDGER_ALONE";
 
+/// How long a test run [`alone`] may take before it is ended and fails: a
+/// minute. Each of its own waits is bounded by its patience, so one that
+/// fails ends long before; this bounds only a process that never ends, so a
+/// hang fails here rather than holding the test that started it for good
+/// (found 2026-11-15: a test run alone waited on Locations it never
+/// stopped, and its parent waited on it, two and a half hours).
+const ALONE_BOUND: Duration = Duration::from_secs(60);
+
 /// Run `run`, the body of the test `test` (its path in this program, as
 /// `--exact` takes it), alone: in this process where this process was
 /// started for it, and otherwise in this test program started again for
-/// that one test, on one test thread, its outcome this test's.
+/// that one test, on one test thread, its outcome this test's, ended and
+/// failed where it runs past [`ALONE_BOUND`].
 pub(super) fn alone(test: &str, run: impl FnOnce()) {
     if std::env::var(ALONE).is_ok_and(|named| named == test) {
         run();
         return;
     }
-    let output = Command::new(std::env::current_exe().expect("this program"))
+    let mut child = Command::new(std::env::current_exe().expect("this program"))
         .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(ALONE, test)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("this program, started again");
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let (ended, came) = mpsc::channel();
+    let pipes: [Box<dyn Read + Send>; 2] = [
+        Box::new(child.stdout.take().expect("its output")),
+        Box::new(child.stderr.take().expect("its errors")),
+    ];
+    // Each pipe read to its end, which comes when the process ends.
+    let readers = pipes.map(|mut pipe| {
+        let ended = ended.clone();
+        std::thread::spawn(move || {
+            let mut said = Vec::new();
+            let _ = pipe.read_to_end(&mut said);
+            let _ = ended.send(());
+            said
+        })
+    });
+    let deadline = Instant::now() + ALONE_BOUND;
+    let within = (0..readers.len()).all(|_| {
+        let left = deadline.saturating_duration_since(Instant::now());
+        came.recv_timeout(left).is_ok()
+    });
+    if !within {
+        let _ = child.kill();
+    }
+    let status = child.wait().expect("this program, ended");
+    let said: String = readers
+        .map(|reader| String::from_utf8_lossy(&reader.join().expect("read")).into_owned())
+        .concat();
     eprintln!("{said}");
-    assert!(output.status.success(), "{test}, alone, failed");
+    assert!(within, "{test}, alone, never ended within {ALONE_BOUND:?}");
+    assert!(status.success(), "{test}, alone, failed");
     assert!(said.contains("1 passed"), "{test}, alone, ran no test");
 }
 

@@ -26,6 +26,7 @@ use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;
 
 use super::receive_cycle::on_runtime;
+use super::stopped::until_stopped;
 use super::{directory, test_node};
 
 /// The connections queued in the listener's backlog when the stop is
@@ -147,10 +148,8 @@ fn a_stop_takes_every_connection_already_queued_at_the_listener() {
     let took = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         let location = location("tcp://in", Box::new(backlogged), gate);
         let began = Instant::now();
-        std::thread::scope(|pool| {
-            location.serve(pool, runtime, pickup, &stopping, |_| {
-                *told.lock().expect("lock") += 1;
-            })
+        until_stopped(&location, (runtime, pickup), &stopping, |_| {
+            *told.lock().expect("lock") += 1;
         })
         .expect("the Location stopped when asked");
         began.elapsed()

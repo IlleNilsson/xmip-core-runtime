@@ -23,6 +23,7 @@ use xmip_core_runtime::stopping::Stopping;
 use xmip_core_runtime::tuning::Tuning;
 
 use super::receive_cycle::on_runtime;
+use super::sending::PATIENCE;
 use super::{directory, test_node};
 
 /// A rest no passing Location may take.
@@ -140,8 +141,11 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
                 std::thread::scope(|pool| location.serve(pool, runtime, pickup, &stopping, |_| {}))
             });
             if !stop_at_last {
-                came.recv().expect("the first receive comes");
+                // Bounded, and the stop raised however it ended, so a first
+                // receive that never comes fails rather than waits for good.
+                let first = came.recv_timeout(PATIENCE);
                 stopping.raise();
+                first.expect("the first receive comes");
             }
             serving.join().expect("the Location serves")
         });
