@@ -760,7 +760,8 @@ mod tests {
     /// hands the node it runs in each standby it copies to, by the node the
     /// standby's certificate names, with what it copied — what the node
     /// draws *copies to* — while a standby, and a node reaching Storage over
-    /// the wire, hand none; a standby once ready stands Fine.
+    /// the wire, hand none; a standby once ready — its first whole copy in,
+    /// amendment 2026-11-15 — stands Fine.
     #[test]
     fn a_primary_hands_its_node_each_standby_it_copies_to_by_name_with_what_it_copied() {
         let authority = crate::fixture::Authority::new();
@@ -775,35 +776,43 @@ mod tests {
         let (first, second) = together(storage);
         let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
         let reaching = opened(&document, &path);
+        let cluster = configure::fixture::test_cluster();
+        let (standby, scope) = (cluster.node(1).name.clone(), cluster.node_scope(1));
+
+        // Within one deadline: until the standby stands Fine and its
+        // primary's first follower `holds`.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let until = |holds: &dyn Fn(&persist::storage::standby::Follower) -> bool| loop {
+            let followers = first.followers();
+            let fine = second.published(&scope)[0].1 == Health::Fine;
+            if fine && followers.first().is_some_and(holds) {
+                break followers;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{followers:?}: {} / {}",
+                first.said(),
+                second.said()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        // Ready only once its first whole copy is in (ADR-0056, amendment
+        // 2026-11-15) and handed all its primary holds: a Journey written
+        // from now is handed on as a write, never inside the copy's pages.
+        let whole = until(&|copied| copied.behind == 0);
         let journey = persist::storage::JourneyRecord {
             journey: xcore::JourneyId::new(8),
             body: b"copied on".to_vec(),
             facts: persist::storage::JourneyFacts::default(),
         };
         reaching.storage().write_journey(&journey).expect("written");
-
-        let cluster = configure::fixture::test_cluster();
-        let (standby, scope) = (cluster.node(1).name.clone(), cluster.node_scope(1));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let copied = loop {
-            let followers = first.followers();
-            let caught_up = followers
-                .first()
-                .is_some_and(|copied| copied.writes > 0 && copied.behind == 0);
-            if caught_up && second.published(&scope)[0].1 == Health::Fine {
-                break followers;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{} / {}",
-                first.said(),
-                second.said()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
+        let copied = until(&|copied| copied.writes > whole[0].writes && copied.behind == 0);
         assert_eq!(copied.len(), 1, "{copied:?}");
         assert_eq!(copied[0].node.as_deref(), Some(standby.as_str()));
-        assert!(copied[0].bytes > 0, "{copied:?}");
+        assert!(
+            copied[0].bytes > whole[0].bytes,
+            "{copied:?} after {whole:?}"
+        );
         assert_eq!(second.followers(), [], "a standby copies to none");
         assert_eq!(reaching.followers(), [], "nor does a node reaching Storage");
         assert!(

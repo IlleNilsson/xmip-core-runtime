@@ -34,8 +34,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::plane::local::{LINUX_FOLDER, LINUX_SOCKET_PATH, own_folder};
+
+mod launchd;
 mod windows_scm;
 
+pub use launchd::{launchd_plist, launchd_run_directory};
 pub use windows_scm::{windows_service_arguments, windows_service_settings};
 
 /// What the operating system is told about one service.
@@ -72,6 +76,12 @@ pub struct ServiceDefinition {
     /// (ADR-0062), and nothing a person types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<(String, String)>,
+
+    /// The name of the local endpoint the node binds ([`local_endpoint`]),
+    /// whose folder the service manager makes for the node's account; none
+    /// for a Host Service, which binds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<String>,
 }
 
 impl ServiceDefinition {
@@ -97,6 +107,7 @@ impl ServiceDefinition {
             service_identity: None,
             working_directory: working_directory.into(),
             environment: Vec::new(),
+            local: Some(local_endpoint(node, None)),
         }
     }
 
@@ -132,6 +143,7 @@ impl ServiceDefinition {
             service_identity: None,
             working_directory: working_directory.into(),
             environment: Vec::new(),
+            local: None,
         }
     }
 
@@ -149,6 +161,23 @@ impl ServiceDefinition {
         self.environment.push((name.into(), value.into()));
         self
     }
+
+    /// The same definition, the node binding the local endpoint called
+    /// `endpoint`: what its configuration names ([`local_endpoint`]).
+    #[must_use]
+    pub fn serving_at(mut self, endpoint: &str) -> Self {
+        self.local = Some(endpoint.into());
+        self
+    }
+}
+
+/// The name of node `node`'s local endpoint: `configured`, what its
+/// `[operate] local` names, else the name its Xmip Service has,
+/// `xmip-<node>` — decided by the owner, 2026-10-13: *the local endpoint
+/// always starts, named `xmip-<node>` unless the configuration names it*.
+#[must_use]
+pub fn local_endpoint(node: &str, configured: Option<&str>) -> String {
+    configured.map_or_else(|| node_service_name(node), str::to_string)
 }
 
 /// What manages services on a platform.
@@ -201,13 +230,20 @@ impl ServiceManager {
 /// turns one legible refusal into a log nobody reads. A stop exits 0, which
 /// is no failure, so systemd restarts nothing Xmip stopped on purpose.
 ///
-/// `RuntimeDirectory=xmip` makes `/run/xmip`, the folder every node's local
-/// operate endpoint is in, for the node's account — decided by the owner,
-/// 2026-10-13: *created by systemd / launchd for the node's account* — and
-/// keeps it when the unit stops, so a node stopping never takes another's
-/// socket with it.
-#[must_use]
-pub fn systemd_unit(definition: &ServiceDefinition) -> String {
+/// `RuntimeDirectory=xmip/<name>` makes the node's folder, named as the
+/// local endpoint it binds is and placed by the one rule
+/// (`plane::local::own_folder`), for the node's account, and `/run/xmip`
+/// above it root's — decided by the owner, 2026-10-13: *created by systemd /
+/// launchd for the node's account*, and 2026-11-15: a folder per node, so
+/// two nodes under two accounts never take each other's socket — and keeps
+/// it when the unit stops. systemd.exec: *the innermost specified
+/// directories will be owned by the user and group specified in `User=` and
+/// `Group=`*. A Host Service binds no endpoint and is given no folder.
+///
+/// # Errors
+///
+/// An endpoint's name the rule refuses, in its words.
+pub fn systemd_unit(definition: &ServiceDefinition) -> Result<String, String> {
     let arguments = definition
         .arguments
         .iter()
@@ -223,8 +259,16 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
         .iter()
         .map(|(name, value)| format!("Environment=\"{name}={value}\"\n"))
         .collect();
+    let runtime = match &definition.local {
+        // `/run/xmip/<name>` as systemd names a folder under `/run`.
+        Some(endpoint) => format!(
+            "RuntimeDirectory={}\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\n",
+            own_folder(LINUX_FOLDER, LINUX_SOCKET_PATH, endpoint)?.trim_start_matches("/run/")
+        ),
+        None => String::new(),
+    };
 
-    format!(
+    Ok(format!(
         "[Unit]\n\
          Description={description}\n\
          After=network-online.target\n\
@@ -236,9 +280,7 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
          WorkingDirectory={working}\n\
          {identity}\
          {environment}\
-         RuntimeDirectory={runtime}\n\
-         RuntimeDirectoryMode=0755\n\
-         RuntimeDirectoryPreserve=yes\n\
+         {runtime}\
          Restart=on-failure\n\
          RestartPreventExitStatus={refused}\n\
          RestartSec=5\n\
@@ -252,11 +294,8 @@ pub fn systemd_unit(definition: &ServiceDefinition) -> String {
         identity = identity,
         environment = environment,
         refused = REFUSED,
-        // `/run/xmip/` as systemd names a folder under `/run`: `xmip`.
-        runtime = crate::plane::local::LINUX_FOLDER
-            .trim_start_matches("/run/")
-            .trim_end_matches('/'),
-    )
+        runtime = runtime,
+    ))
 }
 
 /// The exit code of a node the Xmip Service refused to start: its
@@ -281,101 +320,6 @@ fn quoted(text: &str) -> String {
     }
 }
 
-/// The launchd daemon that makes `/var/run/xmip`, the folder every node's
-/// local operate endpoint is in, for this definition's account at every
-/// boot — macOS empties `/var/run` as it starts, and launchd has no
-/// spelling of systemd's `RuntimeDirectory` (decided by the owner,
-/// 2026-10-13: *created by systemd / launchd for the node's account*). It
-/// runs as root, once at load, and is labeled `<name>.run`.
-#[must_use]
-pub fn launchd_run_directory(definition: &ServiceDefinition) -> String {
-    let folder = crate::plane::local::MACOS_FOLDER.trim_end_matches('/');
-    let owner = definition
-        .service_identity
-        .as_deref()
-        .map_or(String::new(), |user| {
-            format!(" &amp;&amp; chown {user} {folder}")
-        });
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \t<key>Label</key>\n\
-         \t<string>{name}.run</string>\n\
-         \t<key>ProgramArguments</key>\n\
-         \t<array>\n\
-         \t\t<string>/bin/sh</string>\n\
-         \t\t<string>-c</string>\n\
-         \t\t<string>mkdir -p -m 0755 {folder}{owner}</string>\n\
-         \t</array>\n\
-         \t<key>RunAtLoad</key>\n\
-         \t<true/>\n\
-         </dict>\n\
-         </plist>\n",
-        name = definition.name,
-    )
-}
-
-/// A launchd property list for this definition.
-///
-/// `RunAtLoad` with `KeepAlive` on `SuccessfulExit=false` is launchd's spelling
-/// of `Restart=on-failure`, for the same reason. launchd has no spelling of
-/// `RestartPreventExitStatus`, so a refused node is started again after its
-/// throttle interval, until an operator fixes its configuration.
-#[must_use]
-pub fn launchd_plist(definition: &ServiceDefinition) -> String {
-    let mut arguments = String::new();
-
-    arguments.push_str(&format!("\t\t<string>{}</string>\n", definition.executable));
-
-    for argument in &definition.arguments {
-        arguments.push_str(&format!("\t\t<string>{argument}</string>\n"));
-    }
-
-    let identity = match &definition.service_identity {
-        Some(user) => format!("\t<key>UserName</key>\n\t<string>{user}</string>\n"),
-        None => String::new(),
-    };
-    let environment = if definition.environment.is_empty() {
-        String::new()
-    } else {
-        let pairs: String = definition
-            .environment
-            .iter()
-            .map(|(name, value)| format!("\t\t<key>{name}</key>\n\t\t<string>{value}</string>\n"))
-            .collect();
-        format!("\t<key>EnvironmentVariables</key>\n\t<dict>\n{pairs}\t</dict>\n")
-    };
-
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \t<key>Label</key>\n\
-         \t<string>{name}</string>\n\
-         \t<key>ProgramArguments</key>\n\
-         \t<array>\n{arguments}\t</array>\n\
-         \t<key>WorkingDirectory</key>\n\
-         \t<string>{working}</string>\n\
-         {identity}\
-         {environment}\
-         \t<key>RunAtLoad</key>\n\
-         \t<true/>\n\
-         \t<key>KeepAlive</key>\n\
-         \t<dict>\n\
-         \t\t<key>SuccessfulExit</key>\n\
-         \t\t<false/>\n\
-         \t</dict>\n\
-         </dict>\n\
-         </plist>\n",
-        name = definition.name,
-        arguments = arguments,
-        working = definition.working_directory,
-        identity = identity,
-        environment = environment,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +336,17 @@ mod tests {
             "/opt/xmip/config/node.xmip",
             "/opt/xmip",
         )
+    }
+
+    /// The systemd unit of `definition`, whose endpoint's name the rule
+    /// takes.
+    fn unit(definition: &ServiceDefinition) -> String {
+        systemd_unit(definition).expect("a unit")
+    }
+
+    /// The launchd daemon making `definition`'s folder.
+    fn run(definition: &ServiceDefinition) -> String {
+        launchd_run_directory(definition).expect("a daemon")
     }
 
     #[test]
@@ -443,7 +398,7 @@ mod tests {
         // Type=simple would report the node up before the execution tree is
         // built. ADR-0018 gives startup nine phases and only the last accepts
         // work.
-        let unit = systemd_unit(&node_service());
+        let unit = unit(&node_service());
 
         assert!(unit.contains("Type=notify"));
         assert!(!unit.contains("Type=simple"));
@@ -451,37 +406,95 @@ mod tests {
 
     #[test]
     fn the_systemd_unit_does_not_restart_a_refusal_forever() {
-        let unit = systemd_unit(&node_service());
+        let unit = unit(&node_service());
 
         assert!(unit.contains("Restart=on-failure"));
         assert!(!unit.contains("Restart=always"));
     }
 
     /// Decided by the owner, 2026-10-13: the local endpoints' folder is
-    /// *created by systemd / launchd for the node's account*.
+    /// *created by systemd / launchd for the node's account*; and
+    /// 2026-11-15: a folder per node, beneath the root-owned one, named as
+    /// the endpoint the node binds is.
     #[test]
-    fn the_folder_of_local_endpoints_is_made_for_the_nodes_account() {
-        let unit = systemd_unit(&node_service().running_as("xmip"));
-        assert!(unit.contains("RuntimeDirectory=xmip\n"), "{unit}");
+    fn the_nodes_folder_is_made_for_the_nodes_account() {
+        let name = node_service().name;
+        let unit = unit(&node_service().running_as("xmip"));
+        assert!(
+            unit.contains(&format!("RuntimeDirectory=xmip/{name}\n")),
+            "{unit}"
+        );
+        assert!(unit.contains("RuntimeDirectoryMode=0755\n"));
         assert!(unit.contains("RuntimeDirectoryPreserve=yes\n"));
 
-        let run = launchd_run_directory(&node_service().running_as("xmip"));
-        assert!(run.contains("mkdir -p -m 0755 /var/run/xmip &amp;&amp; chown xmip"));
-        assert!(run.contains(&format!("<string>{}.run</string>", node_service().name)));
-        let root = launchd_run_directory(&node_service());
-        assert!(!root.contains("chown"));
+        let made = run(&node_service().running_as("xmip"));
+        let folder = format!("/var/run/xmip/{name}");
+        let said = format!("mkdir -p -m 0755 {folder} &amp;&amp; chown xmip {folder}<");
+        assert!(made.contains(&said), "{made}");
+        assert!(made.contains(&format!("<string>{name}.run</string>")));
+        assert!(!run(&node_service()).contains("chown"));
+    }
+
+    /// The folder is the endpoint's the configuration names, by the one
+    /// rule the node binds by and every surface connects by
+    /// (`plane::local::own_folder`), read for nothing: a custom
+    /// `[operate] local` is its folder's name too, and a Host Service, which
+    /// binds no endpoint, is given none.
+    #[test]
+    fn the_folder_is_the_endpoints_the_node_binds() {
+        let named = node_service().serving_at("orders");
+        assert!(unit(&named).contains("RuntimeDirectory=xmip/orders\n"));
+        assert!(run(&named).contains("mkdir -p -m 0755 /var/run/xmip/orders<"));
+        let node = node();
+        assert_eq!(local_endpoint(&node, None), node_service_name(&node));
+        assert_eq!(local_endpoint(&node, Some("orders")), "orders");
+
+        let host = ServiceDefinition::for_host(&node, "transport", &[], "x", "/opt/xmip");
+        assert!(!unit(&host).contains("RuntimeDirectory"));
+        assert!(launchd_run_directory(&host).is_err());
+
+        let long = node_service().serving_at(&"n".repeat(60));
+        let refused = systemd_unit(&long).expect_err("no room");
+        assert!(refused.contains("at most 107 bytes"), "{refused}");
+        let refused = launchd_run_directory(&long).expect_err("no room");
+        assert!(refused.contains("at most 103 bytes"), "{refused}");
+    }
+
+    /// The finding of 2026-11-14, decided by the owner on 2026-11-15: two
+    /// nodes on one machine under two accounts are given two folders, each
+    /// its own account's, so neither start takes the other's socket.
+    #[test]
+    fn two_nodes_under_two_accounts_are_given_two_folders() {
+        let at = |node: &str, account: &str| {
+            let definition =
+                ServiceDefinition::for_node(node, "/opt/xmip/bin/xmip-service", "c", "/opt/xmip")
+                    .running_as(account);
+            (unit(&definition), run(&definition))
+        };
+        let (one, one_run) = at("n1", "alice");
+        let (two, two_run) = at("n2", "bob");
+        assert!(one.contains("User=alice\n") && one.contains("RuntimeDirectory=xmip/xmip-n1\n"));
+        assert!(two.contains("User=bob\n") && two.contains("RuntimeDirectory=xmip/xmip-n2\n"));
+        assert!(
+            one_run.contains("chown alice /var/run/xmip/xmip-n1<"),
+            "{one_run}"
+        );
+        assert!(
+            two_run.contains("chown bob /var/run/xmip/xmip-n2<"),
+            "{two_run}"
+        );
     }
 
     #[test]
     fn the_systemd_unit_omits_the_user_when_there_is_none() {
-        let unit = systemd_unit(&node_service());
+        let unit = unit(&node_service());
 
         assert!(!unit.contains("User="));
     }
 
     #[test]
     fn the_systemd_unit_names_the_service_identity_when_there_is_one() {
-        let unit = systemd_unit(&node_service().running_as("xmip"));
+        let unit = unit(&node_service().running_as("xmip"));
 
         assert!(unit.contains("User=xmip"));
     }
@@ -549,7 +562,7 @@ mod tests {
             windows_service_arguments(&definition)[2],
             r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\node.xmip"#
         );
-        assert!(systemd_unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
+        assert!(unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
     }
 
     #[test]
@@ -558,8 +571,7 @@ mod tests {
         let definition = node_service().with_variable("XMIP_AUDIT_DIRECTORY", audit);
 
         assert!(
-            systemd_unit(&definition)
-                .contains(&format!("Environment=\"XMIP_AUDIT_DIRECTORY={audit}\"\n"))
+            unit(&definition).contains(&format!("Environment=\"XMIP_AUDIT_DIRECTORY={audit}\"\n"))
         );
         let plist = launchd_plist(&definition);
         assert!(plist.contains("<key>EnvironmentVariables</key>"));
@@ -578,14 +590,14 @@ mod tests {
     fn a_service_with_no_environment_sets_none() {
         let definition = node_service();
 
-        assert!(!systemd_unit(&definition).contains("Environment="));
+        assert!(!unit(&definition).contains("Environment="));
         assert!(!launchd_plist(&definition).contains("EnvironmentVariables"));
         assert_eq!(windows_service_settings(&definition).len(), 1);
     }
 
     #[test]
     fn the_systemd_unit_does_not_restart_a_refused_node() {
-        let unit = systemd_unit(&node_service());
+        let unit = unit(&node_service());
 
         assert!(unit.contains(&format!("RestartPreventExitStatus={REFUSED}")));
     }
