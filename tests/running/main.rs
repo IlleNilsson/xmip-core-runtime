@@ -8,12 +8,15 @@
 //! once, and a paused Subscription holding and sending in order on its
 //! resume. Which slice a node runs, and that a correctly signed one it
 //! cannot start leaves the last one that ran running, is `activated.rs`'s
-//! (ADR-0031, amendment 2026-11-12). How long a node takes to carry a
-//! Message is the module's timing program's (`tests/measured`).
+//! (ADR-0031, amendment 2026-11-12). That a Message's hand-on is in its own
+//! share is `own_share.rs`'s (ADR-0018, amendment 2026-11-15). How long a
+//! node takes to carry a Message is the module's timing program's
+//! (`tests/measured`).
 
 mod activated;
 mod drawing;
 mod node;
+mod own_share;
 
 #[cfg(feature = "dynamic-loading")]
 use std::path::{Path, PathBuf};

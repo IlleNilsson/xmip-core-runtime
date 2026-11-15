@@ -31,6 +31,9 @@ pub fn dispatch<'scope, 'env>(
     settled: Settled<'env>,
 ) {
     let step = runtime.send;
+    // The claims of what it sends renewed first: a Publication claims as
+    // soon as the node receives, whatever this thread does meanwhile.
+    scope.spawn(move || step.renewing());
     let pool = Pool::new(scope, step.limits);
     let served: Vec<(Subscriber, u128)> = runtime
         .sends
@@ -46,7 +49,6 @@ pub fn dispatch<'scope, 'env>(
         .iter()
         .map(|(to, _)| (to.name().to_string(), blocks(runtime, to)))
         .collect();
-    scope.spawn(move || step.renewing());
     // Each queue another node puts a Message in, read at once from what is
     // due in it as the wake brought it; the scan of them all stays, at its
     // interval, the bound on one wait.

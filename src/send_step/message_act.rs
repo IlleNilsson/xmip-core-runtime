@@ -111,9 +111,9 @@ impl SendStep {
             waits: None,
             kept_for_nanos: None,
         };
-        match self.storage.hand_on(&hand_on) {
-            Ok(true) => {}
-            Ok(false) => {
+        match self.storage.hand_on(hand_on) {
+            Ok((true, _)) => {}
+            Ok((false, _)) => {
                 return Err(self.not_done(act, id, "its claim lapsed before it was written"));
             }
             Err(error) => {

@@ -123,7 +123,7 @@ pub fn sent_elsewhere(storage: &dyn XmipStorage, queue: u128, id: JourneyId) {
         waits: None,
         kept_for_nanos: None,
     };
-    assert!(storage.hand_on(&hand_on).expect("asked"), "written");
+    assert!(storage.hand_on(hand_on).expect("asked").0, "written");
 }
 
 /// The Stream `order <number>`.

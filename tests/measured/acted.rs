@@ -12,10 +12,14 @@
 //! four calls the path asks of Xmip Storage, asked of the same Storage node
 //! directly — the act written, read by its node, decided, read by the door
 //! — and the machine's own wake, which the path takes twice: the act
-//! watch woken by the write, and the door by the decision. The write and
+//! watch woken by the write, and the door by the decision. Held by the
+//! rule's wall-clock half (`xcore::latency::woke_beside_a_plain_wake`): the
+//! path beyond Xmip Storage's own four calls under the millisecond plus
+//! the two plain wakes; until 2026-11-15 a copy of it here. The write and
 //! the pickup are said apart besides: the door's write against Xmip
 //! Storage's own, and the act watch's pickup — woken and its act read —
-//! against a wait woken by the same write.
+//! against a wait woken by the same write, held the same way beside one
+//! plain wake.
 //!
 //! Each act is asked of an act watch done with the one before. The audit
 //! record it writes of each act it decided comes after the decision is
@@ -35,7 +39,7 @@ use persist::storage::{ActOutcome, ActRecord, Embedded, Position, Waiter, Watche
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::fastest::FIVE;
-use xcore::latency::{PlainWake, spread};
+use xcore::latency::{PlainWake, spread, woke_beside_a_plain_wake};
 use xmip_core_runtime::act_watch::{ActWatch, Asker, Door};
 use xmip_core_runtime::configured_subscription::ConfiguredSubscription;
 use xmip_core_runtime::fixture::Authority;
@@ -48,8 +52,9 @@ use super::sending::memory_node;
 /// How many acts are measured.
 const ROUNDS: usize = 8 * FIVE;
 
-/// The bound: a millisecond.
-const BOUND: Duration = Duration::from_millis(1);
+/// What an act's path wakes where a plain wake wakes one: the act watch by
+/// the door's write, and the door by the decision.
+const PATH_WAKES: u32 = 2;
 
 /// The node the acts are asked of, named apart.
 fn owner() -> String {
@@ -212,13 +217,14 @@ fn an_act_asked_at_a_door_is_taken_and_answered_within_a_millisecond_of_storages
         own.push(storage_own(storage.as_ref(), &beside));
         woke.push(plain.round().0);
     }
-    let answered = spread("an act asked at the door to its answer", answered);
+    let answered = spread("an act asked at the door to its answer", answered).fastest_of_five;
     let own = spread("Xmip Storage's own four calls of it", own).fastest_of_five;
     let usual = spread("a plain channel beside it", woke).fastest_of_five;
-    assert!(
-        answered.fastest_of_five < BOUND + own + usual * 2,
-        "the fastest of five {:?}, Storage's own {own:?}, the machine's own wake {usual:?}",
-        answered.fastest_of_five
+    woke_beside_a_plain_wake(
+        &format!("an act's path beyond Xmip Storage's own four calls of it, {own:?}"),
+        answered.saturating_sub(own),
+        usual,
+        PATH_WAKES,
     );
 
     // The act watch's load, said apart: the audit record it writes of each
@@ -249,8 +255,5 @@ fn an_act_asked_at_a_door_is_taken_and_answered_within_a_millisecond_of_storages
     let _ = spread("an act's write, Xmip Storage's own", writes);
     let pickup = spread("its pickup by a wait on its node's acts", pickups).fastest_of_five;
     let usual = spread("a plain channel beside it", woke).fastest_of_five;
-    assert!(
-        pickup < BOUND + usual,
-        "its pickup took {pickup:?}, the machine's own wake {usual:?}"
-    );
+    woke_beside_a_plain_wake("its pickup by a wait on its node's acts", pickup, usual, 1);
 }

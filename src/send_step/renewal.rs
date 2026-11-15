@@ -101,9 +101,13 @@ impl SendStep {
     /// than a lease, or one queued behind a long scan, is not taken up by
     /// another node meanwhile. A round is one request for every claim, so
     /// an answer Xmip Storage is slow to give costs the round one wait, never
-    /// one per claim, and a round always ends well inside a lease.
+    /// one per claim, and a round always ends well inside a lease. **The
+    /// first round is at once** (2026-11-15): what a Publication claimed
+    /// before this thread began — one a loaded machine starts a while after
+    /// it is spawned — is renewed as soon as it can be, never a third of a
+    /// lease later on top.
     pub(super) fn renewing(&self) {
-        let mut next = Instant::now() + self.lease / 3;
+        let mut next = Instant::now();
         let mut state = self.lock();
         loop {
             if state.closed && state.owned.is_empty() {
@@ -273,6 +277,39 @@ mod tests {
 
         step.renewed(&new, Instant::now(), Renewed::Lost);
         assert!(step.is_lost(id), "an answer for the claim held now counts");
+    }
+
+    #[test]
+    fn a_renewer_that_begins_after_its_claims_were_taken_renews_them_at_once() {
+        let step = step();
+        let id = JourneyId::new(7);
+        let holder = configure::fixture::test_cluster().node_scope(0);
+        let taken = step.storage.claim(id, &holder, 1, step.lease);
+        let taken = taken.expect("asked").expect("taken");
+        owning(&step, taken.clone());
+        let renewed = || step.lock().owned[&id].claim.until_unix_nanos != taken.until_unix_nanos;
+        std::thread::scope(|scope| {
+            scope.spawn(|| step.renewing());
+            let _closing = Closing(&step);
+            // At once: a sixth of a lease, half the third a round waited for
+            // until 2026-11-15 before its first.
+            let within = Instant::now() + step.lease / 6;
+            while !renewed() {
+                assert!(Instant::now() < within, "renewed as the renewer began");
+                std::thread::yield_now();
+            }
+        });
+    }
+
+    /// The step let go of, owning nothing, however the test ends: its
+    /// renewer ends with it.
+    struct Closing<'a>(&'a SendStep);
+
+    impl Drop for Closing<'_> {
+        fn drop(&mut self) {
+            self.0.lock().owned.clear();
+            self.0.close();
+        }
     }
 
     #[test]

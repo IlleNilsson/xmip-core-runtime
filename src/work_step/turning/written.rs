@@ -144,9 +144,9 @@ fn failed(
         reason: why.to_string(),
     });
     hand_on.leaves = let_go(&journey);
-    match runtime.storage.hand_on(&hand_on) {
-        Ok(true) => Turned::Failed(why.to_string()),
-        Ok(false) => Turned::Waits {
+    match runtime.storage.hand_on(hand_on) {
+        Ok((true, _)) => Turned::Failed(why.to_string()),
+        Ok((false, _)) => Turned::Waits {
             why: "its claim was another's".to_string(),
             on: Vec::new(),
         },

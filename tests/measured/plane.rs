@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use xaudit::program_audit::ProgramAudit;
 use xcore::latency::{Rounds, at_once};
-use xcore::processor_time::ProcessorTime;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::plane::{Board, Listener, Remote, Role};
 
@@ -51,15 +50,12 @@ fn a_surface_reads_the_publication_and_is_told_as_it_advances() {
     let mut seen = reached.told;
     let mut rounds = Rounds::crossing(WAKES);
     for round in 2..=201u64 {
-        let posted = Instant::now();
-        let from = ProcessorTime::process();
-        board.post(format!("source = \"{round}\"\n"));
-        let told = surface.wait(seen, Duration::from_secs(5));
-        rounds.took.push(posted.elapsed());
-        rounds.worked.push(from.elapsed());
+        let told = rounds.round(|| {
+            board.post(format!("source = \"{round}\"\n"));
+            surface.wait(seen, Duration::from_secs(5))
+        });
         assert_eq!(told.revision, round);
         seen = told.told;
-        rounds.beside();
     }
     rounds.hold("follow notification over loopback");
 }
@@ -132,15 +128,12 @@ fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() 
     let mut seen = reached.told;
     let mut rounds = Rounds::crossing(WAKES);
     for round in 2..=201u64 {
-        let posted = Instant::now();
-        let from = ProcessorTime::process();
-        board.post(format!("source = \"{round}\"\n"));
-        let told = surface.wait(seen, Duration::from_secs(5));
-        rounds.took.push(posted.elapsed());
-        rounds.worked.push(from.elapsed());
+        let told = rounds.round(|| {
+            board.post(format!("source = \"{round}\"\n"));
+            surface.wait(seen, Duration::from_secs(5))
+        });
         assert_eq!(told.revision, round);
         seen = told.told;
-        rounds.beside();
     }
     rounds.hold("follow notification on the local endpoint");
 }
@@ -167,14 +160,11 @@ fn a_connection_on_this_machine_is_proven_and_answered_within_the_millisecond() 
     // (2026-10-21, open problem 35).
     let mut rounds = Rounds::crossing(WAKES);
     for _ in 0..200 {
-        let opened = Instant::now();
-        let from = ProcessorTime::process();
-        let answered = Remote::local_retrying(&called, WAIT, vec![Duration::from_millis(50)])
-            .and_then(|surface| surface.publication());
-        rounds.took.push(opened.elapsed());
-        rounds.worked.push(from.elapsed());
+        let answered = rounds.round(|| {
+            Remote::local_retrying(&called, WAIT, vec![Duration::from_millis(50)])
+                .and_then(|surface| surface.publication())
+        });
         assert!(answered.is_ok(), "{answered:?}");
-        rounds.beside();
     }
     rounds.hold("a connection on the local endpoint, proven and answered");
 }

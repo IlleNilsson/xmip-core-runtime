@@ -107,7 +107,7 @@ pub fn take_late(
         waits: None,
         kept_for_nanos: Some(u64::try_from(lease.as_nanos()).unwrap_or(u64::MAX)),
     };
-    let taken = storage.hand_on(&hand_on).map_err(|why| {
+    let (taken, _) = storage.hand_on(hand_on).map_err(|why| {
         format!(
             "Xmip Storage did not take the places of the Message of the Journey {}: {why}",
             journey.journey_id()

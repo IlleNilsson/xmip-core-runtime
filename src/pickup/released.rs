@@ -124,12 +124,12 @@ impl Pickup {
             waits: None,
             kept_for_nanos: None,
         };
-        match self.storage.hand_on(&let_go) {
-            Ok(true) => {
+        match self.storage.hand_on(let_go) {
+            Ok((true, _)) => {
                 self.moved(released);
                 Ok(())
             }
-            Ok(false) => Err(format!(
+            Ok((false, _)) => Err(format!(
                 "the claim on the Message of the Journey {id} lapsed"
             )),
             Err(error) => Err(error.to_string()),

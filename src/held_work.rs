@@ -130,9 +130,9 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         Err(why)
     };
     let asked = Instant::now();
-    match storage.hand_on(&moved) {
-        Ok(true) => {}
-        Ok(false) => {
+    match storage.hand_on(moved) {
+        Ok((true, _)) => {}
+        Ok((false, _)) => {
             return not_moved(format!(
                 "the claim on the Message of the Journey {id} lapsed"
             ));

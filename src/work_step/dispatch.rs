@@ -202,20 +202,7 @@ fn quantum<'env>(
             offering.after(went, read.head.map(|first| ((0, 0), first))),
         )
     };
-    let mut state = step.lock();
-    let reading = &mut state.readings[at];
-    if let Some(went) = went {
-        reading.went(went);
-    }
-    match headed {
-        Some(Went::Unanswered) => reading.went(Went::Unanswered),
-        Some(Went::Starved(_)) => {
-            reading.headed();
-            reading.starve();
-        }
-        Some(Went::On(_)) => reading.headed(),
-        None => {}
-    }
+    step.round_went((at, share), (went, headed));
 }
 
 /// What one quantum offers its entries to: the pool, the Work Process
