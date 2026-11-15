@@ -150,6 +150,7 @@ impl SendStep {
             }
         }
         let woken = std::mem::take(&mut state.woken);
+        state.took_pages(&woken);
         (state.closed, handed, (asked, woken))
     }
 
@@ -226,7 +227,7 @@ impl SendStep {
             }
             Ended::Unwritten(why) => self.failed(why),
         }
-        state.owned.remove(&id);
+        state.let_go((id, departure.queue), self.watch.asked());
         state.freed();
         drop(state);
         if matches!(ended, Ended::Failed { .. }) {

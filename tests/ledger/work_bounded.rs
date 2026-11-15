@@ -132,12 +132,24 @@ fn a_backlog_in_one_work_process_holds_back_no_turn_of_another() {
     let storage = memory();
     let most = hardware_threads();
     let record: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    // Each turn that reaches its flow waits there while the order is read:
+    // none ends, so none frees a place for more of First's, and none passes
+    // a turn that had its place first and was slower to its flow (found
+    // 2026-11-15: read while turns ended, a turn whose thread stalled in its
+    // Storage asks on a loaded machine was passed by two shares of First's).
+    // With one place First's one turn would hold it at the gate: there the
+    // order is read while turns end, as before.
+    let held = Arc::new(Gate::default());
+    if most < 2 {
+        held.open();
+    }
     let recorded = |name: &'static str| {
-        let record = Arc::clone(&record);
+        let (record, held) = (Arc::clone(&record), Arc::clone(&held));
         let flow = Hooked::of(
             ABSORB,
             Box::new(move || {
                 record.locked().push(name);
+                held.wait();
                 Ok(())
             }),
         );
@@ -145,19 +157,24 @@ fn a_backlog_in_one_work_process_holds_back_no_turn_of_another() {
     };
     let routes = routes_to(&["First", "Second"]);
     let runs = (counted_node(), vec![recorded("First"), recorded("Second")]);
-    on_working_node(&storage, (CHUNK, &routes), runs, |works, pickup, gate| {
+    let order = on_working_node(&storage, (CHUNK, &routes), runs, |works, pickup, gate| {
         let mut ids = backlog((works, pickup), gate, ("First", 16 * most));
         ids.extend(backlog((works, pickup), gate, ("Second", 1)));
         turning(works, pickup, || {
+            let opened = Opened(&held);
+            let second = || record.locked().contains(&"Second");
+            until(second, "Second's turn at its flow");
+            let order = record.locked().clone();
+            drop(opened);
             for id in &ids {
                 until(|| completed(storage.as_ref(), *id), "every one taken");
             }
-        });
+            order
+        })
     });
-    let record = record.locked();
-    let at = record.iter().position(|name| *name == "Second");
+    let at = order.iter().position(|name| *name == "Second");
     let at = at.expect("Second took its turn");
-    assert!(at <= most, "Second's turn came {at}th of {}", record.len());
+    assert!(at <= most, "Second's turn came {at}th of {}", order.len());
 }
 
 #[test]

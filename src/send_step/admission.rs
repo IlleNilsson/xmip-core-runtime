@@ -136,6 +136,15 @@ impl SendStep {
         self.wake.notify_all();
     }
 
+    /// Whether a scan of this node took the Message of the Journey `id` and
+    /// is claiming it now: what a test reads of a scan's take. A test's,
+    /// never a node's.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn takes(&self, id: JourneyId) -> bool {
+        self.lock().taking.contains(&id)
+    }
+
     /// `queue` holds Messages the pool had no room for: read again as soon
     /// as a place frees.
     pub(super) fn starve(&self, queue: u128) {

@@ -135,6 +135,7 @@ mod reading;
 mod registered;
 mod renewal;
 mod scan;
+mod settles;
 mod steps;
 mod under_claim;
 
@@ -340,6 +341,9 @@ struct State {
     rescan: bool,
     /// The queues it sends from, read again on a rescan.
     served: Vec<u128>,
+    /// What it let go of while its scans read, so none takes what it
+    /// settled after its read began (`settles`).
+    settles: settles::Settles,
     closed: bool,
 }
 

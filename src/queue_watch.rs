@@ -44,6 +44,9 @@ pub(crate) const DUE: u32 = 64;
 pub(crate) struct QueueWatch {
     waiter: Arc<Waiter>,
     more: Mutex<More>,
+    /// When its latest wait was asked: what it hands its step was read no
+    /// earlier.
+    asked: Mutex<Option<Instant>>,
 }
 
 /// Each more waited on, where the step read it, and the queues to read once
@@ -71,7 +74,15 @@ impl QueueWatch {
         Self {
             waiter: Arc::new(Waiter::of(node)),
             more: Mutex::default(),
+            asked: Mutex::default(),
         }
+    }
+
+    /// When its latest wait was asked, while it watches: a page the next
+    /// answer brings was read no earlier, so a step keeps what it changes
+    /// from then on to tell such a page apart (`send_step::settles`).
+    pub(crate) fn asked(&self) -> Option<Instant> {
+        *self.asked.locked()
     }
 
     /// Stopped: its wait ends now, and no other is asked.
@@ -136,6 +147,7 @@ impl QueueWatch {
             self.waiter.asking();
             let seen = self.seen(&tails);
             let asked = Instant::now();
+            *self.asked.locked() = Some(asked);
             match storage.wait_queues(&seen, (bound, DUE), &self.waiter) {
                 // Renewed, the rest ends at once.
                 Ok(moved) if moved.is_empty() => {
@@ -166,6 +178,7 @@ impl QueueWatch {
                 Err(_) => self.waiter.rest(bound),
             }
         }
+        *self.asked.locked() = None;
     }
 
     /// What a wait names now: the step's queues where `tails` saw them,

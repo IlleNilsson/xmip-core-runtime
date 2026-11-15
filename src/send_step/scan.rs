@@ -8,7 +8,8 @@
 //! Message that does not head its sequence is passed by its send and taken
 //! up again once it does (`crate::sequence`). Every claim a scan takes
 //! reads the Message's place again under it, its due time with it, and
-//! sends only what is still there, due and to be sent.
+//! sends only what is still there, due and to be sent; and a scan takes
+//! nothing this node settled after its read began (`super::settles`).
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -21,6 +22,7 @@ use xcore::JourneyId;
 
 use super::found::Found;
 use super::reading::Reading;
+use super::settles::ScanRead;
 use super::steps::{Step, Steps};
 use super::under_claim::{Under, under_claim};
 use super::{Departure, Owned};
@@ -48,22 +50,34 @@ pub(super) fn scan(
     woken: Option<(Woken, Instant)>,
 ) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
+    // Its read, from now, and from as a wake's wait was asked where it reads
+    // the page that wake brought: what this node settles after that it
+    // never takes. A page read before a settle it can no longer tell apart
+    // is read again (`super::settles`).
+    let mut read = ScanRead::begun(runtime.send, queue);
+    let woken = woken.map(|(mut woken, at)| {
+        if woken.due.is_some() && !read.reads_wake(woken.asked) {
+            woken.due = None;
+        }
+        (woken, at)
+    });
     // Begun as its first page was read: where a wake brought it, as that
     // wait was asked (`super::due`).
     let brought = woken.as_ref().map(|(woken, _)| woken);
     let began = runtime.send.reading(queue, brought);
-    let (found, whole) = scanning(runtime, (to, queue), &mut waits, woken);
+    let (found, whole) = scanning(runtime, (to, queue), &mut waits, (woken, &read));
     runtime.send.waited(queue, (waits, began), whole);
     found
 }
 
-/// [`scan`]'s reading, the retries it found not yet due kept in `waits`:
-/// what it found to send, and whether it read the whole queue.
+/// [`scan`]'s reading, the retries it found not yet due kept in `waits`,
+/// under `read`: what it found to send, and whether it read the whole
+/// queue.
 fn scanning(
     runtime: &Runtime<'_>,
     (to, queue): (&Subscriber, u128),
     waits: &mut Due,
-    woken: Option<(Woken, Instant)>,
+    (woken, read): (Option<(Woken, Instant)>, &ScanRead<'_>),
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
     let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty()
@@ -104,6 +118,8 @@ fn scanning(
             waits.wakes_at(asked + left);
             continue;
         }
+        // In a send here, taken, passed over, or settled here since this
+        // read began, which is that pass's past.
         let known = {
             let state = step.lock();
             state.owned.contains_key(&id)
@@ -112,6 +128,7 @@ fn scanning(
                     .passed
                     .get(&queue)
                     .is_some_and(|set| set.contains(&place))
+                || read.settled_since(&state, id)
         };
         if known {
             continue;
