@@ -24,7 +24,8 @@ fn a_node_that_does_not_answer_within_the_wait_is_unreachable_at_once_after() {
     for round in 0..FIVE {
         let name = format!("xmip-deadline-test-{}-{round}", std::process::id());
         let hung = Hung::at(&name);
-        let surface = Remote::local_retrying(&name, within, vec![Duration::from_secs(60)])
+        let clock = std::sync::Arc::new(xcore::SystemClock);
+        let surface = Remote::local_retrying(&name, within, vec![Duration::from_secs(60)], clock)
             .expect("a surface");
         let asked = Instant::now();
         let said = surface.publication().expect_err("no answer");

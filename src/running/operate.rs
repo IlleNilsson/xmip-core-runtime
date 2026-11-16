@@ -29,10 +29,11 @@ use crate::running::Running;
 
 impl Running {
     /// Serve the node's operate listeners over `published`, its acts
-    /// recorded in `audit`: the local endpoint always — decided by the
-    /// owner, 2026-10-13: *the local endpoint always starts, named
-    /// `xmip-<node>` unless the configuration names it* — then the network
-    /// listener where `[operate] listen` names it.
+    /// recorded in `audit`, its connections and the nonces it issues its
+    /// relays counted on the node's Clock: the local endpoint always —
+    /// decided by the owner, 2026-10-13: *the local endpoint always starts,
+    /// named `xmip-<node>` unless the configuration names it* — then the
+    /// network listener where `[operate] listen` names it.
     ///
     /// # Errors
     ///
@@ -60,6 +61,7 @@ impl Running {
                 Arc::clone(published),
                 grants.clone(),
                 audit,
+                Arc::clone(&self.clock),
             )
             .map_err(|why| format!("[operate] local = \"{local}\": {why}"))?,
         ];
@@ -70,6 +72,7 @@ impl Running {
                 Arc::clone(published),
                 grants,
                 audit,
+                Arc::clone(&self.clock),
             )?;
             // Where it answers, as bound: what its membership row says.
             let _ = self.operated.set(listener.address());
@@ -82,7 +85,7 @@ impl Running {
         if let Some((relay, anchors)) = operate.relaying()? {
             let anchors = crate::presented::file(&self.configuration, "operate", anchors)?;
             let anchors = String::from_utf8_lossy(&anchors);
-            let relaying = Relaying::new(relay.to_vec(), &anchors)
+            let relaying = Relaying::new(relay.to_vec(), &anchors, Arc::clone(&self.clock))
                 .map_err(|why| format!("[operate] relay: {why}"))?;
             let relaying = Arc::new(relaying);
             for listener in &listeners {
@@ -139,16 +142,20 @@ impl Running {
     }
 }
 
+/// The network listener `[operate] listen` names, presenting the identity
+/// its files hold, serving `published` to whom `grants` grants, its acts
+/// recorded in `audit` and its connections counted on `clock`.
 fn listen(
     network: Network<'_>,
     configuration: &Path,
     published: Arc<dyn Published>,
     grants: Grants,
     audit: &ProgramAudit,
+    clock: Arc<dyn xcore::Clock>,
 ) -> Result<Listener, String> {
     let files = [network.certificate, network.key, network.anchors];
     let identity = crate::presented::identity(configuration, "operate", files)?;
     let bound = std::net::TcpListener::bind(network.listen)
         .map_err(|error| format!("[operate] listen = \"{}\": {error}", network.listen))?;
-    Listener::start(bound, &identity, published, grants, audit)
+    Listener::start(bound, &identity, published, grants, audit, clock)
 }

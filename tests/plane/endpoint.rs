@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use xaudit::program_audit::ProgramAudit;
+use xcore::SystemClock;
 use xmip_core_runtime::plane::local::running_as;
 use xmip_core_runtime::plane::{Board, Grants, Listener, Published, Remote, Role};
 
@@ -47,13 +48,20 @@ pub fn node(board: &Arc<Board>, grants: Grants) -> (Listener, ProgramAudit, Stri
     let called = endpoint();
     let published = Arc::clone(board) as Arc<dyn Published>;
     let admitting = xmip_core_runtime::plane::local::Admitting::default();
-    let listener =
-        Listener::local(&called, admitting, published, grants, &audit).expect("it serves");
+    let listener = Listener::local(
+        &called,
+        admitting,
+        published,
+        grants,
+        &audit,
+        Arc::new(SystemClock),
+    )
+    .expect("it serves");
     (listener, audit, called)
 }
 
 /// A surface on the endpoint `called`, stating no wait of its own.
 pub fn surface(called: &str) -> Remote {
-    Remote::local_retrying(called, Duration::ZERO, vec![Duration::from_millis(50)])
-        .expect("a surface")
+    let retry = vec![Duration::from_millis(50)];
+    Remote::local_retrying(called, Duration::ZERO, retry, Arc::new(SystemClock)).expect("a surface")
 }

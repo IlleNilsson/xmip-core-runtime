@@ -130,5 +130,5 @@ fn a_surface_with_no_node_at_the_endpoint_says_so() {
     let surface = surface(&endpoint());
     let said = surface.publication().expect_err("nothing there");
     assert!(said.contains("unreachable"), "{said}");
-    assert!(Remote::local(" ", Duration::ZERO).is_err());
+    assert!(Remote::local(" ", Duration::ZERO, Arc::new(xcore::SystemClock)).is_err());
 }

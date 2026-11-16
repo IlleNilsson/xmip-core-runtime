@@ -21,7 +21,7 @@ use abi::operate::remote::Served as ServedHandle;
 use configure::operate::OperateConfiguration;
 use xaudit::program_audit::ProgramAudit;
 
-use crate::ffi::remote::{identity, texts};
+use crate::ffi::remote::{hosted_clock, identity, texts};
 use crate::ffi::rule::refuse;
 use crate::ffi::text::scope_text;
 use crate::plane::{Board, Grants, Listener, Published};
@@ -125,7 +125,7 @@ unsafe fn operate_serve(
     let started = grants.and_then(|grants| {
         let identity = identity(certificate, key, anchors)?;
         let bound = std::net::TcpListener::bind(listen).map_err(|error| error.to_string())?;
-        Listener::start(bound, &identity, published, grants, &audit)
+        Listener::start(bound, &identity, published, grants, &audit, hosted_clock())
     });
     // SAFETY: per the contract above.
     unsafe { handed(started, board, out, report, cap, out_len) }
@@ -188,8 +188,9 @@ unsafe fn operate_serve_local(
     let board = Arc::new(Board::default());
     let published: Arc<dyn Published> = Arc::clone(&board) as Arc<dyn Published>;
     let admitting = crate::plane::local::Admitting::default();
-    let started =
-        grants.and_then(|grants| Listener::local(local, admitting, published, grants, &audit));
+    let started = grants.and_then(|grants| {
+        Listener::local(local, admitting, published, grants, &audit, hosted_clock())
+    });
     // SAFETY: per the contract above.
     unsafe { handed(started, board, out, report, cap, out_len) }
 }

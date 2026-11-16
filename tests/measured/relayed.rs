@@ -68,7 +68,8 @@ fn hosted(nodes: usize) -> (Duration, Vec<Duration>) {
     let mut kept: Vec<(Listener, Remote)> = Vec::new();
     for _ in 0..nodes {
         let (listening_node, _, called) = node(&board, account_as(Role::Operator, &["CN=alice"]));
-        let relaying = Relaying::new(vec![account.clone()], &anchors).expect("anchors");
+        let clock = Arc::new(xcore::SystemClock);
+        let relaying = Relaying::new(vec![account.clone()], &anchors, clock).expect("anchors");
         listening_node.relay(Arc::new(relaying));
         kept.push((listening_node, reached(&called)));
     }
@@ -154,7 +155,8 @@ fn checked() -> Duration {
         .leaf()
         .to_vec();
     let through = running_as().expect("this process's account");
-    let relaying = Relaying::new(vec![through.clone()], &anchors).expect("anchors");
+    let clock = Arc::new(xcore::SystemClock);
+    let relaying = Relaying::new(vec![through.clone()], &anchors, clock).expect("anchors");
     // The browser's role read off its certificate, as a node lists one.
     let grants = Grants::listed([&[], &["CN=operator@example.org".to_string()], &[]]);
     let (mut whole, mut proof, mut chain) = (Vec::new(), Vec::new(), Vec::new());

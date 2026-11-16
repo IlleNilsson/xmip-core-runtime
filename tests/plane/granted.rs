@@ -96,7 +96,12 @@ fn a_browser_a_relay_vouches_for_acts_by_its_own_listed_role_and_never_the_relay
     // does; alice is an Operator; bob is listed nowhere.
     let (operating, _, called) = endpoint::node(&board, listed(&[&account], &["CN=alice"]));
     operating.relay(Arc::new(
-        Relaying::new(vec![account.clone()], &anchors).expect("anchors"),
+        Relaying::new(
+            vec![account.clone()],
+            &anchors,
+            Arc::new(xcore::SystemClock),
+        )
+        .expect("anchors"),
     ));
     let surface = reached(&called);
     let listener = listening(&authority);

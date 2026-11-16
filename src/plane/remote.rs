@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use xcore::SystemClock;
+use xcore::Clock;
 use xcore::lock::Locked;
 
 use serde_json::json;
@@ -126,14 +126,21 @@ pub struct Remote {
 impl Remote {
     /// A surface over the node at `address`, `host:port`, presenting
     /// `identity` and trusting the node only where its certificate reaches
-    /// the identity's anchors. Nothing is connected yet.
+    /// the identity's anchors, telling time by `clock` (`Shared::clock`):
+    /// a node's own where a node opens it, the operating system's where a
+    /// program does (ADR-0068, amendment 2026-11-16). Nothing is connected
+    /// yet.
     ///
     /// # Errors
     ///
     /// An address that is no operate address, or an identity that does not
     /// make a client.
-    pub fn open(address: &str, identity: &tls::Identity) -> Result<Self, String> {
-        Self::retrying(address, identity, RETRY.to_vec())
+    pub fn open(
+        address: &str,
+        identity: &tls::Identity,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, String> {
+        Self::retrying(address, identity, RETRY.to_vec(), clock)
     }
 
     /// The same, trying a lost node again on `retry`'s schedule: what a
@@ -146,6 +153,7 @@ impl Remote {
         address: &str,
         identity: &tls::Identity,
         retry: Vec<Duration>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, String> {
         host_of(address)?;
         let client = identity.client().map_err(|failed| failed.message)?;
@@ -154,7 +162,8 @@ impl Remote {
             address: address.to_string(),
             config,
         };
-        Ok(Self::reaching(address.to_string(), reach, PATIENCE, retry))
+        let address = address.to_string();
+        Ok(Self::reaching(address, reach, PATIENCE, retry, clock))
     }
 
     /// A surface over the node on this machine whose local endpoint is
@@ -162,13 +171,14 @@ impl Remote {
     /// proving to the node who this side runs as; each call waiting at most
     /// `within` — where it is zero, what the node declared from its
     /// `[tuning] local_timeout`, else [`LOCAL_TIMEOUT`]
-    /// (`deadline::declared`). Nothing is connected yet.
+    /// (`deadline::declared`) — telling time by `clock` as
+    /// [`Remote::open`] does. Nothing is connected yet.
     ///
     /// # Errors
     ///
     /// An endpoint that is no name in the endpoints' folder.
-    pub fn local(endpoint: &str, within: Duration) -> Result<Self, String> {
-        Self::local_retrying(endpoint, within, RETRY.to_vec())
+    pub fn local(endpoint: &str, within: Duration, clock: Arc<dyn Clock>) -> Result<Self, String> {
+        Self::local_retrying(endpoint, within, RETRY.to_vec(), clock)
     }
 
     /// The same, trying a lost node again on `retry`'s schedule.
@@ -180,6 +190,7 @@ impl Remote {
         endpoint: &str,
         within: Duration,
         retry: Vec<Duration>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, String> {
         let path = local::place(endpoint)?;
         let address = path.display().to_string();
@@ -188,12 +199,18 @@ impl Remote {
         } else {
             within
         };
-        let remote = Self::reaching(address, Reach::Local(path), within, retry);
+        let remote = Self::reaching(address, Reach::Local(path), within, retry, clock);
         deadline::kept(&remote.shared);
         Ok(remote)
     }
 
-    fn reaching(address: String, reach: Reach, patience: Duration, retry: Vec<Duration>) -> Self {
+    fn reaching(
+        address: String,
+        reach: Reach,
+        patience: Duration,
+        retry: Vec<Duration>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let retry = if retry.is_empty() {
             RETRY.to_vec()
         } else {
@@ -218,7 +235,7 @@ impl Remote {
                 follows: std::sync::OnceLock::new(),
                 asking: Mutex::new(None),
                 line: Mutex::new(None),
-                clock: Arc::new(SystemClock),
+                clock,
                 #[cfg(feature = "node")]
                 fresh: Mutex::default(),
             }),
@@ -373,5 +390,36 @@ impl Drop for Remote {
         if follow.is_finished() {
             let _ = follow.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use xcore::Clock;
+    use xcore::clock::Stepped;
+
+    use super::Remote;
+
+    /// A try runs out once the surface's patience passed on the Clock it
+    /// was opened with, or once its deadline fired; not a nanosecond
+    /// before.
+    #[test]
+    fn a_try_runs_out_on_the_clock_the_surface_was_opened_with() {
+        let within = Duration::from_millis(200);
+        let clock = Arc::new(Stepped::default());
+        let handed: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+        let name = format!("xmip-remote-clock-{}", std::process::id());
+        let surface = Remote::local_retrying(&name, within, Vec::new(), handed).expect("a surface");
+        let shared = &surface.shared;
+        let began = shared.clock.monotonic_nanos();
+        let short = within.checked_sub(Duration::from_nanos(1));
+        clock.pass(short.expect("a patience of milliseconds"));
+        assert!(!shared.ran_out(began, false), "within its patience");
+        assert!(shared.ran_out(began, true), "its deadline fired");
+        clock.pass(Duration::from_nanos(1));
+        assert!(shared.ran_out(began, false), "its patience passed");
     }
 }

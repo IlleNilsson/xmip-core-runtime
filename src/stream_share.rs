@@ -47,7 +47,7 @@ use std::time::Duration;
 use xcore::lock::Locked;
 
 use persist::storage::{ChunkReader, XmipStorage};
-use xcore::{Clock, StreamId, SystemClock};
+use xcore::{Clock, StreamId};
 
 use one_read::{Next, OneRead, leave};
 
@@ -85,23 +85,16 @@ struct Shared {
 
 impl StreamShare {
     /// Reads of Streams kept in the Ledger behind `storage`, a departure
-    /// taking nothing for `stall` left behind ([`STREAM_STALL`]), on the
-    /// operating system's clock until [`StreamShare::timed_by`].
+    /// taking nothing for `stall` left behind ([`STREAM_STALL`]), the stall
+    /// counted on `clock`, the node's.
     #[must_use]
-    pub fn new(storage: Arc<dyn XmipStorage>, stall: Duration) -> Self {
+    pub fn new(storage: Arc<dyn XmipStorage>, stall: Duration, clock: Arc<dyn Clock>) -> Self {
         Self {
             storage,
             stall,
-            clock: Arc::new(SystemClock),
+            clock,
             streams: Mutex::default(),
         }
-    }
-
-    /// These reads, a stall counted on `clock`, the node's.
-    #[must_use]
-    pub fn timed_by(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// The Stream `stream`, `length` bytes as its record keeps, from its
@@ -296,7 +289,9 @@ mod tests {
     use super::*;
     use crate::fixture::{Failing, Operation};
     use persist::storage::StreamChunk;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use xcore::SystemClock;
+    use xcore::clock::Stepped;
 
     /// A Stream of `chunks` chunks of `size` patterned bytes kept in
     /// `storage` as `stream`: its length.
@@ -322,13 +317,28 @@ mod tests {
             .all(|(at, byte)| usize::from(*byte) == at % 251)
     }
 
+    /// The operating system's clock, for a share whose test lets real time
+    /// pass.
+    fn system() -> Arc<dyn Clock> {
+        Arc::new(SystemClock)
+    }
+
     /// Storage that counts the chunks asked of it, over a Stream of
-    /// `chunks` chunks of `size` bytes: the share, the counter, the length.
-    fn counted(stream: StreamId, chunks: u32, size: usize) -> (StreamShare, Arc<Failing>, u64) {
+    /// `chunks` chunks of `size` bytes, a stall counted on `clock`: the
+    /// share, the counter, the length.
+    fn counted(
+        stream: StreamId,
+        (chunks, size): (u32, usize),
+        clock: Arc<dyn Clock>,
+    ) -> (StreamShare, Arc<Failing>, u64) {
         let failing = Failing::over(Arc::clone(crate::ledger::in_memory()));
         let length = kept_stream(failing.as_ref(), stream, chunks, size);
         let storage: Arc<dyn XmipStorage> = failing.clone();
-        (StreamShare::new(storage, STREAM_STALL), failing, length)
+        (
+            StreamShare::new(storage, STREAM_STALL, clock),
+            failing,
+            length,
+        )
     }
 
     /// How many reads of its Stream there are now.
@@ -344,7 +354,7 @@ mod tests {
     #[test]
     fn readers_keeping_up_take_each_chunk_from_one_read() {
         let stream = StreamId::new(0x5_0001);
-        let (share, failing, length) = counted(stream, 6, 1000);
+        let (share, failing, length) = counted(stream, (6, 1000), system());
         let mut readers: Vec<Lent> = (0..4).map(|_| share.reader(stream, length)).collect();
         assert_eq!(share.reading(), 1, "one Stream read for all four");
         let mut read = vec![Vec::new(); 4];
@@ -370,7 +380,7 @@ mod tests {
     #[test]
     fn a_reader_alone_keeps_only_the_chunk_it_holds() {
         let stream = StreamId::new(0x5_0004);
-        let (share, _, length) = counted(stream, 6, 1000);
+        let (share, _, length) = counted(stream, (6, 1000), system());
         let mut alone = share.reader(stream, length);
         alone.read_exact(&mut [0u8; 3000]).expect("three chunks");
         assert_eq!(alone.read.source.locked().window.len(), 1);
@@ -380,7 +390,7 @@ mod tests {
     fn a_reader_fallen_behind_reads_only_what_it_missed_and_comes_back() {
         let stream = StreamId::new(0x5_0002);
         let chunks = 40;
-        let (share, failing, length) = counted(stream, chunks, 500);
+        let (share, failing, length) = counted(stream, (chunks, 500), system());
         let mut ahead = share.reader(stream, length);
         let mut behind = share.reader(stream, length);
         let mut piece = [0u8; 500];
@@ -437,7 +447,7 @@ mod tests {
     fn readers_fallen_behind_together_share_one_read_of_what_they_missed() {
         let stream = StreamId::new(0x5_0005);
         let chunks = 40;
-        let (share, failing, length) = counted(stream, chunks, 500);
+        let (share, failing, length) = counted(stream, (chunks, 500), system());
         let mut ahead = share.reader(stream, length);
         let mut behind: Vec<Lent> = (0..2).map(|_| share.reader(stream, length)).collect();
         let mut piece = [0u8; 500];
@@ -481,7 +491,7 @@ mod tests {
     fn a_reader_begun_late_and_the_one_ahead_of_it_come_together() {
         let stream = StreamId::new(0x5_0006);
         let chunks = 40;
-        let (share, failing, length) = counted(stream, chunks, 500);
+        let (share, failing, length) = counted(stream, (chunks, 500), system());
         let mut first = share.reader(stream, length);
         let mut piece = [0u8; 500];
         // Alone for three chunks, so it keeps only the one it holds.
@@ -516,7 +526,7 @@ mod tests {
         use xcore::latency::spin;
         let stream = StreamId::new(0x5_0007);
         let chunks = 24;
-        let (share, failing, length) = counted(stream, chunks, 500);
+        let (share, failing, length) = counted(stream, (chunks, 500), system());
         let (mut ahead, mut behind) = (share.reader(stream, length), share.reader(stream, length));
         // The one ahead takes as fast as it may; the one behind more slowly,
         // its far end slower, but never stopping for the stall: what is kept
@@ -541,24 +551,38 @@ mod tests {
     }
 
     #[test]
-    fn one_that_stops_taking_holds_the_one_ahead_back_only_for_the_stall() {
+    fn one_that_stops_taking_holds_the_one_ahead_back_until_its_stall_passed_on_the_clock() {
         let stream = StreamId::new(0x5_0008);
         let chunks = 24;
-        let (share, _, length) = counted(stream, chunks, 500);
+        let clock = Arc::new(Stepped::default());
+        let handed: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+        let (share, _, length) = counted(stream, (chunks, 500), handed);
         let (mut ahead, mut stopped) = (share.reader(stream, length), share.reader(stream, length));
-        let mut piece = [0u8; 500];
-        stopped.read_exact(&mut piece).expect("its first chunk");
-        // The one whose far end stopped takes nothing more; the one ahead
-        // goes to the end, held back for it once, for the stall.
-        let (began, mut went) = (Instant::now(), 0);
-        while ahead.read(&mut piece).expect("ahead") > 0 {
-            went += 1;
-        }
-        assert_eq!(went, chunks, "the one ahead took every chunk");
-        assert!(
-            began.elapsed() < Duration::from_secs(5),
-            "never held for good"
-        );
+        stopped
+            .read_exact(&mut [0u8; 500])
+            .expect("its first chunk");
+        // The one whose far end stopped takes nothing more. A nanosecond
+        // short of its stall on the share's Clock, the one ahead is held
+        // back for it once it has read all the read keeps; at its stall it
+        // goes on to the end.
+        let short = STREAM_STALL.checked_sub(Duration::from_nanos(1));
+        clock.pass(short.expect("a stall of milliseconds"));
+        std::thread::scope(|scope| {
+            let going = scope.spawn(|| {
+                let (mut piece, mut went) = ([0u8; 500], 0);
+                while ahead.read(&mut piece).expect("ahead") > 0 {
+                    went += 1;
+                }
+                went
+            });
+            while stopped.read.source.locked().window.len() < KEPT_PER_READER {
+                std::thread::yield_now();
+            }
+            assert!(!going.is_finished(), "held back within the stall");
+            clock.pass(Duration::from_nanos(1));
+            let went = going.join().expect("ahead");
+            assert_eq!(went, chunks, "every chunk, once the stall passed");
+        });
         assert_eq!(
             stopped.read.source.locked().readers.len(),
             2,
@@ -571,7 +595,7 @@ mod tests {
         let storage = Arc::clone(crate::ledger::in_memory());
         let stream = StreamId::new(0x5_0003);
         let length = kept_stream(storage.as_ref(), stream, 2, 100);
-        let share = StreamShare::new(Arc::clone(&storage), STREAM_STALL);
+        let share = StreamShare::new(Arc::clone(&storage), STREAM_STALL, system());
         let (mut one, mut two) = (
             share.reader(stream, length + 1),
             share.reader(stream, length + 1),

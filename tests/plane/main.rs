@@ -132,6 +132,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
         Arc::clone(&board) as Arc<dyn xmip_core_runtime::plane::Published>,
         surface_as(Role::Observer),
         &audit,
+        Arc::new(xcore::SystemClock),
     )
     .expect("it serves again");
     let mut found = lost;

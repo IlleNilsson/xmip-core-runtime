@@ -390,8 +390,11 @@ impl SendStep {
         Self {
             cluster: cluster.to_string(),
             node: node.to_string(),
-            share: StreamShare::new(Arc::clone(&storage), tuning.stream_stall)
-                .timed_by(Arc::clone(&clock)),
+            share: StreamShare::new(
+                Arc::clone(&storage),
+                tuning.stream_stall,
+                Arc::clone(&clock),
+            ),
             clock,
             storage,
             lease: tuning.send_lease,

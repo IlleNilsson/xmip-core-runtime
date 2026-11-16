@@ -12,7 +12,7 @@ use std::sync::Arc;
 use abi::ffi::{Slice, Str, status};
 use abi::operate::remote::{Remote as RemoteHandle, SignFn};
 
-use crate::ffi::remote::handed;
+use crate::ffi::remote::{handed, hosted_clock};
 use crate::ffi::text::scope_text;
 use crate::plane::Remote;
 
@@ -125,7 +125,7 @@ unsafe fn remote_open_kept(
     });
     let opened = tls::Identity::from_signer(certificate.as_bytes(), keeper, anchors.as_bytes())
         .map_err(|failed| failed.message)
-        .and_then(|identity| Remote::open(address, &identity));
+        .and_then(|identity| Remote::open(address, &identity, hosted_clock()));
     // SAFETY: per the contract above.
     unsafe { handed(opened, out, report, cap, out_len) }
 }

@@ -21,7 +21,8 @@ fn surface(authority: &Authority, address: &str, name: &str, serial: u64) -> Rem
     let identity =
         tls::Identity::from_pem(certificate.as_bytes(), key.as_bytes(), anchors.as_bytes())
             .expect("an identity");
-    Remote::retrying(address, &identity, vec![Duration::from_millis(50)]).expect("a remote")
+    let retry = vec![Duration::from_millis(50)];
+    Remote::retrying(address, &identity, retry, Arc::new(xcore::SystemClock)).expect("a remote")
 }
 
 #[test]
@@ -52,6 +53,7 @@ fn an_operator_the_authority_revoked_is_refused_and_its_neighbor_reads() {
         Arc::clone(&board) as Arc<dyn Published>,
         listing(Role::Operator, &["CN=revoked", "CN=kept"]),
         &audit,
+        Arc::new(xcore::SystemClock),
     )
     .expect("it serves");
     let address = listener.address();

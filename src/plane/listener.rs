@@ -31,7 +31,7 @@ use std::time::Duration;
 use xcore::lock::Locked;
 
 use xaudit::program_audit::ProgramAudit;
-use xcore::{Clock, ExecutionPhase, Severity, SystemClock};
+use xcore::{Clock, ExecutionPhase, Severity};
 
 use crate::act_watch::Door;
 use crate::plane::board::Published;
@@ -102,8 +102,9 @@ impl Listener {
     /// connecting to `listener` with a certificate reaching `identity`'s
     /// anchors, each caller holding the role `grants` lists it with and
     /// none where it lists it not; every act, taken or refused, recorded
-    /// in `audit`. Bounded by the default [`Limits`] until
-    /// [`Listener::limit`] sets others.
+    /// in `audit`; a connection's HTTP/2 frames in a span counted on
+    /// `clock`, the node's (ADR-0068, amendment 2026-11-16). Bounded by the
+    /// default [`Limits`] until [`Listener::limit`] sets others.
     ///
     /// # Errors
     ///
@@ -115,11 +116,12 @@ impl Listener {
         published: Arc<dyn Published>,
         grants: Grants,
         audit: &ProgramAudit,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, String> {
         let server = identity.server().map_err(|failed| failed.message)?;
         let config = Arc::new(tls::alpn::selecting(server, &[b"h2"]));
         let address = listener.local_addr().map_err(|error| error.to_string())?;
-        let serve = serving(Some(config), published, grants, audit);
+        let serve = serving(Some(config), published, grants, (audit, clock));
         Self::begin(Place::Network(address), serve, move |serve, served| {
             accept(&listener, serve, served);
         })
@@ -132,7 +134,8 @@ impl Listener {
     /// names (`[operate] admit`, and on Unix the socket's `[operate]
     /// group`), each caller the account its process runs as, holding the
     /// role `grants` lists that account with. Plain HTTP/2 inside the
-    /// machine, said in `audit` where it is made (ADR-0063 clause 1).
+    /// machine, said in `audit` where it is made (ADR-0063 clause 1), its
+    /// frames in a span counted on `clock`.
     ///
     /// # Errors
     ///
@@ -145,6 +148,7 @@ impl Listener {
         published: Arc<dyn Published>,
         grants: Grants,
         audit: &ProgramAudit,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, String> {
         let path = local::place(endpoint)?;
         let acceptor = Acceptor::bind(&path, admitting)?;
@@ -156,7 +160,7 @@ impl Listener {
             Some("the local operate endpoint carries gRPC without TLS; the system proves who"),
             BTreeMap::from([("endpoint".to_string(), where_)]),
         );
-        let serve = serving(None, published, grants, audit);
+        let serve = serving(None, published, grants, (audit, clock));
         Self::begin(Place::Local(path), serve, move |serve, served| {
             accept_local(&acceptor, serve, served);
         })
@@ -255,11 +259,14 @@ impl Drop for Listener {
     }
 }
 
-fn serving(
+/// What every connection of a listener shares: TLS by `config` where it
+/// listens on the network, what it serves, whom it grants what, where its
+/// acts are recorded and the Clock its connections count on.
+pub(super) fn serving(
     config: Option<Arc<tls::ServerConfig>>,
     published: Arc<dyn Published>,
     grants: Grants,
-    audit: &ProgramAudit,
+    (audit, clock): (&ProgramAudit, Arc<dyn Clock>),
 ) -> Arc<Serve> {
     Arc::new(Serve {
         published,
@@ -270,6 +277,6 @@ fn serving(
         relaying: OnceLock::new(),
         door: OnceLock::new(),
         stopping: AtomicBool::new(false),
-        clock: Arc::new(SystemClock),
+        clock,
     })
 }
