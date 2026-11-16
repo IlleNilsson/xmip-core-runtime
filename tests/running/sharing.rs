@@ -32,7 +32,7 @@ fn benched(address: &str, side: Applies, given: &[(String, Given)], on: OnNode<'
     let bench = BENCH.with(Bench::clone);
     let line = SerialTransport::open(address, side, given)?.opened_by(Arc::new(bench));
     let sharing = Arc::as_ptr(on.3).cast::<()>().addr();
-    let line = built_on(line, on)?;
+    let line = built_on(line, side, on)?;
     BUILT.with(|built| built.borrow_mut().push((line.clone(), sharing)));
     Ok(Box::new(line))
 }

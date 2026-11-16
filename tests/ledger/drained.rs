@@ -19,7 +19,6 @@ use std::time::{Duration, Instant};
 
 use tcp::TcpTransport;
 use transport::{Arrivals, Arrived, Configured, Directions, Transport, Waiting};
-use xmip_core_runtime::fixture::until_listening;
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::receiving::Receiving;
 use xmip_core_runtime::stopping::Stopping;
@@ -47,10 +46,11 @@ struct Backlogged {
     filled: AtomicBool,
 }
 
-/// Send `payload` to `address`, asked again while nothing listens there yet
-/// (`fixture::until_listening`).
+/// Send `payload` to `address`, once: the Location listens from its open.
 fn deliver(address: &str, payload: &[u8]) {
-    until_listening(address, || TcpTransport::loopback().send(address, payload));
+    TcpTransport::loopback()
+        .send(address, payload)
+        .unwrap_or_else(|failed| panic!("nothing took it at {address}: {failed:?}"));
 }
 
 impl Transport for Backlogged {
@@ -138,8 +138,11 @@ fn a_stop_takes_every_connection_already_queued_at_the_listener() {
     let storage = test_node(&at.join("node"));
     let stopping = Arc::new(Stopping::default());
     let address = net::fixture::unheld().to_string();
+    let tcp = TcpTransport::new(address.clone()).timing_out_after(WAIT);
+    // Listening as a node's start leaves it (`Configured::listening`).
+    tcp.listening().expect("listens");
     let backlogged = Backlogged {
-        tcp: TcpTransport::new(address.clone()).timing_out_after(WAIT),
+        tcp,
         address,
         stopping: Arc::clone(&stopping),
         filled: AtomicBool::new(false),

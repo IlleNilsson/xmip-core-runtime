@@ -11,12 +11,15 @@
 //! (ADR-0031, amendment 2026-11-12). That a Message's hand-on is in its own
 //! share is `own_share.rs`'s (ADR-0018, amendment 2026-11-15), and that a
 //! node hands its Locations one sharing, so two naming one device share its
-//! port, `sharing.rs`'s (ADR-0064, amendment 2026-11-15). How long a
-//! node takes to carry a Message is the module's timing program's
+//! port, `sharing.rs`'s (ADR-0064, amendment 2026-11-15). That a node
+//! listens when it says it started, and a port that is taken refuses its
+//! start, is `listening.rs`'s (the owner, 2026-11-16, *Bind at open*). How
+//! long a node takes to carry a Message is the module's timing program's
 //! (`tests/measured`).
 
 mod activated;
 mod drawing;
+mod listening;
 mod node;
 mod own_share;
 mod sharing;
