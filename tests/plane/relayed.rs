@@ -51,7 +51,7 @@ fn a_relayed_act_is_the_browsers_by_its_own_role_proven_by_its_handshake_and_aud
         Outcome::Refused,
         "admitted, and no such node: {said}"
     );
-    let kept = std::fs::read_to_string(audit.file().expect("an audit")).expect("read");
+    let kept = std::fs::read_to_string(&audit).expect("read");
     assert!(kept.contains(&name), "who is the browser: {kept}");
     assert!(kept.contains("\"through\""), "and through the host: {kept}");
     let (outcome, said) = retry(&observer, alice);

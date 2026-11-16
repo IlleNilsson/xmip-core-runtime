@@ -2,7 +2,7 @@
 //! first three of ADR-0018's startup phases, and nothing that runs.
 //!
 //! `xmip_start_v1` hands a surface this, and publishes what it planned
-//! through `operator.rs`. Running a node — the other six phases, its Modules
+//! through xmip-core-operate's `operator.rs`. Running a node — the other six phases, its Modules
 //! loaded and its Receive Locations accepting work — is
 //! [`crate::running::Running::start`], called by the program that links the
 //! technologies the node needs (ADR-0018, amendment 2026-09-26); a surface's
@@ -12,8 +12,8 @@
 //! node through each slice its trust admits (`running::activation`).
 //!
 //! Its two exports, `xmip_start_v1` and `xmip_validate_v1`, are the
-//! boundary and live in `ffi/start.rs` (ADR-0050, refined 2026-09-25); what
-//! they do is here.
+//! boundary and live in xmip-core-operate's `ffi/start.rs` (ADR-0050,
+//! amendment 2026-11-16); what they do is here.
 
 use configure::{DocumentKind, XmipApplication, XmipConfigurationDocument, document_kind};
 use node::Stage;
@@ -21,30 +21,8 @@ use observe::{Health, HealthRecord, Snapshot, now_unix_nanos};
 
 use crate::catalogue;
 use crate::execution_tree::{build_execution_tree, validate_startup_configuration};
-use crate::operator::publish;
 use crate::running::publication::location;
 use crate::service::read_node;
-
-/// What a runtime says about itself before any node has published: it is
-/// here, and it has nothing to run. `Stressed`, not `Done` — nothing is failing
-/// — and not `Fine`, because an operator who sees `Fine` over an unconfigured
-/// runtime has been told something false. The one line of evidence is the one
-/// they need.
-pub(crate) fn unconfigured() -> Snapshot {
-    let now = now_unix_nanos();
-
-    let mut snapshot = Snapshot::new();
-
-    snapshot.record_health(HealthRecord {
-        scope: "xmip:///".into(),
-        health: Health::Stressed,
-        severity: 50,
-        evidence: "runtime loaded, no node started — give xmip_start_v1 a node TOML".into(),
-        observed_unix_nanos: now,
-    });
-
-    snapshot
-}
 
 /// A configuration that could not be read: why, and the scope that says so —
 /// the node's, once the document named one.
@@ -258,21 +236,6 @@ fn bound_applications(
         })
         .collect::<Result<Vec<_>, String>>()
         .map(|read| read.into_iter().unzip())
-}
-
-/// [`start`], then publish what it found: true when the node validated.
-/// Validation asks whether any leaf is Done, not what the root rolls up to: a
-/// Done no longer propagates (ADR-0041), so the root would read Holding, but
-/// one Done leaf still means the configuration is invalid.
-pub(crate) fn start_published(path: &str) -> bool {
-    let snapshot = start(path);
-    let valid = !snapshot
-        .health("xmip:///")
-        .iter()
-        .any(|record| record.health == Health::Done);
-
-    publish(snapshot);
-    valid
 }
 
 /// Validate a document without starting anything, and return the problems.

@@ -11,7 +11,7 @@ use super::SendStep;
 static REGISTERED: Mutex<Vec<Weak<SendStep>>> = Mutex::new(Vec::new());
 
 impl SendStep {
-    /// `step` registered, so the runtime's library finds it by its node
+    /// `step` registered, so the operate library finds it by its node
     /// and acts on its Messages (`xmip_operate.h` section 16).
     pub fn register(step: &Arc<Self>) {
         let mut registered = REGISTERED.locked();

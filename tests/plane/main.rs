@@ -25,6 +25,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use audit_file::FileSink;
 use certified::{node, remote};
 use endpoint::listing;
 use xaudit::program_audit::ProgramAudit;
@@ -53,7 +54,7 @@ fn an_act_is_the_certificates_and_is_refused_to_an_observer() {
         said.starts_with("REFUSED. CN=surface may not act on this node"),
         "{said}"
     );
-    let file = audit.file().expect("an audit file");
+    let file = audit;
     let kept = std::fs::read_to_string(file).expect("the audit file");
     assert!(
         kept.contains("CN=surface") && kept.contains("Observer"),
@@ -125,7 +126,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
     assert!(unanswered.contains("unreachable"), "{unanswered}");
 
     let again = TcpListener::bind(("127.0.0.1", port)).expect("the same port");
-    let audit = ProgramAudit::new("plane-test", Some(&authority.directory));
+    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&authority.directory)));
     let _back = Listener::start(
         again,
         &authority.identity("node"),

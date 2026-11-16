@@ -59,7 +59,7 @@ fn a_second_certificate_from_the_same_anchors_reads_and_acts_on_nothing() {
         "{said}"
     );
 
-    let kept = std::fs::read_to_string(audit.file().expect("an audit")).expect("read");
+    let kept = std::fs::read_to_string(&audit).expect("read");
     assert!(
         kept.contains("CN=mallory") && kept.contains("\"none\""),
         "{kept}"

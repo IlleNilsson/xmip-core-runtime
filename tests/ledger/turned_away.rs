@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use audit_file::FileSink;
 use http::HttpTransport;
 use transport::{Configured, Transport};
 use xaudit::program_audit::ProgramAudit;
@@ -62,7 +63,7 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
         let location = Receiving {
             audit: Some(ProgramAudit::new(
                 "xmip-runtime turned-away tests",
-                Some(&audited),
+                Some(FileSink::new(&audited)),
             )),
             ..location("http://in", Box::new(http), gate)
         };
@@ -77,7 +78,7 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
     sent.expect("the next caller was served");
     xaudit::keeper::settle();
     let text =
-        std::fs::read_to_string(audited.join(xaudit::file_sink::FILE_NAME)).expect("audited");
+        std::fs::read_to_string(audited.join(xaudit::audit_store::FILE_NAME)).expect("audited");
     let turned = format!("the Receive Location 'In' turned away the caller at {from}");
     assert!(text.contains(&turned), "{text}");
     let _ = std::fs::remove_dir_all(&at);

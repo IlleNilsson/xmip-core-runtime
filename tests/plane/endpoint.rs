@@ -3,10 +3,12 @@
 //! tests on this machine and the module's timing program
 //! (`tests/measured`) both stand up.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use audit_file::FileSink;
 use xaudit::program_audit::ProgramAudit;
 use xcore::SystemClock;
 use xmip_core_runtime::plane::local::running_as;
@@ -35,16 +37,19 @@ pub fn endpoint() -> String {
     format!("xmip-operate-test-{}-{next}", std::process::id())
 }
 
-fn audit() -> ProgramAudit {
+fn audit() -> (ProgramAudit, PathBuf) {
     let directory = std::env::temp_dir().join(endpoint());
     std::fs::create_dir_all(&directory).expect("an audit directory");
-    ProgramAudit::new("plane-local-test", Some(&directory))
+    let sink = FileSink::new(&directory);
+    let audited = sink.path();
+    (ProgramAudit::new("plane-local-test", Some(sink)), audited)
 }
 
 /// A node's local endpoint over `board`, each caller holding the role
-/// `grants` grants it, its audit and the endpoint's name.
-pub fn node(board: &Arc<Board>, grants: Grants) -> (Listener, ProgramAudit, String) {
-    let audit = audit();
+/// `grants` grants it, the file its audit is kept in and the endpoint's
+/// name.
+pub fn node(board: &Arc<Board>, grants: Grants) -> (Listener, PathBuf, String) {
+    let (audit, audited) = audit();
     let called = endpoint();
     let published = Arc::clone(board) as Arc<dyn Published>;
     let admitting = xmip_core_runtime::plane::local::Admitting::default();
@@ -57,7 +62,7 @@ pub fn node(board: &Arc<Board>, grants: Grants) -> (Listener, ProgramAudit, Stri
         Arc::new(SystemClock),
     )
     .expect("it serves");
-    (listener, audit, called)
+    (listener, audited, called)
 }
 
 /// A surface on the endpoint `called`, stating no wait of its own.

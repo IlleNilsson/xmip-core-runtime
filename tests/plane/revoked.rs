@@ -8,6 +8,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
+use audit_file::FileSink;
 use xaudit::program_audit::ProgramAudit;
 use xmip_core_runtime::fixture::Authority;
 use xmip_core_runtime::plane::{Board, Listener, Published, Remote, Role};
@@ -46,7 +47,7 @@ fn an_operator_the_authority_revoked_is_refused_and_its_neighbor_reads() {
     let identity = presented::identity(&configuration, "operate", files).expect("an identity");
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
-    let audit = ProgramAudit::new("plane-revoked-test", Some(base));
+    let audit = ProgramAudit::new("plane-revoked-test", Some(FileSink::new(base)));
     let listener = Listener::start(
         TcpListener::bind("127.0.0.1:0").expect("bound"),
         &identity,

@@ -30,6 +30,7 @@
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use audit_file::FileSink;
 use authenticate::x509::Chain;
 use node::{Capability, NodeRole};
 use observe::{Act, Noun, Order};
@@ -186,7 +187,7 @@ fn an_act_asked_at_a_door_is_taken_and_answered_within_a_millisecond_of_storages
     let pickup = Pickup::open(&node, configured, Arc::clone(&storage), None).expect("opened");
     let operators = vec![WHO.to_string()];
     let at = std::env::temp_dir().join(format!("xmip-acted-audit-{}", std::process::id()));
-    let audit = ProgramAudit::new("acted timing", Some(&at));
+    let audit = ProgramAudit::new("acted timing", Some(FileSink::new(&at)));
     let grants = Grants::listed([&[], &operators, &[]]);
     let watch = ActWatch::new(&node, Arc::clone(&storage), grants, &audit);
     let _watching = watch.start(Duration::from_secs(60)).expect("watching");

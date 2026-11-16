@@ -1,8 +1,8 @@
 //! A test authority: one anchor, and a certificate it issues for each end
 //! by name, for `localhost` and `127.0.0.1`, as the event cluster's tests
 //! make theirs; and a directory of its own for the audit a test reads. The
-//! operate plane's tests take it, through the C boundary (`ffi::served`)
-//! and around it (`tests/plane`) alike.
+//! operate plane's tests take it, through the C boundary
+//! (xmip-core-operate's `ffi::served`) and around it (`tests/plane`) alike.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -18,6 +18,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
+use audit_file::FileSink;
 use configure::OnFailure;
 use journey::JourneyState;
 use observe::Act;
@@ -59,7 +60,7 @@ fn a_retry_sends_a_failed_message_again_once_its_fault_is_fixed_and_is_audited()
     let mut sending = sender(node(), far, out(|_| {}));
     sending.audit = Some(ProgramAudit::new(
         "xmip-runtime journey act tests",
-        Some(&at),
+        Some(FileSink::new(&at)),
     ));
     on_node(
         &storage,
@@ -98,7 +99,7 @@ fn a_retry_sends_a_failed_message_again_once_its_fault_is_fixed_and_is_audited()
         },
     );
     xaudit::keeper::settle();
-    let text = std::fs::read_to_string(at.join(xaudit::file_sink::FILE_NAME)).expect("kept");
+    let text = std::fs::read_to_string(at.join(xaudit::audit_store::FILE_NAME)).expect("kept");
     assert!(text.contains("action = \"message.retry\""), "{text}");
     assert!(text.contains("\"by\" = \"ilian\""), "{text}");
     let _ = std::fs::remove_dir_all(&at);

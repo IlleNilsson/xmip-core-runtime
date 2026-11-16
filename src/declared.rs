@@ -15,8 +15,8 @@
 //! meet.
 //!
 //! No other language writes, reads or removes a declaration again:
-//! `ffi::process` forwards [`declare`], [`standing`] and [`undeclare`] to the
-//! surfaces as `xmip_process_declare_v1`, `xmip_process_declarations_v1` and
+//! xmip-core-operate's `ffi::process` forwards [`declare`], [`standing`] and
+//! [`undeclare`] to the surfaces as `xmip_process_declare_v1`, `xmip_process_declarations_v1` and
 //! `xmip_process_undeclare_v1` (`xmip_operate.h` section 13), and
 //! `Xmip.Surface` and the estate's PowerShell module call those. Until
 //! 2026-11-13 the file was `xmip-core-node`'s, a Foundation crate writing and

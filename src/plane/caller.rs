@@ -91,7 +91,7 @@ pub fn local_of(account: &str, parties: &Parties) -> Result<AuthenticatedIdentit
 /// The Event subscriber a program in this process is among `parties`: the
 /// account the operating system says the process runs as, as
 /// [`subscriber_as`] takes it. The one rule for every program subscribing
-/// in a node's process — the C boundary's (`ffi::event`, through the
+/// in a node's process — the operate library's (`ffi::event`, through the
 /// Parties of the nodes serving here) and the Essentials' nodes'.
 ///
 /// # Errors
@@ -182,6 +182,7 @@ fn gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audit_file::FileSink;
     use context::Verified;
 
     #[test]
@@ -226,7 +227,7 @@ mod tests {
         };
         let (first, second) = (held("operations"), held("on-call"));
         let at = std::env::temp_dir().join(format!("xmip-runtime-caller-{}", std::process::id()));
-        let audit = ProgramAudit::new("xmip-core-runtime tests", Some(&at));
+        let audit = ProgramAudit::new("xmip-core-runtime tests", Some(FileSink::new(&at)));
         let filter = Filter::everything();
 
         for order in [[&first, &second], [&second, &first]] {

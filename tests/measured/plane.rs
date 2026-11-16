@@ -7,6 +7,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use audit_file::FileSink;
 use xaudit::program_audit::ProgramAudit;
 use xcore::latency::{Rounds, at_once};
 use xmip_core_runtime::fixture::Authority;
@@ -87,7 +88,7 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
 
     let board = Arc::new(Board::default());
     board.post("source = \"back\"\n".to_string());
-    let audit = ProgramAudit::new("plane-test", Some(&authority.directory));
+    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&authority.directory)));
     let _back = Listener::start(
         TcpListener::bind(address).expect("the same port"),
         &authority.identity("node"),

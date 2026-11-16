@@ -33,7 +33,7 @@ fn an_act_on_this_machine_is_the_users_and_is_refused_to_an_observer() {
     assert_eq!(outcome, Outcome::Denied);
     assert!(said.starts_with("REFUSED. "), "{said}");
     assert!(said.to_lowercase().contains(&user()), "{said}");
-    let kept = std::fs::read_to_string(audit.file().expect("an audit file")).expect("read");
+    let kept = std::fs::read_to_string(&audit).expect("read");
     assert!(kept.contains("Observer"), "{kept}");
     assert!(
         kept.contains("operate.local"),
