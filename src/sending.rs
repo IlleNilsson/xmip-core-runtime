@@ -17,7 +17,7 @@
 //! amendment 2026-11-14).
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use configure::{ConfiguredLocation, DesignedSendPort, SendPortGroup};
 use persist::storage::named;
@@ -100,8 +100,8 @@ pub struct Sends {
 
 impl Sends {
     /// How long until the active Send Location of the Send Port `port` is
-    /// tried again after its try `number`, begun at `began` and come to
-    /// `tried`, not sent: the wait the Port's guards ask for, asked as
+    /// tried again after its try `number`, which took `elapsed` on the node's
+    /// clock and came to `tried`, not sent: the wait the Port's guards ask for, asked as
     /// `resilience::execute` asks after an attempt (ADR-0048, amendment
     /// 2026-11-14), the try's failure retryable only where its transport
     /// said so. None where they let the try stand — a Port with no guards
@@ -110,7 +110,7 @@ impl Sends {
     pub fn again(
         &self,
         port: &str,
-        (number, began): (u32, Instant),
+        (number, elapsed): (u32, Duration),
         tried: &Departed,
     ) -> Option<Duration> {
         let guards = self.guards.get(port)?;
@@ -123,7 +123,7 @@ impl Sends {
         );
         let attempt = Attempt {
             number,
-            elapsed: began.elapsed(),
+            elapsed,
             failure: Some(Failure {
                 message: said(std::slice::from_ref(tried)),
                 retryable,
@@ -281,7 +281,7 @@ pub fn guards(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use configure::{DesignedSendPort, Retry};
     use resilience::Guard;
@@ -323,7 +323,7 @@ mod tests {
     /// How long after its try `number`, failed `retryable` or not, `Out`
     /// is tried again.
     fn again(sends: &Sends, number: u32, retryable: bool) -> Option<Duration> {
-        sends.again("Out", (number, Instant::now()), &failed(retryable))
+        sends.again("Out", (number, Duration::ZERO), &failed(retryable))
     }
 
     fn guarded(ports: &[DesignedSendPort]) -> Sends {
@@ -357,7 +357,7 @@ mod tests {
             to: Subscriber::SendPort("Out".to_string()),
         };
         assert_eq!(
-            sends.again("Out", (1, Instant::now()), &refused),
+            sends.again("Out", (1, Duration::ZERO), &refused),
             None,
             "nor a try that never reached the transport"
         );

@@ -7,7 +7,7 @@ use std::time::Duration;
 use persist::PersistError;
 use persist::storage::{
     ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, DeadEntry,
-    DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue, JourneyRecord,
+    DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, Head, HeldQueue, JourneyRecord,
     KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed, StreamChunk,
     StreamRecord, Waiter, XmipStorage,
 };
@@ -63,6 +63,10 @@ impl XmipStorage for HaltsAtPublication {
 
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         self.0.read_held(queue, from, most)
+    }
+
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+        self.0.read_head(queue, most)
     }
 
     fn read_failed(&self, queue: u128, from: u64, most: u32) -> Result<FailedQueue, PersistError> {

@@ -37,20 +37,21 @@
 
 mod configured;
 mod group;
+mod head;
 mod late;
 mod let_go;
 
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
 pub use group::{delivered, group_heads, group_placed, grouped, waits_for_group};
+pub use head::{Stands, behind, heads, held_by, may_go, stands, stream_heads, waits_on};
 use journey::{Journey, Received, Sequenced};
 pub use late::{Placing, heading, take_late, waits_for_places};
 pub use let_go::{let_go, lets_go};
-use xcore::lock::Locked;
 
 use crate::ledger::Opened;
 use message::Message;
-use persist::storage::{Hold, Position, Watched, XmipStorage, named};
+use persist::storage::{Hold, named};
 use route::Promoted;
 use xcore::JourneyId;
 
@@ -260,132 +261,4 @@ pub fn points_of<'a>(sends: &'a Sends, to: &'a Subscriber) -> Vec<&'a Point> {
             Destination::Process | Destination::Nowhere => Vec::new(),
         },
     }
-}
-
-/// Whether `member` holds the first place in the sequence `queue`.
-///
-/// # Errors
-/// Xmip Storage did not answer, in words.
-pub fn heads(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<bool, String> {
-    Ok(waits_on(storage, queue, member)?.is_none())
-}
-
-/// Where the head of the sequence `queue` stands, where `member` does not
-/// hold its first place — what it waits on (`persist::storage::Watched::
-/// Head`): how many places were ever let go of there, which only one let
-/// go of moves — or none where it heads it.
-///
-/// # Errors
-/// Xmip Storage did not answer, in words.
-pub fn waits_on(
-    storage: &dyn XmipStorage,
-    queue: u128,
-    member: u128,
-) -> Result<Option<Position>, String> {
-    if headed().contains(&(queue, member)) {
-        return Ok(None);
-    }
-    let page = storage
-        .read_held(queue, 0, 1)
-        .map_err(|why| why.to_string())?;
-    let head = Position {
-        watched: Watched::Head(queue),
-        at: page.next.saturating_sub(page.count),
-    };
-    // A page that reads nothing while the queue still holds places is no
-    // head: only an empty queue is (corrected 2026-10-27; an empty page
-    // read mid-write let a Message overtake under load).
-    // Only a place seen at the head is remembered: an empty queue says
-    // nothing of a place taken later.
-    match page.held.first() {
-        Some(first) if first.hold.journey.value() == member => {
-            headed().remember((queue, member));
-            Ok(None)
-        }
-        Some(_) => Ok(Some(head)),
-        None => Ok((page.count != 0).then_some(head)),
-    }
-}
-
-/// Each sequence the Message of `journey` holds a place in and does not
-/// head — its Stream's end to end, its Send Port Group delivery's, and its
-/// own at the point it is at — with where its head stands as read now:
-/// what it waits on, taken up the moment any node moves one (open problem
-/// 46, 2026-11-12). None where it heads them all.
-///
-/// # Errors
-/// Xmip Storage did not answer, in words.
-pub fn behind(storage: &dyn XmipStorage, journey: &Journey) -> Result<Vec<Position>, String> {
-    let member = journey.journey_id().value();
-    let stream = journey.received().into_iter().flat_map(|received| {
-        let origin = received.origin;
-        received.sequences.iter().map(move |queue| (*queue, origin))
-    });
-    let group = journey
-        .group
-        .as_ref()
-        .and_then(|group| Some((group.queue?, group.delivery)));
-    let own = journey
-        .sequences
-        .iter()
-        .map(|sequenced| (sequenced.queue, member));
-    let mut behind = Vec::new();
-    for (queue, holder) in stream.chain(group).chain(own) {
-        behind.extend(waits_on(storage, queue, holder)?);
-    }
-    Ok(behind)
-}
-
-/// What this process has seen head its sequence. A place that heads a
-/// sequence heads it until it is let go, and nothing asks of a place once
-/// it is let go — its Stream or its Journey has ended — so what is
-/// remembered here is never wrong, and a Stream's later steps on this node
-/// ask the Ledger nothing (the owner, 2026-10-22: a Receive Location's own
-/// sequence costs as little as the Location can make it, never the
-/// cluster-wide promise).
-struct Headed(std::sync::Mutex<std::collections::HashSet<(u128, u128)>>);
-
-/// The most places remembered at once; the oldest are forgotten together.
-const REMEMBERED: usize = 65_536;
-
-impl Headed {
-    fn contains(&self, place: &(u128, u128)) -> bool {
-        self.lock().contains(place)
-    }
-
-    fn remember(&self, place: (u128, u128)) {
-        let mut known = self.lock();
-        if known.len() >= REMEMBERED {
-            known.clear();
-        }
-        known.insert(place);
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<(u128, u128)>> {
-        self.0.locked()
-    }
-}
-
-fn headed() -> &'static Headed {
-    static HEADED: std::sync::LazyLock<Headed> = std::sync::LazyLock::new(|| {
-        Headed(std::sync::Mutex::new(std::collections::HashSet::new()))
-    });
-    &HEADED
-}
-
-/// Whether the Stream the Message of `journey` was born from heads every
-/// sequence it holds a place in end to end: work on it may go on.
-///
-/// # Errors
-/// Xmip Storage did not answer.
-pub fn stream_heads(storage: &dyn XmipStorage, journey: &Journey) -> Result<bool, String> {
-    let Some(received) = journey.received() else {
-        return Ok(true);
-    };
-    for queue in &received.sequences {
-        if !heads(storage, *queue, received.origin)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }

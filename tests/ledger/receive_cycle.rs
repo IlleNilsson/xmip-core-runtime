@@ -142,7 +142,7 @@ pub fn on_working_node<T>(
         (&configure::fixture::test_cluster().scope(), &node),
         Arc::clone(storage),
         &tuning,
-        audit,
+        (audit, Arc::new(SystemClock)),
     );
     let work = WorkStep::new(
         (&configure::fixture::test_cluster().scope(), &node),

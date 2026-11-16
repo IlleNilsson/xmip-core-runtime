@@ -37,6 +37,7 @@ pub(crate) fn run(shared: &Arc<Shared>) {
             shared.patience,
             shared.ended(),
             &shared.following,
+            &shared.clock,
         );
         shared.connecting.store(false, Ordering::SeqCst);
         let (why, answered) = match opened {

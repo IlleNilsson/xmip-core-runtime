@@ -6,10 +6,9 @@
 //! (`XmipStorage::read_claimed`; open problem 46, 2026-11-12: until then
 //! four, one after another, 0.9 ms in the Essentials).
 
-use std::time::Instant;
-
 use context::IdentityFacts;
 use xcore::JourneyId;
+use xcore::clock::{between, nanos};
 
 use super::found::{Found, found};
 use super::steps::{Step, Steps};
@@ -20,10 +19,10 @@ use crate::message_path::Runtime;
 pub(super) enum Under {
     /// At its place, due, and still to be sent.
     Waiting(Box<(ReceivedWork, IdentityFacts)>),
-    /// At its place, its retry due at this time on this node's clock: a
+    /// At its place, its retry due at this reading of the step's Clock: a
     /// hand-on since the scan's read kept its due time there and released
     /// its claim.
-    NotDue(Instant),
+    NotDue(i128),
     /// No longer at its place: sent, dismissed or moved since.
     Moved,
     /// At its place and due, and not to be sent: failed, finished or not
@@ -43,9 +42,10 @@ pub(super) fn under_claim(
     (id, at): (JourneyId, u64),
     (body, steps): (&[u8], &mut Steps),
 ) -> Under {
-    let asked = Instant::now();
+    let clock = &runtime.send.clock;
+    let asked = clock.monotonic_nanos();
     let claimed = runtime.send.storage.read_claimed(queue, at, id);
-    steps.set(Step::Read, asked.elapsed());
+    steps.set(Step::Read, between(asked, clock.monotonic_nanos()));
     let Ok(claimed) = claimed else {
         return Under::Unanswered;
     };
@@ -58,7 +58,7 @@ pub(super) fn under_claim(
         return Under::Moved;
     };
     if let Some(left) = page.due_in(held) {
-        return Under::NotDue(asked + left);
+        return Under::NotDue(asked.saturating_add(nanos(left)));
     }
     match found(runtime, claimed, body, steps) {
         Ok(Found::Waiting(found)) => Under::Waiting(found),

@@ -12,13 +12,13 @@
 //! nothing this node settled after its read began (`super::settles`).
 
 use std::collections::HashSet;
-use std::time::Instant;
 
 use context::IdentityFacts;
 use persist::storage::{Claim, Durable};
 use route::Subscriber;
 use schedule::due::Due;
 use xcore::JourneyId;
+use xcore::clock::{between, nanos};
 
 use super::found::Found;
 use super::reading::Reading;
@@ -47,7 +47,7 @@ pub(super) fn scan(
     runtime: &Runtime<'_>,
     to: &Subscriber,
     queue: u128,
-    woken: Option<(Woken, Instant)>,
+    woken: Option<(Woken, i128)>,
 ) -> Vec<Ready> {
     let mut waits = Due::of(to.name());
     // Its read, from now, and from as a wake's wait was asked where it reads
@@ -77,9 +77,12 @@ fn scanning(
     runtime: &Runtime<'_>,
     (to, queue): (&Subscriber, u128),
     waits: &mut Due,
-    (woken, read): (Option<(Woken, Instant)>, &ScanRead<'_>),
+    (woken, read): (Option<(Woken, i128)>, &ScanRead<'_>),
 ) -> (Vec<Ready>, bool) {
     let step = runtime.send;
+    // Before its first entry: a head that moves from here on is the next
+    // read's to take up (`super::behind`).
+    let began = step.lock().behind.began();
     let sequenced = !crate::sequence::points_of(runtime.sends, to).is_empty()
         || crate::sequence::grouped(runtime.sends, to);
     let mut present = HashSet::new();
@@ -87,7 +90,7 @@ fn scanning(
     // What each it finds took so far: the wake reaching this read.
     let mut steps = Steps::default();
     if let Some((woken, read)) = &woken {
-        steps.set(Step::Woken, read.saturating_duration_since(woken.at));
+        steps.set(Step::Woken, between(woken.at, *read));
     }
     let mut reading = Reading::of(step, queue, woken.map(|(woken, _)| woken));
     let mut answered = false;
@@ -115,13 +118,15 @@ fn scanning(
         }
         if let Some(left) = due_in {
             // Its retry is not due: nothing claims it.
-            waits.wakes_at(asked + left);
+            waits.wakes_at(asked.saturating_add(nanos(left)));
             continue;
         }
         // In a send here, taken, passed over, or settled here since this
-        // read began, which is that pass's past.
+        // read began, which is that pass's past; or known to wait behind a
+        // head that has not moved, or behind the one this read took up
+        // first (`super::behind`).
         let known = {
-            let state = step.lock();
+            let mut state = step.lock();
             state.owned.contains_key(&id)
                 || state.taking.contains(&id)
                 || state
@@ -129,6 +134,7 @@ fn scanning(
                     .get(&queue)
                     .is_some_and(|set| set.contains(&place))
                 || read.settled_since(&state, id)
+                || !state.behind.takes(id, queue, began)
         };
         if known {
             continue;
@@ -254,7 +260,7 @@ fn owned(
         to: to.clone(),
         queue,
         claim,
-        until: asked + step.lease,
+        until: asked.saturating_add(nanos(step.lease)),
         durable: Some(durable),
         handed: false,
         spent: None,
@@ -267,7 +273,7 @@ fn owned(
 
 /// What a claim took: the Journey and its Message, the identity it arrived
 /// with, the claim with when it is durable, and when the claim was asked.
-type Took = (ReceivedWork, IdentityFacts, (Claim, Durable), Instant);
+type Took = (ReceivedWork, IdentityFacts, (Claim, Durable), i128);
 
 impl super::SendStep {
     /// The Message at `place` in `queue` passed over by every scan after.
@@ -299,9 +305,9 @@ fn claimed_first(
     let step = runtime.send;
     let id = place.0;
     let token = runtime.ids.next_u128();
-    let asked = Instant::now();
+    let asked = step.clock.monotonic_nanos();
     let claimed = step.storage.claim_ahead(id, &step.node, token, step.lease);
-    steps.set(Step::Claim, asked.elapsed());
+    steps.set(Step::Claim, between(asked, step.clock.monotonic_nanos()));
     let (claim, durable) = match claimed {
         Ok((Some(claim), durable)) => (claim, durable),
         Ok((None, _)) => return Taken::Passed,

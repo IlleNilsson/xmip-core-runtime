@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use xcore::Clock;
 use xcore::lock::Locked;
 
 use xcore::wake::Wake;
@@ -45,6 +46,10 @@ pub(crate) struct Shared {
     /// a caller a host lets go is told to the node on it (`remote::relayed`)
     /// without the surface.
     pub(crate) line: Mutex<Option<Line>>,
+    /// What the surface tells time by: a line's silence, HTTP/2's frames in
+    /// a span and a nonce's freshness are counted on its monotonic reading
+    /// (ADR-0068, amendment 2026-11-15).
+    pub(crate) clock: Arc<dyn Clock>,
     /// The node's nonces kept to bind a browser's handshake to
     /// (`remote::fresh`).
     #[cfg(feature = "node")]

@@ -10,11 +10,14 @@
 //! handshake takes one without a round trip. Only a node the follow knows
 //! answers is asked while a browser waits; one lost, not yet reached, or
 //! that relays for no one binds nothing meanwhile — no browser waits on a
-//! node that does not answer.
+//! node that does not answer. How long a nonce is kept, and a node that
+//! refused left, are counted on the surface's Clock (`Shared::clock`;
+//! ADR-0068, amendment 2026-11-15).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use xcore::clock::{between, nanos};
 use xcore::lock::Locked;
 
 use serde_json::json;
@@ -34,12 +37,44 @@ const AT_ONCE: usize = 8;
 const REFUSED_FOR: Duration = Duration::from_secs(60);
 
 /// A surface's nonces of its node, by the listener each was issued for,
-/// and until when its node is left for a listener it gave none for.
+/// each with when it was kept, and until when its node is left for a
+/// listener it gave none for: readings of the surface's clock.
 #[derive(Default)]
 pub(crate) struct Pool {
-    nonces: HashMap<Vec<u8>, VecDeque<(Vec<u8>, Instant)>>,
-    refused_until: HashMap<Vec<u8>, Instant>,
+    nonces: HashMap<Vec<u8>, VecDeque<(Vec<u8>, i128)>>,
+    refused_until: HashMap<Vec<u8>, i128>,
     refilling: bool,
+}
+
+impl Pool {
+    /// Whether `listener`'s node is left at `now`: it gave none less than
+    /// [`REFUSED_FOR`] before.
+    fn left(&self, listener: &[u8], now: i128) -> bool {
+        self.refused_until
+            .get(listener)
+            .is_some_and(|until| *until > now)
+    }
+
+    /// The first nonce kept for `listener` still fresh at `now`, each kept
+    /// [`KEPT`] or longer let go, and whether few are left.
+    fn fresh(&mut self, listener: &[u8], now: i128) -> (Option<Vec<u8>>, bool) {
+        let kept = self.nonces.entry(listener.to_vec()).or_default();
+        kept.retain(|(_, taken)| between(*taken, now) < KEPT);
+        let nonce = kept.pop_front().map(|(nonce, _)| nonce);
+        (nonce, kept.len() < AT_ONCE / 2)
+    }
+
+    /// `given` kept for `listener` from `now`; where none was given, its
+    /// node left for [`REFUSED_FOR`].
+    fn given(&mut self, listener: &[u8], given: Vec<Vec<u8>>, now: i128) {
+        if given.is_empty() {
+            let until = now.saturating_add(nanos(REFUSED_FOR));
+            self.refused_until.insert(listener.to_vec(), until);
+            return;
+        }
+        let kept = self.nonces.entry(listener.to_vec()).or_default();
+        kept.extend(given.into_iter().map(|nonce| (nonce, now)));
+    }
 }
 
 /// What a browser's handshake is bound to: the binding, the nonces bound,
@@ -87,21 +122,14 @@ pub(crate) fn bound(listener: &[u8]) -> Bound {
 /// for behind it where few are left; asked for now only where the follow
 /// knows the node answers, and in the background otherwise.
 fn taken(shared: &Arc<Shared>, listener: &[u8]) -> Option<Vec<u8>> {
-    let now = Instant::now();
+    let now = shared.clock.monotonic_nanos();
     let reached = shared.state.locked().reachable;
     let (nonce, low) = {
         let mut pool = shared.fresh.locked();
-        if pool
-            .refused_until
-            .get(listener)
-            .is_some_and(|until| *until > now)
-        {
+        if pool.left(listener, now) {
             return None;
         }
-        let kept = pool.nonces.entry(listener.to_vec()).or_default();
-        kept.retain(|(_, taken)| now - *taken < KEPT);
-        let nonce = kept.pop_front().map(|(nonce, _)| nonce);
-        (nonce, kept.len() < AT_ONCE / 2)
+        pool.fresh(listener, now)
     };
     match nonce {
         Some(nonce) => {
@@ -161,14 +189,40 @@ fn refill(shared: &Shared, listener: &[u8]) {
                 .collect()
         })
         .unwrap_or_default();
-    let now = Instant::now();
+    let now = shared.clock.monotonic_nanos();
     let mut pool = shared.fresh.locked();
     pool.refilling = false;
-    if given.is_empty() {
-        pool.refused_until
-            .insert(listener.to_vec(), now + REFUSED_FOR);
-        return;
+    pool.given(listener, given, now);
+}
+
+#[cfg(test)]
+mod tests {
+    use xcore::Clock;
+    use xcore::clock::Stepped;
+
+    use super::*;
+
+    #[test]
+    fn a_nonce_kept_goes_stale_and_a_node_that_gave_none_is_asked_again_on_the_clock() {
+        let clock = Stepped::default();
+        let mut pool = Pool::default();
+        let one = |pool: &mut Pool| pool.fresh(b"leaf", clock.monotonic_nanos()).0;
+        let given = vec![b"one".to_vec(), b"two".to_vec()];
+        pool.given(b"leaf", given, clock.monotonic_nanos());
+        clock.pass(KEPT.checked_sub(Duration::from_nanos(1)).expect("seconds"));
+        assert_eq!(one(&mut pool), Some(b"one".to_vec()), "fresh within");
+        clock.pass(Duration::from_nanos(1));
+        assert_eq!(one(&mut pool), None, "stale at its span, and let go");
+
+        pool.given(b"leaf", Vec::new(), clock.monotonic_nanos());
+        assert!(pool.left(b"leaf", clock.monotonic_nanos()));
+        clock.pass(
+            REFUSED_FOR
+                .checked_sub(Duration::from_nanos(1))
+                .expect("seconds"),
+        );
+        assert!(pool.left(b"leaf", clock.monotonic_nanos()), "left within");
+        clock.pass(Duration::from_nanos(1));
+        assert!(!pool.left(b"leaf", clock.monotonic_nanos()), "asked again");
     }
-    let kept = pool.nonces.entry(listener.to_vec()).or_default();
-    kept.extend(given.into_iter().map(|nonce| (nonce, now)));
 }

@@ -84,9 +84,18 @@
 //! **A Send Port naming a Correlation keeps its order** per key, and a
 //! Message of a Stream that holds its Receive Location's sequence waits for
 //! it: a Message that does not head its sequences is passed, its claim given
-//! back, and taken up once it does; one that failed blocks its sequence, or
-//! is set aside, as its set's `on_failure` says (`crate::sequence`;
-//! `runtime-model.md` section 3, *A claim is not ordering*).
+//! back, and taken up once what it waits on moves ([`behind`]); one that
+//! failed blocks its sequence, or is set aside, as its set's `on_failure`
+//! says (`crate::sequence`; `runtime-model.md` section 3, *A claim is not
+//! ordering*).
+//!
+//! **The send side keeps up** (decided 2026-11-15; ADR-0018, amendment
+//! 2026-11-15): the next of a sequence behind a send under way on this node
+//! waits beside it under its claim, and is passed again on the same thread
+//! the moment that send's hand-on is answered ([`beside`]); and every
+//! send's first byte waits until its predecessor's hand-on is durable,
+//! wherever that was sent (the owner, 2026-11-15: *Wait for the disk*;
+//! `crate::sequence::may_go`).
 //!
 //! **A Message that failed waits for an operator** in its queue: Retry
 //! sends it again, Dismiss ends it Dismissed, each an act asked at a node's
@@ -100,7 +109,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use xcore::clock::nanos;
 use xcore::lock::Locked;
 
 use context::IdentityFacts;
@@ -110,7 +120,7 @@ use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::spent::Spent;
 use xcore::wake::Wake;
-use xcore::{IdGenerator, JourneyId};
+use xcore::{Clock, IdGenerator, JourneyId};
 
 use crate::departure::Progress;
 use crate::generation::ReceivedWork;
@@ -122,6 +132,8 @@ use crate::stream_share::StreamShare;
 use crate::tuning::Tuning;
 
 mod admission;
+mod behind;
+mod beside;
 mod dispatch;
 mod due;
 mod failed;
@@ -135,6 +147,7 @@ mod reading;
 mod registered;
 mod renewal;
 mod scan;
+mod sent;
 mod settles;
 mod steps;
 mod under_claim;
@@ -180,10 +193,11 @@ pub struct Departure {
     pub queue: u128,
     pub claim: Claim,
     pub progress: Progress,
-    /// The latest this node is sure its claim holds, on its own clock: a
-    /// lease from when the request that last confirmed the claim was asked,
-    /// so no two clocks are ever compared.
-    pub until: Instant,
+    /// The latest this node is sure its claim holds, a reading of its step's
+    /// Clock (`xcore::Clock::monotonic_nanos`): a lease from when the
+    /// request that last confirmed the claim was asked, so no two clocks are
+    /// ever compared.
+    pub until: i128,
     /// When what it is sent under is durable: its Publication, where its
     /// receive cycle handed it on before the Ledger synced it, or its claim,
     /// where a scan took it ahead of its sync (ADR-0018, amendment
@@ -231,9 +245,9 @@ pub struct LinedUp {
     claimed: Vec<(JourneyId, Subscriber, u128, Claim)>,
     /// The places in the Send pool admitted for them.
     admitted: usize,
-    /// When it was lined up, before its Publication was asked: what its
-    /// claims are surely held a lease from.
-    asked: Option<Instant>,
+    /// When it was lined up, before its Publication was asked, on the
+    /// step's Clock: what its claims are surely held a lease from.
+    asked: Option<i128>,
 }
 
 impl LinedUp {
@@ -290,6 +304,11 @@ pub struct SendStep {
     /// Its watch on its queues, and on what a Message it passed over waits
     /// on, stopped as it closes (`crate::queue_watch`).
     watch: QueueWatch,
+    /// The node's one Clock, which every decision of the step reads — a
+    /// lease, a renewal, a retry due, a scan due, which read came first
+    /// (ADR-0068, amendment 2026-11-15); a wait the operating system makes,
+    /// and a span only reported, read `Instant`.
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Default)]
@@ -316,6 +335,15 @@ struct State {
     /// moves a Message to a new place, where it is read again. By queue, so
     /// a whole read of one forgets what has left it.
     passed: HashMap<u128, HashSet<(JourneyId, u64)>>,
+    /// Found behind a Stream ahead of it in a sequence, its claim given
+    /// back: taken up again once what it waits on moves ([`behind`]).
+    behind: behind::Behind,
+    /// By sequence, the Message heading it whose send is under way here,
+    /// and who holds its place there ([`beside`]).
+    ahead: HashMap<u128, (JourneyId, u128)>,
+    /// By the Message ahead of it in its send here, the next of its
+    /// sequence, waiting beside it under its claim ([`beside`]).
+    beside: HashMap<JourneyId, Departure>,
     /// The Send Ports this node sends, each with whether a Message of it
     /// that failed blocks its sequence: what an operator's act on one of
     /// its Messages is decided by.
@@ -350,18 +378,21 @@ struct State {
 impl SendStep {
     /// The send step of the node at `node` (`xmip:///<cluster>/node/<name>`)
     /// in the cluster at `cluster` (`xmip:///<cluster>`), over `storage`,
-    /// run as `tuning` says. `audit` records every Message that failed.
+    /// run as `tuning` says, its decisions and its Streams' stalls read on
+    /// `clock`, the node's. `audit` records every Message that failed.
     #[must_use]
     pub fn new(
         (cluster, node): (&str, &str),
         storage: Arc<dyn XmipStorage>,
         tuning: &Tuning,
-        audit: Option<ProgramAudit>,
+        (audit, clock): (Option<ProgramAudit>, Arc<dyn Clock>),
     ) -> Self {
         Self {
             cluster: cluster.to_string(),
             node: node.to_string(),
-            share: StreamShare::new(Arc::clone(&storage), tuning.stream_stall),
+            share: StreamShare::new(Arc::clone(&storage), tuning.stream_stall)
+                .timed_by(Arc::clone(&clock)),
+            clock,
             storage,
             lease: tuning.send_lease,
             scan: tuning.send_scan,
@@ -388,6 +419,13 @@ impl SendStep {
         self.lease
     }
 
+    /// Now, on the step's Clock: what a claim taken now is surely held a
+    /// lease from ([`Departure::until`]).
+    #[must_use]
+    pub fn now(&self) -> i128 {
+        self.clock.monotonic_nanos()
+    }
+
     /// The Messages of the Journeys a Publication opens that go on to be
     /// sent — each with
     /// where it leads — lined up: each kept at the end of its destination's
@@ -406,7 +444,7 @@ impl SendStep {
         let wanted = departing.iter().filter(|(_, to)| sent_here(to)).count();
         let mut lined = LinedUp {
             admitted: self.admit(wanted),
-            asked: Some(Instant::now()),
+            asked: Some(self.clock.monotonic_nanos()),
             ..LinedUp::default()
         };
         let mut places = lined.admitted;
@@ -444,7 +482,8 @@ impl SendStep {
         facts: &IdentityFacts,
         durable: &Durable,
     ) {
-        let until = lined.asked.unwrap_or_else(Instant::now) + self.lease;
+        let asked = lined.asked.unwrap_or_else(|| self.clock.monotonic_nanos());
+        let until = asked.saturating_add(nanos(self.lease));
         // The Message's account, which the carrying thread works for.
         let spent = xcore::spent::current();
         let mut state = self.lock();
@@ -505,16 +544,28 @@ impl SendStep {
 
     /// Read what is due in `queue` now, starting from what `woken` brought
     /// of it: a write, on any node, put a Message in it, or moved what a
-    /// Message it passed over waits on (`crate::queue_watch`). Woken again
-    /// before it is read, what the latest wake brought is read, since the
-    /// earliest wake.
+    /// Message it passed over waits on (`crate::queue_watch`), the first
+    /// behind that then taken up ([`behind`]) — but a head this node's own
+    /// send heads, whose next is taken up by that send ([`beside`]) — and
+    /// named to the watch again where more wait on it. Woken again before it
+    /// is read, what the latest wake brought is read, since the earliest
+    /// wake.
     pub(crate) fn woken(&self, queue: u128, woken: Woken) {
         let mut state = self.lock();
+        let again = woken.moved.filter(|moved| match moved.watched {
+            persist::storage::Watched::Head(head) if state.ahead.contains_key(&head) => {
+                state.behind.more_than_one(queue, moved.watched)
+            }
+            watched => state.behind.moved(queue, watched),
+        });
         match state.woken.iter_mut().find(|(kept, _)| *kept == queue) {
             Some((_, kept)) => kept.due = woken.due,
             None => state.woken.push((queue, woken)),
         }
         drop(state);
+        if let Some(moved) = again {
+            self.watch.wait_on(&[moved], queue);
+        }
         self.wake.notify_all();
     }
 

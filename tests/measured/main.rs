@@ -7,8 +7,9 @@
 //! and not its neighbors':
 //!
 //! - `running.rs`: a node carries every Message from its Receive Location
-//!   to the far end, Xmip's own share of each under a millisecond, and
-//!   eight senders side by side;
+//!   to the far end, Xmip's own share of each under a millisecond;
+//! - `side_by_side.rs`: eight senders carried side by side, the send side
+//!   keeping up with them;
 //! - `plane.rs`: a follower told as the publication advances, over
 //!   loopback TLS and on the local endpoint, a connection on the local
 //!   endpoint answered, and a node known unreachable said so at once;
@@ -87,6 +88,7 @@ mod plane;
 mod relayed;
 mod running;
 mod sequenced_cost;
+mod side_by_side;
 mod woken;
 mod work_turn;
 

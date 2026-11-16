@@ -20,11 +20,10 @@
 //! memory grew with the failures (open problem 34).
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::Instant;
 
 use observe::{FailedMessages, LastFailure};
 use persist::storage::Failed;
-use xcore::{Clock, JourneyId, SystemClock};
+use xcore::JourneyId;
 
 use super::SendStep;
 
@@ -199,11 +198,13 @@ impl SendStep {
         for due in state.due.values() {
             figures.entry(due.port.clone()).or_default().waiting += due.waiting;
         }
-        let (now, wall) = (Instant::now(), SystemClock.unix_timestamp_nanos());
+        let (now, wall) = (
+            self.clock.monotonic_nanos(),
+            self.clock.unix_timestamp_nanos(),
+        );
         for owned in state.owned.values() {
             if let Some(asked) = owned.standing.unanswered_since() {
-                let ago = i128::try_from(now.saturating_duration_since(asked).as_nanos());
-                let since = wall - ago.unwrap_or(0);
+                let since = wall - now.saturating_sub(asked).max(0);
                 let figures = figures.entry(owned.port.clone()).or_default();
                 figures.unconfirmed += 1;
                 figures.unanswered_since =
@@ -284,7 +285,7 @@ impl SendStep {
         let began = figures.unread.is_none();
         let since = figures.unread.as_ref().map(|(since, _)| *since);
         figures.unread = unanswered.map(|why| {
-            let since = since.unwrap_or_else(|| SystemClock.unix_timestamp_nanos());
+            let since = since.unwrap_or_else(|| self.clock.unix_timestamp_nanos());
             (since, why)
         });
         let said = figures.unread.clone().filter(|_| began);

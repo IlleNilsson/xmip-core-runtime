@@ -2,14 +2,16 @@
 //! what it says of each once it is done with it: moved on to where it is
 //! sent, delivered by its holder, passed over, or read again
 //! (`runtime-model.md` section 9: *the held ones are picked up oldest
-//! first*).
+//! first*). A queue that could not be read is read again [`AGAIN`] later on
+//! the node's Clock (ADR-0068, amendment 2026-11-15).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use journey::Journey;
 use persist::storage::{HandOn, Held};
 use route::Subscriber;
 use xcore::IdGenerator;
+use xcore::clock::nanos;
 
 use super::{AGAIN, Pickup};
 use crate::pickup::state::Entry;
@@ -33,13 +35,14 @@ impl Pickup {
     /// audited and read again, from where it was, after a while.
     pub fn released(&self, timeout: Duration, max: usize) -> Vec<Released> {
         let mut state = self.lock();
-        if !state.ready() && !timeout.is_zero() {
+        let now = || self.clock.monotonic_nanos();
+        if !state.ready(now()) && !timeout.is_zero() {
             state = self
                 .wake
-                .wait_timeout_while(&self.state, state, timeout, |state| !state.ready())
+                .wait_timeout_while(&self.state, state, timeout, |state| !state.ready(now()))
                 .0;
         }
-        let now = Instant::now();
+        let now = now();
         let asks: Vec<(usize, u128, u64)> = state
             .entries
             .iter()
@@ -60,7 +63,8 @@ impl Pickup {
             let read = match read {
                 Ok(read) => read,
                 Err(error) => {
-                    entry.not_before = Some(Instant::now() + AGAIN);
+                    let failed = self.clock.monotonic_nanos();
+                    entry.not_before = Some(failed.saturating_add(nanos(AGAIN)));
                     drop(state);
                     self.failed("subscription.pickup", &error.to_string());
                     continue;
@@ -185,7 +189,8 @@ impl Pickup {
             entry.cursor = sequence;
         }
         entry.pending = true;
-        entry.not_before = Some(Instant::now() + AGAIN);
+        let now = self.clock.monotonic_nanos();
+        entry.not_before = Some(now.saturating_add(nanos(AGAIN)));
     }
 
     fn settle(&self, released: &Released, done: impl FnOnce(&mut Entry)) {

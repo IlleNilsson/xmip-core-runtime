@@ -247,6 +247,19 @@ pub(crate) fn load(
     }
 }
 
+/// What phase 9 hands the Locations it opens: the Receive Locations' gates,
+/// the guard their receives terminate TLS with, the keys their far ends are
+/// held to, what the Locations of the node share, the secrets they name,
+/// and the node's Clock.
+pub(crate) type Handed<'a> = (
+    Vec<ReceiveGate>,
+    Option<&'a Guard>,
+    &'a Arc<Pinned>,
+    &'a Arc<dyn transport::Sharing>,
+    &'a Arc<dyn Secrets>,
+    &'a Arc<dyn xcore::Clock>,
+);
+
 /// Startup phase 9's first half: each started Location's transport built
 /// once, from its address and settings, given the node's location (the
 /// owner's *Option A*, 2026-10-03: the runtime gives every transport its
@@ -260,12 +273,7 @@ pub(crate) fn load(
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
-    (gates, guard, pins, secrets): (
-        Vec<ReceiveGate>,
-        Option<&Guard>,
-        &Arc<Pinned>,
-        &Arc<dyn Secrets>,
-    ),
+    (gates, guard, pins, sharing, secrets, clock): Handed<'_>,
     guards: SendGuards,
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
     let node = NodeLocation::new(location(
@@ -284,7 +292,8 @@ pub(crate) fn open(
             None => None,
         };
         let turn = tree.tuning.receive_turn;
-        match technology.open(location, side, (&node, guard, pins, secured, turn)) {
+        let on = (&node, guard, pins, sharing, secured, turn, clock);
+        match technology.open(location, side, on) {
             Ok(transport) => {
                 let serves = match side {
                     Applies::Receive => transport.directions().receives(),

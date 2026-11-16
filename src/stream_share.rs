@@ -47,7 +47,7 @@ use std::time::Duration;
 use xcore::lock::Locked;
 
 use persist::storage::{ChunkReader, XmipStorage};
-use xcore::StreamId;
+use xcore::{Clock, StreamId, SystemClock};
 
 use one_read::{Next, OneRead, leave};
 
@@ -66,6 +66,8 @@ pub const STREAM_STALL: Duration = Duration::from_millis(100);
 pub struct StreamShare {
     storage: Arc<dyn XmipStorage>,
     stall: Duration,
+    /// What a stall is counted on (ADR-0068, amendment 2026-11-15).
+    clock: Arc<dyn Clock>,
     streams: Mutex<HashMap<StreamId, Weak<Shared>>>,
 }
 
@@ -73,6 +75,7 @@ pub struct StreamShare {
 struct Shared {
     storage: Arc<dyn XmipStorage>,
     stall: Duration,
+    clock: Arc<dyn Clock>,
     stream: StreamId,
     length: u64,
     reads: Mutex<Vec<Arc<OneRead>>>,
@@ -82,14 +85,23 @@ struct Shared {
 
 impl StreamShare {
     /// Reads of Streams kept in the Ledger behind `storage`, a departure
-    /// taking nothing for `stall` left behind ([`STREAM_STALL`]).
+    /// taking nothing for `stall` left behind ([`STREAM_STALL`]), on the
+    /// operating system's clock until [`StreamShare::timed_by`].
     #[must_use]
     pub fn new(storage: Arc<dyn XmipStorage>, stall: Duration) -> Self {
         Self {
             storage,
             stall,
+            clock: Arc::new(SystemClock),
             streams: Mutex::default(),
         }
+    }
+
+    /// These reads, a stall counted on `clock`, the node's.
+    #[must_use]
+    pub fn timed_by(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The Stream `stream`, `length` bytes as its record keeps, from its
@@ -108,6 +120,7 @@ impl StreamShare {
                     let fresh = Arc::new(Shared {
                         storage: Arc::clone(&self.storage),
                         stall: self.stall,
+                        clock: Arc::clone(&self.clock),
                         stream,
                         length,
                         reads: Mutex::default(),
@@ -170,13 +183,14 @@ impl Shared {
                 let storage = Arc::clone(&self.storage);
                 let from =
                     ChunkReader::shared_from(storage, self.stream, self.length, (chunk, taken));
-                let opened = Arc::new(OneRead::opened(from, place, self.stall));
+                let opened = Arc::new(OneRead::opened(from, place, (self.stall, &self.clock)));
                 reads.push(Arc::clone(&opened));
                 opened
             },
             |(_, read)| read,
         );
-        read.source.locked().join(number, place);
+        let now = self.clock.monotonic_nanos();
+        read.source.locked().join(number, place, now);
         read
     }
 
@@ -200,7 +214,7 @@ impl Shared {
             let readers = source.readers.len();
             let more = readers > others || (readers == others && at < mine);
             (more && source.reaches(place)).then(|| {
-                source.join(number, place);
+                source.join(number, place, self.clock.monotonic_nanos());
                 Arc::clone(read)
             })
         })?;

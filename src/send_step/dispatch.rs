@@ -1,17 +1,18 @@
 //! The send step's dispatching: what is handed to it, and what a scan of
 //! its queues finds — a queue read again when its earliest retry is due,
 //! and the moment another node puts a Message in it, or moves what a
-//! Message it passed over waits on — each sent on the Send pool; and the
-//! claims of work in flight renewed.
+//! Message it passed over waits on — each sent on the Send pool
+//! (`super::sent`); each pass settled; and the claims of work in flight
+//! renewed.
 
 use std::thread::Scope;
-use std::time::Instant;
 
 use route::Subscriber;
-use xcore::JourneyId;
+use xcore::clock::{between, nanos};
 
-use super::pass::{Ended, abandoned, blocks, send};
-use super::scan::{self, Ready, Unclaimed, scan};
+use super::pass::{Ended, blocks};
+use super::scan::{Ready, scan};
+use super::sent::{run, sent, take};
 use super::{Departure, SendStep, Settled};
 use crate::message_path::Runtime;
 use crate::pool::Pool;
@@ -55,10 +56,14 @@ pub fn dispatch<'scope, 'env>(
     let queues: Vec<u128> = served.iter().map(|(_, queue)| *queue).collect();
     scope.spawn(move || {
         let woken = |queue, woken| step.woken(queue, woken);
-        step.watch
-            .run(step.storage.as_ref(), &queues, step.scan, &woken);
+        step.watch.run(
+            step.storage.as_ref(),
+            (&queues, step.scan),
+            step.clock.as_ref(),
+            &woken,
+        );
     });
-    let mut next_scan = Instant::now();
+    let mut next_scan = step.clock.monotonic_nanos();
     loop {
         let (closed, handed, (asked, mut woken)) = step.next(next_scan);
         for departure in handed {
@@ -67,8 +72,13 @@ pub fn dispatch<'scope, 'env>(
         if closed {
             return;
         }
-        let now = Instant::now();
+        let now = step.clock.monotonic_nanos();
         let all = next_scan <= now;
+        if all {
+            // The bound on a wake that never came: what waits behind a head
+            // is read again with the rest (`super::behind`).
+            step.lock().behind.forget();
+        }
         for (to, queue) in &served {
             let failed = all || asked.contains(queue);
             let wake = woken
@@ -103,7 +113,7 @@ pub fn dispatch<'scope, 'env>(
             }
         }
         if all {
-            next_scan = now + step.scan;
+            next_scan = now.saturating_add(nanos(step.scan));
             step.lock().scans += 1;
         }
     }
@@ -115,13 +125,13 @@ pub(super) type ToRead = (Vec<u128>, Vec<(u128, Woken)>);
 
 impl SendStep {
     /// Wait for something to do — handed, asked, woken, a queue's retry
-    /// due, closed — or `until`: whether the step is closed, what was handed
-    /// and which queues are to be read ([`ToRead`]), a queue whose retry is
-    /// due among those read wholly.
-    pub(super) fn next(&self, until: Instant) -> (bool, Vec<Departure>, ToRead) {
+    /// due, closed — or `until`, a reading of its Clock: whether the step is
+    /// closed, what was handed and which queues are to be read ([`ToRead`]),
+    /// a queue whose retry is due among those read wholly.
+    pub(super) fn next(&self, until: i128) -> (bool, Vec<Departure>, ToRead) {
         let mut state = self.lock();
         loop {
-            let now = Instant::now();
+            let now = self.clock.monotonic_nanos();
             let wakes = state.wakes_at(until);
             let ready = state.closed
                 || state.rescan
@@ -132,9 +142,12 @@ impl SendStep {
             if ready {
                 break;
             }
-            state = self.wake.wait_until(&self.state, state, wakes).0;
+            state = self
+                .wake
+                .wait_timeout(&self.state, state, between(now, wakes))
+                .0;
         }
-        let now = Instant::now();
+        let now = self.clock.monotonic_nanos();
         if std::mem::take(&mut state.rescan) {
             let served = state.served.clone();
             state.asked.extend(served);
@@ -158,11 +171,24 @@ impl SendStep {
     /// retry's due time noted for its queue, a failure's Port's window read
     /// again — and only then told, so whoever is told reads figures that
     /// already hold it. Nothing it settles stays owned: a Message waiting
-    /// for a retry holds no claim and no place.
-    fn settle(&self, settled: Settled<'_>, departure: Departure, ended: Ended) {
+    /// for a retry holds no claim and no place. What waited beside it is
+    /// the caller's to pass on now (`super::beside`).
+    pub(super) fn settle(
+        &self,
+        settled: Settled<'_>,
+        departure: Departure,
+        ended: Ended,
+    ) -> Option<Departure> {
         let id = departure.work.journey.journey_id();
         // Before its claim is given back: what it is sent under, waited on.
         departure.settled();
+        // Its pass ended, its hand-on answered where it wrote one: no longer
+        // ahead here.
+        let next = if matches!(ended, Ended::Behind) {
+            None
+        } else {
+            self.passed_on(&departure)
+        };
         let mut state = self.lock();
         match &ended {
             Ended::Waiting { after, .. } => {
@@ -172,7 +198,7 @@ impl SendStep {
                 // place before the hand-on landed; and how many wait read
                 // after it, so it is counted once.
                 drop(state);
-                let at = Instant::now() + *after;
+                let at = self.clock.monotonic_nanos().saturating_add(nanos(*after));
                 self.noted((departure.to.name(), departure.queue), at);
                 state = self.lock();
             }
@@ -188,12 +214,25 @@ impl SendStep {
                 // another node moved was found at the next scan).
                 let behind =
                     crate::sequence::behind(self.storage.as_ref(), &departure.work.journey);
-                match behind {
-                    Ok(waits) if !waits.is_empty() => self.watch.wait_on(&waits, departure.queue),
-                    Ok(_) => self.ask(departure.queue),
-                    Err(_) => {}
+                // Known to wait, so no read of its queue claims it again
+                // before one of them moves (`super::behind`); owned here
+                // until it is let go of below, so no read takes it meanwhile.
+                if let Ok(waits) = &behind
+                    && !waits.is_empty()
+                {
+                    let heads = waits.iter().map(|wait| wait.watched).collect();
+                    self.lock().behind.waits(id, departure.queue, heads);
+                    self.watch.wait_on(waits, departure.queue);
                 }
+                // Its queue read again once it is let go of, below, under
+                // the same lock: a read begun while it was still owned here —
+                // one a head's move or what it heads now asked for — passed it
+                // over, and nothing else would ask (found 2026-11-15, the
+                // ledger suite run four copies at once).
                 state = self.lock();
+                if behind.is_ok() && !state.asked.contains(&departure.queue) {
+                    state.asked.push(departure.queue);
+                }
             }
             Ended::Untried => {
                 drop(state);
@@ -223,11 +262,11 @@ impl SendStep {
                 drop(state);
                 self.lost(&departure, "its claim was another's at its hand-on");
                 settled(&departure, &ended);
-                return;
+                return next;
             }
             Ended::Unwritten(why) => self.failed(why),
         }
-        state.let_go((id, departure.queue), self.watch.asked());
+        state.let_go((id, departure.queue), self.letting_go());
         state.freed();
         drop(state);
         if matches!(ended, Ended::Failed { .. }) {
@@ -235,115 +274,12 @@ impl SendStep {
         }
         settled(&departure, &ended);
         self.wake.notify_all();
+        next
     }
 
     pub(super) fn failed(&self, problem: &str) {
         if let Some(audit) = &self.audit {
             let _ = audit.failed("send", &format!("{}: {problem}", self.node));
         }
-    }
-}
-
-/// `departure` sent on `pool`, and its pass settled — also where its send
-/// panics ([`Sending`]).
-pub(super) fn run<'env>(
-    pool: &Pool<'_, 'env>,
-    runtime: &'env Runtime<'env>,
-    settled: Settled<'env>,
-    departure: Departure,
-) {
-    pool.run(Box::new(move || sent(runtime, settled, departure)));
-}
-
-/// `unclaimed` claimed and read on a thread of `pool`, under the place
-/// admitted for it, and sent there: a backlog's claims are taken side by
-/// side, sharing their commits, never one by one on the dispatching, which
-/// cost a commit's sync each until 2026-10-06. Where it is not this node's
-/// to send after all, or its claim panics, its place is given back
-/// ([`Taking`]).
-fn take<'env>(
-    pool: &Pool<'_, 'env>,
-    runtime: &'env Runtime<'env>,
-    settled: Settled<'env>,
-    unclaimed: Unclaimed,
-) {
-    pool.run(Box::new(move || {
-        let mut taking = Taking {
-            runtime,
-            journey: Some(unclaimed.journey()),
-        };
-        if let Some(departure) = scan::take(runtime, &unclaimed) {
-            taking.journey = None;
-            sent(runtime, settled, departure);
-        }
-    }));
-}
-
-/// `departure` sent, and its pass settled — also where its send panics.
-fn sent<'env>(runtime: &'env Runtime<'env>, settled: Settled<'env>, departure: Departure) {
-    let mut sending = Sending {
-        runtime,
-        settled,
-        departure: Some(departure),
-    };
-    let Some(departure) = sending.departure.as_mut() else {
-        return;
-    };
-    departure.steps.taken_up();
-    let ended = send(runtime, departure);
-    let sequenced = departure
-        .work
-        .journey
-        .received()
-        .is_some_and(|received| !received.sequences.is_empty())
-        || departure.work.journey.group.is_some()
-        || !crate::sequence::points_of(runtime.sends, &departure.to).is_empty();
-    let closed = sequenced && matches!(ended, Ended::Completed(_) | Ended::Failed { .. });
-    if let Some(departure) = sending.departure.take() {
-        runtime.send.settle(settled, departure, ended);
-    }
-    // A Message of a Stream that holds a sequence has ended its Journey: what waits
-    // behind it in either step may go on now (`crate::sequence`).
-    if closed {
-        runtime.send.rescan();
-        runtime.work.ask_every();
-    }
-}
-
-/// A Message a scan found, being claimed on a send thread: its place given
-/// back unless it was claimed and owned, however the claim ended.
-struct Taking<'env> {
-    runtime: &'env Runtime<'env>,
-    journey: Option<JourneyId>,
-}
-
-impl Drop for Taking<'_> {
-    fn drop(&mut self) {
-        if let Some(journey) = self.journey.take() {
-            self.runtime.send.untake(journey);
-        }
-    }
-}
-
-/// One Message on a send thread, settled however its send ends. Sent to
-/// its end, it is settled by what the send wrote. A send that panicked is
-/// settled on the way out: written Failed with why — kept in its queue for
-/// an operator — its claim ended, audited, and let go of, so it is never
-/// left owned with its claim renewed and passed over by every scan, as it
-/// was until 2026-10-05.
-struct Sending<'env> {
-    runtime: &'env Runtime<'env>,
-    settled: Settled<'env>,
-    departure: Option<Departure>,
-}
-
-impl Drop for Sending<'_> {
-    fn drop(&mut self) {
-        let Some(mut departure) = self.departure.take() else {
-            return;
-        };
-        let why = "its send thread panicked before its hand-on was written";
-        let ended = abandoned(self.runtime, &mut departure, why);
-        self.runtime.send.settle(self.settled, departure, ended);
     }
 }

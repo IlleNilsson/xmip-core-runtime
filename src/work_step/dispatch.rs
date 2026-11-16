@@ -11,13 +11,18 @@
 //! its pass, and no more turns than its share. So a backlog in one Work
 //! Process holds back no turn of another, and the dispatching reads a page
 //! before its first turn however long a backlog is.
+//!
+//! **A scan and a timer come due on the step's Clock** (ADR-0068,
+//! amendment 2026-11-15): kept as its readings, waited for in real time,
+//! and judged on a reading taken after the wait.
 
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::thread::Scope;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use persist::storage::Held;
+use xcore::clock::{between, nanos};
 
 use super::admission::{Admitted, Owning, share};
 use super::reading::{self, PageFrom, Went};
@@ -47,10 +52,14 @@ pub fn dispatch<'scope, 'env>(
     let queues: Vec<u128> = step.running.iter().map(|running| running.queue).collect();
     scope.spawn(move || {
         let woken = |queue, woken| step.woken(queue, woken);
-        step.watch
-            .run(step.storage.as_ref(), &queues, step.scan, &woken);
+        step.watch.run(
+            step.storage.as_ref(),
+            (&queues, step.scan),
+            step.clock.as_ref(),
+            &woken,
+        );
     });
-    let mut next_scan = Instant::now();
+    let mut next_scan = step.clock.monotonic_nanos();
     while let Some(round) = step.next(next_scan) {
         for &at in &round.order {
             quantum(
@@ -61,7 +70,10 @@ pub fn dispatch<'scope, 'env>(
             );
         }
         if round.all {
-            next_scan = Instant::now() + step.scan;
+            next_scan = step
+                .clock
+                .monotonic_nanos()
+                .saturating_add(nanos(step.scan));
             step.lock().scans += 1;
         }
     }
@@ -78,36 +90,27 @@ struct Round {
 
 impl WorkStep {
     /// Wait until a reading goes on, a timer is due, it is closed or
-    /// `until`, and the round to dispatch; `None` once closed. Where `until`
-    /// has passed every reading is asked afresh: the scan of every queue.
-    fn next(&self, until: Instant) -> Option<Round> {
+    /// `until`, a reading of its clock, and the round to dispatch; `None`
+    /// once closed. Where `until` has passed every reading is asked afresh:
+    /// the scan of every queue.
+    fn next(&self, until: i128) -> Option<Round> {
         let mut state = self.lock();
         loop {
             if state.closed {
                 return None;
             }
-            let now = Instant::now();
-            let wakes = state
-                .due
-                .iter()
-                .map(|(_, at)| *at)
-                .chain([until])
-                .min()
-                .unwrap_or(until);
+            let now = self.clock.monotonic_nanos();
+            let wakes = state.wakes(until);
             if wakes <= now || state.readings.iter().any(|reading| reading.goes_on()) {
                 break;
             }
-            state = self.wake.wait_until(&self.state, state, wakes).0;
+            state = self
+                .wake
+                .wait_timeout(&self.state, state, between(now, wakes))
+                .0;
         }
-        let now = Instant::now();
-        let mut due = Vec::new();
-        state.due.retain(|(queue, at)| {
-            let came = *at <= now;
-            if came {
-                due.push(*queue);
-            }
-            !came
-        });
+        let now = self.clock.monotonic_nanos();
+        let due = state.came(now);
         for (at, running) in self.running.iter().enumerate() {
             if due.contains(&running.queue) {
                 state.readings[at].asked(None);
@@ -141,12 +144,38 @@ impl WorkStep {
     /// `queue` has a timer due `after` from now, as a read of it showed:
     /// read again then, unless one is due sooner.
     pub(super) fn noted(&self, queue: u128, after: Duration) {
-        let at = Instant::now() + after;
+        let at = self.clock.monotonic_nanos().saturating_add(nanos(after));
         let mut state = self.lock();
         match state.due.iter_mut().find(|(known, _)| *known == queue) {
             Some((_, known)) => *known = (*known).min(at),
             None => state.due.push((queue, at)),
         }
+    }
+}
+
+impl super::State {
+    /// When the dispatching next has something to do, a reading of the
+    /// step's clock: the earliest timer due, or `until`, the next scan.
+    fn wakes(&self, until: i128) -> i128 {
+        self.due
+            .iter()
+            .map(|(_, at)| *at)
+            .chain([until])
+            .min()
+            .unwrap_or(until)
+    }
+
+    /// The queues whose timer came by `now`, taken off what is due.
+    fn came(&mut self, now: i128) -> Vec<u128> {
+        let mut due = Vec::new();
+        self.due.retain(|(queue, at)| {
+            let came = *at <= now;
+            if came {
+                due.push(*queue);
+            }
+            !came
+        });
+        due
     }
 }
 
@@ -318,5 +347,38 @@ fn settled(
     if done {
         runtime.send.rescan();
         step.ask_every();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xcore::Clock;
+    use xcore::clock::Stepped;
+
+    use super::super::State;
+    use super::*;
+
+    #[test]
+    fn a_timer_comes_due_on_the_steps_clock_and_the_earliest_wakes_the_dispatching() {
+        let clock = Stepped::default();
+        let after = |span: Duration| clock.monotonic_nanos() + nanos(span);
+        let mut state = State {
+            due: vec![
+                (7, after(Duration::from_secs(5))),
+                (8, after(Duration::from_secs(9))),
+            ],
+            ..State::default()
+        };
+        let scan = after(Duration::from_mins(1));
+        assert_eq!(state.wakes(scan), nanos(Duration::from_secs(5)));
+        let short = Duration::from_secs(5).checked_sub(Duration::from_nanos(1));
+        clock.pass(short.expect("seconds"));
+        assert_eq!(state.came(clock.monotonic_nanos()), [] as [u128; 0]);
+        clock.pass(Duration::from_nanos(1));
+        assert_eq!(state.came(clock.monotonic_nanos()), [7], "due at its span");
+        assert_eq!(state.wakes(scan), nanos(Duration::from_secs(9)));
+        clock.pass(Duration::from_mins(1));
+        assert_eq!(state.came(clock.monotonic_nanos()), [8]);
+        assert_eq!(state.wakes(scan), scan, "the scan, nothing else due");
     }
 }

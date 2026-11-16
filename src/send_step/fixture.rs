@@ -27,5 +27,6 @@ pub(super) fn step() -> SendStep {
     );
     let cluster = configure::fixture::test_cluster();
     let node = cluster.node_scope(0);
-    SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), None)
+    let told = (None, Arc::new(xcore::SystemClock) as _);
+    SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), told)
 }
