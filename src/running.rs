@@ -144,6 +144,9 @@ pub struct Running {
     /// operate listeners.
     tuning: crate::tuning::Tuning,
     configuration: PathBuf,
+    /// The node's one Clock, which its decisions on a span are counted on
+    /// (ADR-0068, amendment 2026-11-15).
+    clock: Arc<dyn xcore::Clock>,
     #[cfg(feature = "dynamic-loading")]
     libraries: Option<crate::library::Libraries>,
 }

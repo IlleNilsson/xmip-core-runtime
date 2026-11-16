@@ -22,7 +22,7 @@
 //! queue, to be read again from its place, so nothing is passed over that
 //! was not read.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use persist::storage::{HandOn, Hold};
 
@@ -129,7 +129,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
         step.withdraw(usize::from(sent_here));
         Err(why)
     };
-    let asked = Instant::now();
+    let asked = step.now();
     match storage.hand_on(moved) {
         Ok((true, _)) => {}
         Ok((false, _)) => {
@@ -152,7 +152,7 @@ pub fn pick_up(runtime: &Runtime<'_>, pickup: &Pickup, released: &Released) -> R
             to,
             queue,
             claim,
-            until: asked + step.lease(),
+            until: asked.saturating_add(xcore::clock::nanos(step.lease())),
             durable: None,
             handed: false,
             spent: None,

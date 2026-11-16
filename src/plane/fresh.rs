@@ -5,12 +5,15 @@
 //! finding its own nonce bound in the transcript it is handed, knows the
 //! browser held its key in a handshake made after the nonce was issued, to
 //! that listener. A nonce is spent once (`spend`); one not spent within
-//! [`WITHIN`] is no proof.
+//! [`WITHIN`] is no proof, counted on the Clock the pool was handed
+//! (ADR-0068, amendment 2026-11-15).
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use xcore::clock::nanos;
 use xcore::lock::Locked;
+use xcore::{Clock, SystemClock};
 
 use context::AuthenticatedIdentity;
 use serde_json::{Value, json};
@@ -28,22 +31,39 @@ pub const MOST: usize = 65_536;
 /// How long a nonce is.
 pub const LENGTH: usize = 16;
 
-/// One nonce outstanding: to whom, for which listener, until when.
+/// One nonce outstanding: to whom, for which listener, until when on the
+/// pool's clock.
 struct Issued {
     through: String,
     listener: Vec<u8>,
-    until: Instant,
+    until: i128,
 }
 
 /// The nonces one operate listener issued and has not seen spent: each
 /// node's own, so a nonce of one is no nonce of another in the same
 /// process.
-#[derive(Default)]
 pub struct Fresh {
     issued: Mutex<HashMap<[u8; LENGTH], Issued>>,
+    clock: Arc<dyn Clock>,
+}
+
+/// None issued, fresh by the operating system's clock.
+impl Default for Fresh {
+    fn default() -> Self {
+        Self::timed_by(Arc::new(SystemClock))
+    }
 }
 
 impl Fresh {
+    /// None issued, each fresh for [`WITHIN`] on `clock`.
+    #[must_use]
+    pub fn timed_by(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            issued: Mutex::default(),
+            clock,
+        }
+    }
+
     fn issued(&self) -> MutexGuard<'_, HashMap<[u8; LENGTH], Issued>> {
         self.issued.locked()
     }
@@ -52,7 +72,7 @@ impl Fresh {
     /// listener whose leaf certificate is `listener` (DER).
     #[must_use]
     pub fn issue(&self, through: &str, listener: &[u8], count: usize) -> Vec<[u8; LENGTH]> {
-        let now = Instant::now();
+        let now = self.clock.monotonic_nanos();
         let mut held = self.issued();
         if held.len() + count >= MOST {
             held.retain(|_, one| one.until > now);
@@ -71,7 +91,7 @@ impl Fresh {
                     Issued {
                         through: through.to_string(),
                         listener: listener.to_vec(),
-                        until: now + WITHIN,
+                        until: now.saturating_add(nanos(WITHIN)),
                     },
                 );
                 nonce
@@ -85,7 +105,7 @@ impl Fresh {
     /// offered twice; `None` where none was fresh and `through`'s.
     #[must_use]
     pub fn spend(&self, nonces: &[Vec<u8>], through: &str) -> Option<Vec<u8>> {
-        let now = Instant::now();
+        let now = self.clock.monotonic_nanos();
         let mut held = self.issued();
         let mut found = None;
         for nonce in nonces {
@@ -172,5 +192,18 @@ mod tests {
         );
         let given = fresh.answered(&relay, b"leaf", 2);
         assert_eq!(given["nonces"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn a_nonce_is_fresh_until_its_span_passed_on_the_pools_clock() {
+        let clock = Arc::new(xcore::clock::Stepped::default());
+        let fresh = Fresh::timed_by(Arc::clone(&clock) as Arc<dyn Clock>);
+        let issued = fresh.issue("HOST\\gui", b"leaf", 2);
+        let (first, second) = (vec![issued[0].to_vec()], vec![issued[1].to_vec()]);
+        let short = WITHIN.checked_sub(Duration::from_nanos(1));
+        clock.pass(short.expect("a span of seconds"));
+        assert_eq!(fresh.spend(&first, "HOST\\gui"), Some(b"leaf".to_vec()));
+        clock.pass(Duration::from_nanos(1));
+        assert_eq!(fresh.spend(&second, "HOST\\gui"), None, "stale at its span");
     }
 }

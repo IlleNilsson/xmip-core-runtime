@@ -34,34 +34,42 @@
 //! another queue's.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
 
 use xcore::JourneyId;
 
 use super::{SendStep, State};
 use crate::queue_watch::Woken;
 
-/// The settles kept for the reads under way.
+/// The settles kept for the reads under way, each moment a reading of the
+/// step's Clock (ADR-0068, amendment 2026-11-15).
 #[derive(Debug, Default)]
 pub(super) struct Settles {
     /// By queue, each Message of it let go of while a read of it was under
     /// way, and when, oldest first.
-    kept: HashMap<u128, VecDeque<(Instant, JourneyId)>>,
+    kept: HashMap<u128, VecDeque<(i128, JourneyId)>>,
     /// Each scan under way: its number, its queue, and when its read began.
-    scans: Vec<(u64, u128, Instant)>,
+    scans: Vec<(u64, u128, i128)>,
     /// The pages wakes brought that the dispatching took to read: each
     /// one's queue, and when its wait was asked.
-    taken: Vec<(u128, Instant)>,
+    taken: Vec<(u128, i128)>,
     /// The next scan's number.
     numbered: u64,
     /// By queue, the latest settle of it not kept, or let go of: a read of
     /// it begun no later cannot be told apart from it.
-    forgot: HashMap<u128, Instant>,
+    forgot: HashMap<u128, i128>,
+}
+
+impl SendStep {
+    /// What a Message let go of now is kept against: when the watch's wait
+    /// under way was asked, where one is, and now, both on the step's Clock.
+    pub(super) fn letting_go(&self) -> (Option<i128>, i128) {
+        (self.watch.asked(), self.clock.monotonic_nanos())
+    }
 }
 
 impl Settles {
     /// Whether `id`, of `queue`, was let go of at `from` or after.
-    fn after(&self, (queue, from): (u128, Instant), id: JourneyId) -> bool {
+    fn after(&self, (queue, from): (u128, i128), id: JourneyId) -> bool {
         self.kept.get(&queue).is_some_and(|kept| {
             kept.iter()
                 .rev()
@@ -72,7 +80,7 @@ impl Settles {
 
     /// What is kept of `queue` from before `oldest` let go of, all of it
     /// where no read of it is under way.
-    fn let_go_before(&mut self, queue: u128, oldest: Option<Instant>) {
+    fn let_go_before(&mut self, queue: u128, oldest: Option<i128>) {
         let Self { kept, forgot, .. } = self;
         let Some(of) = kept.get_mut(&queue) else {
             return;
@@ -94,7 +102,7 @@ impl Settles {
 impl State {
     /// When the oldest read of `queue` under way began: a scan of it, a
     /// page a wake brought of it, or the watch's wait, asked at `waiting`.
-    fn oldest_read(&self, queue: u128, waiting: Option<Instant>) -> Option<Instant> {
+    fn oldest_read(&self, queue: u128, waiting: Option<i128>) -> Option<i128> {
         let settles = &self.settles;
         let scans = settles
             .scans
@@ -115,12 +123,15 @@ impl State {
     }
 
     /// The Message of the Journey `id`, of `queue`, this node held, let go
-    /// of — its pass settled, or its claim found another's — and kept while
-    /// a read of `queue` begun before now is under way, the watch's wait
-    /// asked at `waiting` among them.
-    pub(super) fn let_go(&mut self, (id, queue): (JourneyId, u128), waiting: Option<Instant>) {
+    /// of `now` — its pass settled, or its claim found another's — and kept
+    /// while a read of `queue` begun before then is under way, the watch's
+    /// wait asked at `waiting` among them ([`SendStep::letting_go`]).
+    pub(super) fn let_go(
+        &mut self,
+        (id, queue): (JourneyId, u128),
+        (waiting, now): (Option<i128>, i128),
+    ) {
         self.owned.remove(&id);
-        let now = Instant::now();
         let oldest = self.oldest_read(queue, waiting);
         self.settles.let_go_before(queue, oldest);
         if oldest.is_some() {
@@ -150,7 +161,7 @@ pub(super) struct ScanRead<'a> {
     step: &'a SendStep,
     number: u64,
     queue: u128,
-    from: Instant,
+    from: i128,
 }
 
 impl<'a> ScanRead<'a> {
@@ -158,7 +169,7 @@ impl<'a> ScanRead<'a> {
     pub(super) fn begun(step: &'a SendStep, queue: u128) -> Self {
         let mut state = step.lock();
         let settles = &mut state.settles;
-        let (number, from) = (settles.numbered, Instant::now());
+        let (number, from) = (settles.numbered, step.clock.monotonic_nanos());
         settles.numbered += 1;
         settles.scans.push((number, queue, from));
         Self {
@@ -172,7 +183,7 @@ impl<'a> ScanRead<'a> {
     /// Its read begun where a wake's page was read, its wait asked at
     /// `asked`: whether every settle of its queue since is kept, and then its
     /// read begins there; otherwise the page is not to be read from.
-    pub(super) fn reads_wake(&mut self, asked: Instant) -> bool {
+    pub(super) fn reads_wake(&mut self, asked: i128) -> bool {
         let mut state = self.step.lock();
         let settles = &mut state.settles;
         if settles
@@ -215,20 +226,21 @@ impl Drop for ScanRead<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     const QUEUE: u128 = 7;
 
+    /// A reading of the step's clock, some way past its own moment.
+    const NOW: i128 = 7_000_000_000;
+
     /// `n` milliseconds after `at`.
-    fn later(at: Instant, n: u64) -> Instant {
-        at + Duration::from_millis(n)
+    fn later(at: i128, n: i128) -> i128 {
+        at + n * 1_000_000
     }
 
     #[test]
     fn a_settle_after_a_read_began_is_told_and_one_before_it_is_not() {
-        let at = Instant::now();
+        let at = NOW;
         let (first, second) = (JourneyId::new(1), JourneyId::new(2));
         let mut settles = Settles::default();
         let kept = VecDeque::from([(later(at, 1), first), (later(at, 2), second)]);
@@ -256,7 +268,7 @@ mod tests {
     fn a_settle_is_kept_only_while_a_read_of_its_queue_is_under_way() {
         let id = JourneyId::new(1);
         let mut state = State::default();
-        state.let_go((id, QUEUE), None);
+        state.let_go((id, QUEUE), (None, NOW));
         assert!(
             state.settles.kept.is_empty(),
             "no read under way: none kept"
@@ -265,15 +277,15 @@ mod tests {
 
         // The watch's wait under way, asked before it: kept for its page.
         let mut state = State::default();
-        let asked = Instant::now();
-        state.let_go((id, QUEUE), Some(asked));
+        let asked = NOW;
+        state.let_go((id, QUEUE), (Some(asked), later(asked, 1)));
         assert!(state.settles.after((QUEUE, asked), id), "kept for the wait");
         assert!(state.settles.forgot.is_empty());
     }
 
     #[test]
     fn what_is_kept_is_let_go_of_once_no_read_older_is_under_way() {
-        let at = Instant::now();
+        let at = NOW;
         let id = JourneyId::new(1);
         let mut settles = Settles::default();
         let kept = VecDeque::from([(later(at, 2), id), (later(at, 4), id)]);

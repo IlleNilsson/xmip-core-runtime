@@ -9,7 +9,7 @@
 //! - a pass that tried nothing, because its claim was not surely this
 //!   node's, writes nothing: no entry, no try counted, no backoff.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use configure::{Retry, SendPortGroup};
 use persist::storage::XmipStorage;
@@ -232,7 +232,7 @@ fn a_pass_whose_claim_is_not_surely_held_writes_nothing_and_is_taken_up_again() 
                 to,
                 queue,
                 claim,
-                until: Instant::now(),
+                until: runtime.clock.monotonic_nanos(),
                 durable: None,
                 handed: false,
                 spent: None,

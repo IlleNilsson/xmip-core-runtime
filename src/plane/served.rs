@@ -81,7 +81,11 @@ pub(crate) fn answer(
         });
     match guarded {
         Ok((guarded, (caller, role, presented))) => calls(
-            Box::new(Watched::new(guarded, || serve.stopped())),
+            Box::new(Watched::new(
+                guarded,
+                || serve.stopped(),
+                || serve.clock.monotonic_nanos(),
+            )),
             (&caller, role, &presented),
             serve,
         ),
@@ -104,7 +108,11 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
     let presented = Presented::Account(caller.value.clone());
     let role = serve.grants.of(&presented);
     calls(
-        Box::new(Watched::new(stream, || serve.stopped())),
+        Box::new(Watched::new(
+            stream,
+            || serve.stopped(),
+            || serve.clock.monotonic_nanos(),
+        )),
         (&caller, role, &presented),
         serve,
     );
@@ -119,7 +127,8 @@ pub(crate) fn answer_local(mut stream: Stream, serve: &Serve) {
 /// a quarter of a millisecond of processor time a connection on the local
 /// endpoint (open problem 35).
 fn calls(connection: Boxed<'_>, caller: Caller<'_>, serve: &Serve) {
-    let Ok(mut server) = BoxedServer::handshake(connection) else {
+    let now = Box::new(xcore::clock::reading(&serve.clock));
+    let Ok(mut server) = BoxedServer::handshake(connection, now) else {
         return;
     };
     while !serve.stopped() {

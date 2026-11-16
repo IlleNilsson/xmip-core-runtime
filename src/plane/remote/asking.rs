@@ -59,8 +59,15 @@ impl Shared {
                 Err(_) => *asking = None,
             }
         }
-        let mut line = Line::open(&self.reach, patience, patience, self.ended(), &self.asking)
-            .map_err(|why| (true, why))?;
+        let opened = Line::open(
+            &self.reach,
+            patience,
+            patience,
+            self.ended(),
+            &self.asking,
+            &self.clock,
+        );
+        let mut line = opened.map_err(|why| (true, why))?;
         match line.call(method, message, caller) {
             Ok(answer) => {
                 *asking = Some(line);

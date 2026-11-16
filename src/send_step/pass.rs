@@ -46,8 +46,9 @@ pub enum Ended {
     /// Nothing was tried: the claim was not surely this node's when the
     /// pass began — its last confirmation older than a lease — though no
     /// renewal found it another's; or what it is sent under, its Publication
-    /// or its claim, was never made durable, and the send its far end would
-    /// have seen was abandoned (ADR-0018, amendment 2026-11-12). Nothing is
+    /// or its claim, or the hand-on ahead of it in its sequence, was never
+    /// made durable, and the send its far end would have seen was abandoned
+    /// (ADR-0018, amendments 2026-11-12 and 2026-11-15). Nothing is
     /// written, so the pass leaves no
     /// entry and counts no try; the claim is given back and the queue read
     /// again, where a scan claims it afresh. Until 2026-10-16 such a pass was
@@ -85,13 +86,17 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     // amendment 2026-11-15).
     let entered = departure.spent.as_ref().map(Spent::entered);
     let began = Instant::now();
-    let headed = heads(runtime, departure);
+    let headed = crate::sequence::may_go(runtime.storage.as_ref(), &departure.work.journey);
     departure.steps.set(Step::Sequences, began.elapsed());
-    match headed {
-        Ok(true) => {}
-        Ok(false) => return Ended::Behind,
+    // Heading them: its first byte waits until each write that let it head
+    // — the hand-on ahead of it, wherever that was sent — is durable, where
+    // it was not yet as read (the owner, 2026-11-15: *Wait for the disk*).
+    let ahead = match headed {
+        Ok(Some(ahead)) => ahead,
+        Ok(None) => return Ended::Behind,
         Err(why) => return Ended::Unwritten(why),
-    }
+    };
+    step.heads_here(departure);
     let Departure {
         work,
         facts,
@@ -106,17 +111,23 @@ pub fn send(runtime: &Runtime<'_>, departure: &mut Departure) -> Ended {
     progress.fence = claim.fence;
     let id = work.journey.journey_id();
     let owned = || step.holds(id);
-    // The wait for its Publication, or its claim, to be durable timed apart
-    // from the send (ADR-0018, amendment 2026-11-12).
+    // The wait for its Publication, or its claim, and the hand-on ahead of
+    // it to be durable timed apart from the send (ADR-0018, amendments
+    // 2026-11-12 and 2026-11-15).
     let waited = Cell::new(None);
     let kept = || {
         let began = Instant::now();
         let kept = durable.as_ref().map(Durable::wait);
-        if kept.is_some() {
+        let ahead_kept = ahead.iter().try_for_each(Durable::wait);
+        if kept.is_some() || !ahead.is_empty() {
             waited.set(Some(began.elapsed()));
         }
-        kept.unwrap_or(Ok(()))
-            .map_err(|why| format!("its Publication or claim was not kept in the Ledger: {why}"))
+        kept.unwrap_or(Ok(())).and(ahead_kept).map_err(|why| {
+            format!(
+                "its Publication or claim, or the hand-on ahead of it, was not kept in the \
+                 Ledger: {why}"
+            )
+        })
     };
     let sending = Instant::now();
     let departed = depart_to(runtime, work, facts, to, (progress, &owned, &kept));
@@ -308,27 +319,6 @@ pub(super) fn blocks(runtime: &Runtime<'_>, to: &Subscriber) -> bool {
         }),
         Destination::Process | Destination::Nowhere => false,
     }
-}
-
-/// Whether `departure` may be sent now: its Stream heads every sequence it
-/// holds end to end, its delivery its Send Port Group's, and it heads every
-/// sequence of its Send Port and of the Send Locations it may leave by
-/// (`crate::sequence`), told it in the write that brought it to the Port.
-fn heads(runtime: &Runtime<'_>, departure: &Departure) -> Result<bool, String> {
-    let storage = runtime.storage.as_ref();
-    if !crate::sequence::stream_heads(storage, &departure.work.journey)? {
-        return Ok(false);
-    }
-    if !crate::sequence::group_heads(storage, &departure.work.journey)? {
-        return Ok(false);
-    }
-    let member = departure.work.journey.journey_id().value();
-    for sequenced in &departure.work.journey.sequences {
-        if !crate::sequence::heads(storage, sequenced.queue, member)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 /// A duration in nanoseconds, the most a `u64` holds at most.

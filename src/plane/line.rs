@@ -9,10 +9,11 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use xcore::Clock;
 use xcore::lock::Locked;
 
-use net::http2::BoxedClient;
+use net::http2::{BoxedClient, Now};
 use net::watched::Watched;
 use serde_json::Value;
 
@@ -68,9 +69,10 @@ impl Write for Link {
 /// A watched connection whose silence a call restarts: the line sets
 /// `called` as it sends, and the next read counts the peer's silence from
 /// then, not from the last answer, and bounds it by the line's silence as
-/// it stands then (`Line::hold`), in nanoseconds.
+/// it stands then (`Line::hold`), in nanoseconds — on the Clock the line
+/// was handed.
 struct Asking {
-    watched: Watched<Link, Ending>,
+    watched: Watched<Link, Ending, Now>,
     called: Arc<AtomicBool>,
     silence: Arc<AtomicU64>,
 }
@@ -78,7 +80,7 @@ struct Asking {
 impl Read for Asking {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if self.called.swap(false, Ordering::SeqCst) {
-            self.watched.heard = Instant::now();
+            self.watched.heard = (self.watched.now)();
             let silence = self.silence.load(Ordering::SeqCst);
             self.watched.silence = Some(Duration::from_nanos(silence));
         }
@@ -113,6 +115,7 @@ impl Line {
     /// where a connection has no timeout to look between, is put in
     /// `cancel` as soon as the connection is made — before the handshake,
     /// whose own read and write may wait on a node that does not answer.
+    /// The silence, and HTTP/2's frames in a span, are counted on `clock`.
     ///
     /// # Errors
     ///
@@ -123,6 +126,7 @@ impl Line {
         silence: Duration,
         ending: Ending,
         cancel: &Mutex<Option<Cancel>>,
+        clock: &Arc<dyn Clock>,
     ) -> Result<Self, String> {
         let (link, authority, scheme, ends) = match reach {
             Reach::Network { address, config } => (
@@ -144,7 +148,8 @@ impl Line {
             }
         };
         *cancel.locked() = ends;
-        let mut watched = Watched::new(link, ending);
+        let mut watched: Watched<Link, Ending, Now> =
+            Watched::new(link, ending, Box::new(xcore::clock::reading(clock)));
         watched.silence = Some(silence);
         let called = Arc::new(AtomicBool::new(false));
         let silence = Arc::new(AtomicU64::new(nanos(silence)));
@@ -154,8 +159,9 @@ impl Line {
             silence: Arc::clone(&silence),
         };
         // HTTP/2 compiled in `net`, as it ships (`net::http2::boxed`).
-        let client =
-            BoxedClient::handshake(Box::new(asking), scheme).map_err(|failed| failed.message)?;
+        let now = Box::new(xcore::clock::reading(clock));
+        let client = BoxedClient::handshake(Box::new(asking), scheme, now)
+            .map_err(|failed| failed.message)?;
         Ok(Self {
             client,
             called,

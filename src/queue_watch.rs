@@ -28,9 +28,11 @@
 //! ([`Waiter::stop`]).
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use persist::storage::{DueQueue, Position, Waiter, Watched, XmipStorage};
+use xcore::Clock;
+use xcore::clock::between;
 use xcore::lock::Locked;
 
 /// The most of what is due in a queue that moved a wait's answer carries:
@@ -44,9 +46,9 @@ pub(crate) const DUE: u32 = 64;
 pub(crate) struct QueueWatch {
     waiter: Arc<Waiter>,
     more: Mutex<More>,
-    /// When its latest wait was asked: what it hands its step was read no
-    /// earlier.
-    asked: Mutex<Option<Instant>>,
+    /// When its latest wait was asked, on the step's clock: what it hands
+    /// its step was read no earlier.
+    asked: Mutex<Option<i128>>,
 }
 
 /// Each more waited on, where the step read it, and the queues to read once
@@ -58,12 +60,18 @@ struct More {
 
 /// A queue the watch hands its step: what is due in it, where the wait
 /// answered with that, when the answer came, and when the wait was asked —
-/// what is due was read no earlier, and maybe before a write since.
+/// what is due was read no earlier, and maybe before a write since — each
+/// a reading of the step's clock (`xcore::Clock::monotonic_nanos`).
 #[derive(Clone, Debug)]
 pub(crate) struct Woken {
     pub(crate) due: Option<DueQueue>,
-    pub(crate) at: Instant,
-    pub(crate) asked: Instant,
+    pub(crate) at: i128,
+    pub(crate) asked: i128,
+    /// What a Message of the queue waited on that moved, and where it
+    /// stands now — a sequence's head, an Instance, a key — where that woke
+    /// it rather than the queue's own tail. The watch waits on it no more;
+    /// a step with more waiting on it names it again ([`QueueWatch::wait_on`]).
+    pub(crate) moved: Option<Position>,
 }
 
 impl QueueWatch {
@@ -81,7 +89,7 @@ impl QueueWatch {
     /// When its latest wait was asked, while it watches: a page the next
     /// answer brings was read no earlier, so a step keeps what it changes
     /// from then on to tell such a page apart (`send_step::settles`).
-    pub(crate) fn asked(&self) -> Option<Instant> {
+    pub(crate) fn asked(&self) -> Option<i128> {
         *self.asked.locked()
     }
 
@@ -94,7 +102,13 @@ impl QueueWatch {
     /// `queue` read once one moves: what a Journey of `queue` the step passed
     /// over waits on. One newly named renews the wait under way, or the rest
     /// after it, so it is waited on at once; a wait asked after it was named
-    /// names it, and is not renewed (`Waiter::asking`).
+    /// names it, and is not renewed (`Waiter::asking`). A sequence's head
+    /// named again is kept where the earliest of them saw it, and a wait
+    /// under way renewed where that is earlier than it named: a head only
+    /// moves on, so one that saw it before a move is told at once, never
+    /// passed over for one that read it after (found 2026-11-15: a Message
+    /// read behind a head just before it moved waited for good where the one
+    /// behind it named the head as it stood after the move).
     pub(crate) fn wait_on(&self, positions: &[Position], queue: u128) {
         let mut more = self.more.locked();
         let mut named = false;
@@ -105,7 +119,14 @@ impl QueueWatch {
                 .find(|(kept, _)| kept.watched == position.watched)
             {
                 Some((kept, queues)) => {
-                    kept.at = position.at;
+                    match position.watched {
+                        Watched::Head(_) if position.at < kept.at => {
+                            kept.at = position.at;
+                            named = true;
+                        }
+                        Watched::Head(_) => {}
+                        _ => kept.at = position.at,
+                    }
                     if !queues.contains(&queue) {
                         queues.push(queue);
                     }
@@ -126,12 +147,13 @@ impl QueueWatch {
     /// most `bound`: each queue a write moved past where the watch saw it
     /// last handed to `ask` at once, with what is due in it; each more that
     /// moved let go of, and its queues handed to `ask`. No queue, or a
-    /// bound of nothing, no watch.
+    /// bound of nothing, no watch. When each wait was asked and answered is
+    /// read on `clock`, the step's, which its decisions read too.
     pub(crate) fn run(
         &self,
         storage: &dyn XmipStorage,
-        queues: &[u128],
-        bound: Duration,
+        (queues, bound): (&[u128], Duration),
+        clock: &dyn Clock,
         ask: &dyn Fn(u128, Woken),
     ) {
         if queues.is_empty() || bound.is_zero() {
@@ -146,22 +168,28 @@ impl QueueWatch {
             // before it, it names.
             self.waiter.asking();
             let seen = self.seen(&tails);
-            let asked = Instant::now();
+            let asked = clock.monotonic_nanos();
             *self.asked.locked() = Some(asked);
             match storage.wait_queues(&seen, (bound, DUE), &self.waiter) {
                 // Renewed, the rest ends at once.
                 Ok(moved) if moved.is_empty() => {
-                    self.waiter.rest(bound.saturating_sub(asked.elapsed()));
+                    let waited = between(asked, clock.monotonic_nanos());
+                    self.waiter.rest(bound.saturating_sub(waited));
                 }
                 Ok(moved) => {
-                    let at = Instant::now();
-                    let woken = |due| Woken { due, at, asked };
+                    let at = clock.monotonic_nanos();
+                    let woken = |due, moved| Woken {
+                        due,
+                        at,
+                        asked,
+                        moved,
+                    };
                     for one in moved {
                         let queue = match one.position.watched {
                             Watched::Queue(queue) => queue,
                             other => {
                                 for queue in self.moved(other) {
-                                    ask(queue, woken(None));
+                                    ask(queue, woken(None, Some(one.position)));
                                 }
                                 continue;
                             }
@@ -172,7 +200,7 @@ impl QueueWatch {
                         {
                             kept.at = one.position.at;
                         }
-                        ask(queue, woken(one.due));
+                        ask(queue, woken(one.due, None));
                     }
                 }
                 Err(_) => self.waiter.rest(bound),

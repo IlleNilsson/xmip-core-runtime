@@ -328,6 +328,7 @@ mod tests {
             follows: std::sync::OnceLock::new(),
             asking: Mutex::new(None),
             line: Mutex::new(None),
+            clock: Arc::new(xcore::SystemClock),
             #[cfg(feature = "node")]
             fresh: Mutex::default(),
         });

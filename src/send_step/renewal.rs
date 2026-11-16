@@ -24,19 +24,19 @@
 //! claim in Xmip Storage, which decides. Until 2026-10-06 every renewal's
 //! answer was dropped, and a node that had lost its claim went on sending.
 
-use std::time::Instant;
-
 use xcore::JourneyId;
+use xcore::clock::{between, nanos};
 
 use super::{Departure, SendStep};
 
-/// Where a claim this node owns stands.
+/// Where a claim this node owns stands, each moment a reading of the
+/// step's Clock (ADR-0068, amendment 2026-11-15).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Standing {
     /// Surely held until then, on this node's clock.
-    until: Instant,
+    until: i128,
     /// Since when its renewal has not been answered.
-    unconfirmed: Option<Instant>,
+    unconfirmed: Option<i128>,
     /// A renewal found it another's.
     lost: bool,
     /// Its prolonged uncertainty was audited.
@@ -45,7 +45,7 @@ pub(super) struct Standing {
 
 impl Standing {
     /// A claim confirmed until `until`.
-    pub(super) const fn confirmed(until: Instant) -> Self {
+    pub(super) const fn confirmed(until: i128) -> Self {
         Self {
             until,
             unconfirmed: None,
@@ -54,13 +54,13 @@ impl Standing {
         }
     }
 
-    fn holds(&self, now: Instant) -> bool {
+    const fn holds(&self, now: i128) -> bool {
         !self.lost && now < self.until
     }
 
     /// Since when its renewal has been unanswered, if it is now: when the
     /// first renewal Xmip Storage did not answer was asked.
-    pub(super) const fn unanswered_since(&self) -> Option<Instant> {
+    pub(super) const fn unanswered_since(&self) -> Option<i128> {
         self.unconfirmed
     }
 }
@@ -78,7 +78,7 @@ impl SendStep {
     /// its claim not found another's, and confirmed within a lease.
     #[must_use]
     pub fn holds(&self, id: JourneyId) -> bool {
-        let now = Instant::now();
+        let now = self.clock.monotonic_nanos();
         self.lock()
             .owned
             .get(&id)
@@ -107,21 +107,24 @@ impl SendStep {
     /// it is spawned — is renewed as soon as it can be, never a third of a
     /// lease later on top.
     pub(super) fn renewing(&self) {
-        let mut next = Instant::now();
+        let mut next = self.clock.monotonic_nanos();
         let mut state = self.lock();
         loop {
             if state.closed && state.owned.is_empty() {
                 return;
             }
-            let now = Instant::now();
+            let now = self.clock.monotonic_nanos();
             if next <= now {
                 drop(state);
                 self.renew();
-                next = now + self.lease / 3;
+                next = now.saturating_add(nanos(self.lease / 3));
                 state = self.lock();
                 continue;
             }
-            state = self.wake.wait_until(&self.state, state, next).0;
+            state = self
+                .wake
+                .wait_timeout(&self.state, state, between(now, next))
+                .0;
         }
     }
 
@@ -139,7 +142,7 @@ impl SendStep {
         if flying.is_empty() {
             return;
         }
-        let asked = Instant::now();
+        let asked = self.clock.monotonic_nanos();
         let answered = self.storage.renew(&flying, self.lease);
         for claim in flying {
             let renewed = match &answered {
@@ -158,7 +161,7 @@ impl SendStep {
     /// node no longer holds the Message by — the send ended and an operator's
     /// Retry claimed it again under a new token — says nothing of the new
     /// claim, and is dropped.
-    fn renewed(&self, claim: &persist::storage::Claim, asked: Instant, renewed: Renewed) {
+    fn renewed(&self, claim: &persist::storage::Claim, asked: i128, renewed: Renewed) {
         let id = claim.journey;
         let mut state = self.lock();
         let Some(owned) = state.owned.get_mut(&id) else {
@@ -171,7 +174,7 @@ impl SendStep {
         let said = match renewed {
             Renewed::Held(claim) => {
                 owned.claim = claim;
-                let until = standing.until.max(asked + self.lease);
+                let until = standing.until.max(asked.saturating_add(nanos(self.lease)));
                 *standing = Standing::confirmed(until);
                 None
             }
@@ -186,7 +189,7 @@ impl SendStep {
             }
             Renewed::Unanswered(why) => {
                 standing.unconfirmed.get_or_insert(asked);
-                if standing.holds(Instant::now()) || standing.said {
+                if standing.holds(self.clock.monotonic_nanos()) || standing.said {
                     None
                 } else {
                     standing.said = true;
@@ -216,7 +219,7 @@ impl SendStep {
             .is_some_and(|owned| owned.standing.lost || owned.standing.said);
         let port = departure.to.name().to_string();
         state.figures.entry(port).or_default().lost += 1;
-        state.let_go((id, departure.queue), self.watch.asked());
+        state.let_go((id, departure.queue), self.letting_go());
         state.freed();
         drop(state);
         self.wake.notify_all();
@@ -231,11 +234,18 @@ impl SendStep {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use persist::storage::Claim;
 
     use super::*;
     use crate::send_step::admission::Owned;
     use crate::send_step::fixture::step;
+
+    /// `leases` leases from now on `step`'s clock.
+    fn leases_on(step: &SendStep, leases: u32) -> i128 {
+        step.clock.monotonic_nanos() + nanos(step.lease * leases)
+    }
 
     fn claim(token: u128) -> Claim {
         Claim {
@@ -252,7 +262,7 @@ mod tests {
         let owned = Owned {
             claim,
             port: "Out".to_string(),
-            standing: Standing::confirmed(Instant::now() + step.lease),
+            standing: Standing::confirmed(leases_on(step, 1)),
         };
         step.lock().owned.insert(JourneyId::new(7), owned);
     }
@@ -264,7 +274,7 @@ mod tests {
         // The renewal of `old` asked, then the send ended and an operator's
         // Retry claimed the Message again under `new`, before it answered.
         owning(&step, new.clone());
-        let asked = Instant::now() - step.lease * 2;
+        let asked = step.clock.monotonic_nanos() - nanos(step.lease * 2);
 
         step.renewed(&old, asked, Renewed::Lost);
         step.renewed(&old, asked, Renewed::Unanswered("late".to_string()));
@@ -275,7 +285,7 @@ mod tests {
         let owned = step.lock().owned[&id].clone();
         assert_eq!(owned.standing.unanswered_since(), None, "nor unconfirmed");
 
-        step.renewed(&new, Instant::now(), Renewed::Lost);
+        step.renewed(&new, step.clock.monotonic_nanos(), Renewed::Lost);
         assert!(step.is_lost(id), "an answer for the claim held now counts");
     }
 
@@ -316,11 +326,15 @@ mod tests {
     fn a_renewal_keeps_a_later_deadline_it_knew() {
         let step = step();
         let id = JourneyId::new(7);
-        let kept = Instant::now() + step.lease * 10;
+        let kept = leases_on(&step, 10);
         owning(&step, claim(1));
         step.lock().owned.get_mut(&id).expect("owned").standing = Standing::confirmed(kept);
 
-        step.renewed(&claim(1), Instant::now(), Renewed::Held(claim(1)));
+        step.renewed(
+            &claim(1),
+            step.clock.monotonic_nanos(),
+            Renewed::Held(claim(1)),
+        );
 
         let owned = step.lock().owned[&id].clone();
         assert!(owned.standing.until >= kept, "not shortened to a lease");

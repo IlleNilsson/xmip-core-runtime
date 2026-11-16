@@ -11,6 +11,7 @@ use std::sync::Arc;
 use configure::{ConfiguredLocation, XmipApplication, XmipConfigurationDocument};
 use node::Stage;
 use transport::{Guard, Pinned};
+use xcore::{Clock, SystemClock};
 
 use super::activation::Attempt;
 use super::serving::Served;
@@ -102,11 +103,15 @@ impl Running {
         // from its Administration Database as it connects (ADR-0019,
         // amendment 2026-10-29).
         let storage = reaching.open(&linked, &tree.tuning)?;
-        let (receiving, sends) = opened(&tree, &linked, (gates, guards, guard, &data), &storage)?;
+        // The node's one Clock: what its message path, its Locations, its
+        // pickup and its steps tell time by (ADR-0068, amendment 2026-11-15).
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let handed = (gates, guards, guard, data.as_path());
+        let (receiving, sends) = opened(&tree, &linked, handed, &storage, &clock)?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let routes = routes(&receiving, &tree);
         let configured = routes.then(|| ConfiguredSubscription::of(&applications, &files));
-        let pickup = picked_up(&scope, configured, &storage, &linked)?;
+        let pickup = picked_up(&scope, configured, (&storage, &linked), &clock)?;
         accepted_only(&mut linked, &receiving);
         let locations = locations(&receiving, &sends, &tree);
         let not_started = tree.not_started();
@@ -122,7 +127,7 @@ impl Running {
             }
             _ => Vec::new(),
         };
-        let (send, work) = steps(&tree, &scope, (&storage, &linked), running);
+        let (send, work) = steps(&tree, &scope, (&storage, &linked), (running, &clock));
         let stopping = Arc::new(Stopping::default());
         let received = receiving.iter().map(|one| one.configured.name.as_str());
         let tally = Arc::new(Tally::of(received, &tree.subscriptions));
@@ -140,6 +145,7 @@ impl Running {
             work: Arc::clone(&work),
             budget: NodeBudget::of(&tree.tuning),
             receiving,
+            clock: Arc::clone(&clock),
         };
 
         Ok(Self {
@@ -173,6 +179,7 @@ impl Running {
             certificates,
             tuning: tree.tuning,
             configuration: PathBuf::from(path),
+            clock,
             #[cfg(feature = "dynamic-loading")]
             libraries: Some(libraries),
         })
@@ -246,51 +253,54 @@ fn validated(
 /// read under its own bound, `[tuning] receive_handshake`, apart from each
 /// Location's own wait; the keys its far ends presented first kept across
 /// restarts under `data` (ADR-0019, amendment 2026-10-28); a secret read
-/// from `storage` as a Location connects.
+/// from `storage` as a Location connects; its spans counted on `clock`.
 fn opened(
     tree: &ExecutionTree,
     linked: &Linked,
     (gates, guards, guard, data): (Vec<ReceiveGate>, SendGuards, Option<Guard>, &Path),
     storage: &Reached,
+    clock: &Arc<dyn Clock>,
 ) -> Result<(Vec<Receiving>, Sends), Refusal> {
     let guard = guard.map(|guard| guard.handshaking_within(tree.tuning.receive_handshake));
     let pins = Arc::new(Pinned::kept_at(data.join(crate::linked::PINNED)));
+    let sharing: Arc<dyn transport::Sharing> = Arc::new(transport::Shared::default());
     let secrets: Arc<dyn xcore::Secrets> = Arc::new(persist::storage::StoredSecrets(Arc::clone(
         storage.storage(),
     )));
     open(
         tree,
         linked,
-        (gates, guard.as_ref(), &pins, &secrets),
+        (gates, guard.as_ref(), &pins, &sharing, &secrets, clock),
         guards,
     )
     .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))
 }
 
 /// The node's send step, registered for the runtime's library, and its work
-/// step over the Work Processes `running` opened, both over `storage`.
+/// step over the Work Processes `running` opened, both over `storage`, each
+/// step's decisions — scans, timers, leases, retries due — on `clock`.
 fn steps(
     tree: &ExecutionTree,
     scope: &str,
     (storage, linked): (&Reached, &Linked),
-    running: Vec<crate::work_step::Running>,
+    (running, clock): (Vec<crate::work_step::Running>, &Arc<dyn Clock>),
 ) -> (Arc<SendStep>, Arc<WorkStep>) {
     let cluster = publication::cluster_location(&tree.service.cluster_name);
     let send = Arc::new(SendStep::new(
         (&cluster, scope),
         Arc::clone(storage.storage()),
         &tree.tuning,
-        linked.audit.clone(),
+        (linked.audit.clone(), Arc::clone(clock)),
     ));
     SendStep::register(&send);
-    let work = Arc::new(WorkStep::new(
+    let work = WorkStep::new(
         (&cluster, scope),
         Arc::clone(storage.storage()),
         tree.tuning.work(),
         linked.audit.clone(),
         running,
-    ));
-    (send, work)
+    );
+    (send, Arc::new(work.timed_by(Arc::clone(clock))))
 }
 
 /// Whether the node routes: a Receive Location starts, whose receive cycle
@@ -303,19 +313,17 @@ fn routes(receiving: &[Receiving], tree: &ExecutionTree) -> bool {
 }
 
 /// The node's Subscriptions as an operator pauses them: `configured` where
-/// it routes, none where it does not ([`Pickup::routing_none`]).
+/// it routes, none where it does not ([`Pickup::routing_none`]); a queue
+/// read again waits on `clock`.
 fn picked_up(
     scope: &str,
     configured: Option<Vec<ConfiguredSubscription>>,
-    storage: &Reached,
-    linked: &Linked,
+    (storage, linked): (&Reached, &Linked),
+    clock: &Arc<dyn Clock>,
 ) -> Result<Arc<Pickup>, Refusal> {
     let (storage, audit) = (Arc::clone(storage.storage()), linked.audit.clone());
-    match configured {
-        Some(configured) => Pickup::open(scope, configured, storage, audit),
-        None => Pickup::routing_none(scope, storage, audit),
-    }
-    .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))
+    Pickup::timed_by(scope, configured, storage, (audit, Arc::clone(clock)))
+        .map_err(|problem| Refusal::at(StartupPhase::AcceptWork, vec![problem]))
 }
 
 /// Only what the configuration named goes on: the authenticators its

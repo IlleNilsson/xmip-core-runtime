@@ -13,7 +13,7 @@ use identify::{MessageIdentifier, TransportIdentifier};
 use message::MessageTreatment;
 use route::Gathering;
 use xaudit::origin::Origin;
-use xcore::{SystemClock, UuidV7Generator};
+use xcore::{Clock, UuidV7Generator};
 
 use crate::budget::NodeBudget;
 use crate::held_work::pick_up_released;
@@ -46,6 +46,8 @@ pub(super) struct Served {
     pub(super) budget: NodeBudget,
     pub(super) sends: Sends,
     pub(super) receiving: Vec<Receiving>,
+    /// The nodes one Clock, which the message path tells time by.
+    pub(super) clock: Arc<dyn Clock>,
 }
 
 /// Startup phase 9's second half: the Runtime built once, and every Receive
@@ -68,6 +70,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             work,
             budget,
             receiving,
+            clock,
         } = served;
         let authenticators: Vec<&dyn Authenticator> =
             linked.authenticators.iter().map(AsRef::as_ref).collect();
@@ -97,7 +100,7 @@ pub(super) fn serve(served: Served, stopping: Arc<Stopping>, tally: Arc<Tally>) 
             transport_identifiers: &transport_identifiers,
             message_identifiers: &message_identifiers,
             policies: &policies,
-            clock: &SystemClock,
+            clock: &*clock,
             storage: &storage,
             chunk,
             origin: &origin,

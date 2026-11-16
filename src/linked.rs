@@ -25,7 +25,7 @@ use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, Guard, NodeLocation, Pinned, Secured, Transport};
+use transport::{Configured, Guard, NodeLocation, Pinned, Secured, Sharing, Transport};
 
 use crate::receiving::ReceiveGate;
 use xaudit::program_audit::ProgramAudit;
@@ -40,15 +40,17 @@ pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 /// (`crate::receive_certificate`), the keys its far ends are held to,
 /// pinned on first contact under its data directory (`PINNED`), the
 /// secret the Location names, read from the node's Xmip Storage as it
-/// connects (ADR-0019, amendment 2026-10-29), and the most one caller's
-/// turn on its receives takes, `[tuning] receive_turn` (ADR-0018,
-/// amendment 2026-11-14).
+/// connects (ADR-0019, amendment 2026-10-29), the most one caller's turn
+/// on its receives takes, `[tuning] receive_turn` (ADR-0018, amendment
+/// 2026-11-14), and the node's Clock its spans count on (ADR-0068).
 pub type OnNode<'a> = (
     &'a NodeLocation,
     Option<&'a Guard>,
     &'a Arc<Pinned>,
+    &'a Arc<dyn Sharing>,
     Option<Secured>,
     std::time::Duration,
+    &'a Arc<dyn xcore::Clock>,
 );
 
 /// The file under a node's data directory its far ends' pinned keys are
@@ -166,35 +168,45 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
     true
 }
 
-/// `T` built from a Location and given its node, once, as it is built (the
-/// owner, 2026-10-03; `transport::Configured::on_node`), the keys its far
-/// ends are held to (`transport::Configured::pinned_by`), the most one
-/// caller's turn on its receives takes
-/// (`transport::Configured::turning_within`), the guard its receives
-/// terminate TLS with (`transport::Configured::guarded_by`), and the
-/// secret its Location names (`transport::Configured::secured_by`). Public
-/// so a test's [`Open`] can wrap it, as the running tests count what a
-/// node builds.
+/// `T` built from a Location and given its node ([`built_on`]); public so a
+/// test's [`Open`] can wrap it, as the running tests count what a node builds.
 ///
 /// # Errors
-///
-/// What the technology refuses of the Location, its node, its guard or
-/// its secret.
+/// What the technology refuses of the Location, its node, guard or secret.
 pub fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
-    (node, guard, pins, secured, turn): OnNode<'_>,
+    on: OnNode<'_>,
 ) -> Opened {
-    let built = T::open(address, side, given)?
+    Ok(Box::new(built_on(T::open(address, side, given)?, on)?))
+}
+
+/// `built`, a Location's transport, given once, as it is built, its node
+/// (the owner, 2026-10-03; `Configured::on_node`), the keys its far ends are
+/// held to (`pinned_by`), what its node's Locations share (`shared_by`), its
+/// turns' most (`turning_within`), its Clock (`timed_by`), its receives' TLS
+/// (`guarded_by`) and its Location's secret (`secured_by`). Public so a
+/// test's [`Open`] building a transport its own way — on a bench port for a
+/// device — has the node give it the rest.
+///
+/// # Errors
+/// What the technology refuses of its node, its guard or its secret.
+pub fn built_on<T: Configured>(
+    built: T,
+    (node, guard, pins, sharing, secured, turn, clock): OnNode<'_>,
+) -> transport::Result<T> {
+    let built = built
         .on_node(node)?
         .pinned_by(pins)
+        .shared_by(sharing)
         .turning_within(turn)
+        .timed_by(clock)
         .guarded_by(guard)?;
-    Ok(Box::new(match secured {
-        Some(secured) => built.secured_by(secured)?,
-        None => built,
-    }))
+    match secured {
+        Some(secured) => built.secured_by(secured),
+        None => Ok(built),
+    }
 }
 
 /// How an engine opens its store at a place: a directory for `RocksDB`, a

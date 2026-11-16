@@ -31,7 +31,7 @@ use std::time::Duration;
 use xcore::lock::Locked;
 
 use xaudit::program_audit::ProgramAudit;
-use xcore::{ExecutionPhase, Severity};
+use xcore::{Clock, ExecutionPhase, Severity, SystemClock};
 
 use crate::act_watch::Door;
 use crate::plane::board::Published;
@@ -66,6 +66,8 @@ pub(crate) struct Serve {
     pub(crate) door: OnceLock<Arc<Door>>,
     pub(crate) audit: ProgramAudit,
     pub(crate) stopping: AtomicBool,
+    /// What a connection's HTTP/2 frames in a span are counted on.
+    pub(crate) clock: Arc<dyn Clock>,
 }
 
 impl Serve {
@@ -268,5 +270,6 @@ fn serving(
         relaying: OnceLock::new(),
         door: OnceLock::new(),
         stopping: AtomicBool::new(false),
+        clock: Arc::new(SystemClock),
     })
 }

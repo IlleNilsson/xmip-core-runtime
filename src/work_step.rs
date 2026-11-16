@@ -55,13 +55,13 @@ mod turning;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use xcore::lock::Locked;
 
 use persist::storage::XmipStorage;
 use xaudit::program_audit::ProgramAudit;
-use xcore::JourneyId;
 use xcore::wake::Wake;
+use xcore::{Clock, JourneyId, SystemClock};
 
 use crate::pool::Limits;
 use crate::queue_watch::{QueueWatch, Woken};
@@ -106,6 +106,9 @@ pub struct WorkStep {
     /// Its watch on its queues, and on what a turn it gave back waits on,
     /// stopped as it closes (`crate::queue_watch`).
     watch: QueueWatch,
+    /// What its scans and its timers come due on (ADR-0068, amendment
+    /// 2026-11-15).
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Default)]
@@ -118,8 +121,9 @@ struct State {
     readings: Vec<Reading>,
     /// The Work Process that goes first in the next round: each in turn.
     first: usize,
-    /// When each queue next has a timer due, as its last read showed.
-    due: Vec<(u128, Instant)>,
+    /// When each queue next has a timer due, as its last read showed, on
+    /// the step's clock.
+    due: Vec<(u128, i128)>,
     /// How many turns this node wrote: what tells a turn that waited
     /// whether another was written while it was held.
     written: u64,
@@ -133,7 +137,8 @@ struct State {
 impl WorkStep {
     /// The step of the node at `node` in the cluster at `cluster`, over
     /// `storage`, running `running` on a pool bounded by `limits`, its
-    /// queues read every `scan` as well as when another node writes to one.
+    /// queues read every `scan` as well as when another node writes to one,
+    /// on the operating system's clock until [`WorkStep::timed_by`].
     #[must_use]
     pub fn new(
         (cluster, node): (&str, &str),
@@ -158,7 +163,16 @@ impl WorkStep {
             state: Mutex::new(state),
             wake: Wake::new(),
             watch: QueueWatch::of(node),
+            clock: Arc::new(SystemClock),
         }
+    }
+
+    /// This step, its scans and its timers coming due on `clock`, the
+    /// node's.
+    #[must_use]
+    pub fn timed_by(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The Work Processes it runs.

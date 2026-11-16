@@ -5,12 +5,16 @@
 //! (`crate::presented`), so the node asks for it every [`EVERY`] and the
 //! register remakes it by its one rule — once a day old
 //! (`provision::register::Register::list`) — long before then, whether or
-//! not anyone else asks for it.
+//! not anyone else asks for it. The hour is counted on the node's Clock
+//! (ADR-0068, amendment 2026-11-15).
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use provision::Issuer;
+use xcore::Clock;
+use xcore::clock::between;
 
 use crate::running::Running;
 
@@ -18,11 +22,20 @@ use crate::running::Running;
 pub const EVERY: Duration = Duration::from_hours(1);
 
 /// The list kept beside one node's configuration, and when it was last
-/// asked for.
-#[derive(Debug)]
+/// asked for, on the node's clock.
 pub struct RevocationList {
     configuration: PathBuf,
-    asked: Option<Instant>,
+    asked: Option<i128>,
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for RevocationList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevocationList")
+            .field("configuration", &self.configuration)
+            .field("asked", &self.asked)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Running {
@@ -33,6 +46,7 @@ impl Running {
         RevocationList {
             configuration: self.configuration.clone(),
             asked: None,
+            clock: Arc::clone(&self.clock),
         }
     }
 }
@@ -48,10 +62,11 @@ impl RevocationList {
     /// The authority or its register cannot be read, or the list cannot be
     /// written; in words naming the file.
     pub fn keep(&mut self) -> Result<bool, String> {
-        if self.asked.is_some_and(|asked| asked.elapsed() < EVERY) {
+        let now = self.clock.monotonic_nanos();
+        if self.asked.is_some_and(|asked| between(asked, now) < EVERY) {
             return Ok(false);
         }
-        self.asked = Some(Instant::now());
+        self.asked = Some(now);
         current(&self.configuration, provision::now())
     }
 }
@@ -101,12 +116,21 @@ mod tests {
             "a day old: made again"
         );
 
+        let clock = Arc::new(xcore::clock::Stepped::default());
         let mut kept = RevocationList {
             configuration,
             asked: None,
+            clock: Arc::clone(&clock) as Arc<dyn Clock>,
         };
         assert!(kept.keep().expect("asked"));
         assert!(!kept.keep().expect("not yet"), "asked once an hour");
+        clock.pass(EVERY.checked_sub(Duration::from_nanos(1)).expect("an hour"));
+        assert!(!kept.keep().expect("not yet"), "a nanosecond short");
+        clock.pass(Duration::from_nanos(1));
+        assert!(
+            kept.keep().expect("asked"),
+            "asked again once the hour passed"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

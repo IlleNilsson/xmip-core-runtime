@@ -12,6 +12,7 @@ use xcore::lock::Locked;
 
 use persist::PersistError;
 use persist::storage::XmipStorage;
+use xcore::JourneyId;
 
 mod storage;
 
@@ -24,6 +25,8 @@ pub enum Operation {
     ReadDue,
     HandOn,
     Claim,
+    /// A claim given back (`XmipStorage::release`).
+    Release,
     Renew,
     ReadJourney,
     WriteJourney,
@@ -67,6 +70,9 @@ pub struct Failing {
     /// How long each operation the Storage beneath answered took, in the
     /// order answered.
     taken: Mutex<BTreeMap<Operation, Vec<Duration>>>,
+    /// When each hand-on the Storage beneath took was answered — durable —
+    /// by its Journey, in the order answered.
+    handed_on: Mutex<Vec<(JourneyId, Instant)>>,
 }
 
 impl Failing {
@@ -82,7 +88,16 @@ impl Failing {
             at_once: AtomicBool::new(false),
             counted: Mutex::new(BTreeMap::new()),
             taken: Mutex::new(BTreeMap::new()),
+            handed_on: Mutex::new(Vec::new()),
         })
+    }
+
+    /// When each hand-on taken so far was answered, once durable, by its
+    /// Journey, in the order answered: what a timing program measures the
+    /// next send of a sequence from.
+    #[must_use]
+    pub fn handed_on(&self) -> Vec<(JourneyId, Instant)> {
+        self.handed_on.locked().clone()
     }
 
     /// The next Publication written beneath and its answer lost: `meanwhile`

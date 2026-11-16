@@ -9,7 +9,6 @@
 //! node is in reading them.
 
 use std::collections::BTreeSet;
-use std::time::Instant;
 
 use codec::cursor::Cursor;
 use codec::field::{read_text, text};
@@ -84,13 +83,14 @@ pub(super) struct Entry {
     pub(super) taken: BTreeSet<u64>,
     /// Whether its queue may hold what the node has not read.
     pub(super) pending: bool,
-    /// Not read again before this, after a read that failed.
-    pub(super) not_before: Option<Instant>,
+    /// Not read again before this, on the node's clock, after a read that
+    /// failed.
+    pub(super) not_before: Option<i128>,
 }
 
 impl Entry {
-    /// Whether the node has its queue to read now.
-    pub(super) fn ready(&self, now: Instant) -> bool {
+    /// Whether the node has its queue to read at `now`.
+    pub(super) fn ready(&self, now: i128) -> bool {
         self.pending && !self.standing.paused && self.not_before.is_none_or(|at| at <= now)
     }
 }
@@ -102,8 +102,8 @@ impl State {
             .position(|entry| entry.configured.name() == name)
     }
 
-    pub(super) fn ready(&self) -> bool {
-        let now = Instant::now();
+    /// Whether any queue is the node's to read at `now`.
+    pub(super) fn ready(&self, now: i128) -> bool {
         self.entries.iter().any(|entry| entry.ready(now))
     }
 

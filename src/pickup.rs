@@ -48,7 +48,7 @@ use persist::storage::{AdministrationKind, AdministrationRecord, XmipStorage, na
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
 use xcore::wake::Wake;
-use xcore::{ExecutionPhase, Severity};
+use xcore::{Clock, ExecutionPhase, Severity, SystemClock};
 
 use crate::configured_subscription::ConfiguredSubscription;
 
@@ -75,6 +75,9 @@ pub struct Pickup {
     audit: Option<ProgramAudit>,
     state: Mutex<State>,
     wake: Wake,
+    /// What a queue that could not be read waits [`AGAIN`] on (ADR-0068,
+    /// amendment 2026-11-15).
+    clock: Arc<dyn Clock>,
 }
 
 /// Every node's pickup in this process.
@@ -89,7 +92,9 @@ fn uri(node: &str, name: &str) -> String {
 impl Pickup {
     /// The Subscriptions of the node at `node` (`xmip:///<cluster>/node/<name>`),
     /// each with its standing and what it holds read back from `storage`,
-    /// registered for the runtime's library. `audit` records every act.
+    /// registered for the runtime's library. `audit` records every act. A
+    /// queue read again waits on the operating system's clock; a node's
+    /// pickup is [`Pickup::timed_by`] its own.
     ///
     /// # Errors
     /// Xmip Storage could not be read: a standing that cannot be read back
@@ -100,7 +105,31 @@ impl Pickup {
         storage: Arc<dyn XmipStorage>,
         audit: Option<ProgramAudit>,
     ) -> Result<Arc<Self>, String> {
-        Self::opening(node, configured, storage, audit, true)
+        Self::timed_by(
+            node,
+            Some(configured),
+            storage,
+            (audit, Arc::new(SystemClock)),
+        )
+    }
+
+    /// The pickup of the node at `node`: [`Pickup::open`]'s where
+    /// `configured` names the Subscriptions it routes by, and
+    /// [`Pickup::routing_none`]'s where it routes by none; a queue read
+    /// again waits [`AGAIN`] on `clock`, the node's (ADR-0068, amendment
+    /// 2026-11-15).
+    ///
+    /// # Errors
+    /// As [`Pickup::open`].
+    pub fn timed_by(
+        node: &str,
+        configured: Option<Vec<ConfiguredSubscription>>,
+        storage: Arc<dyn XmipStorage>,
+        (audit, clock): (Option<ProgramAudit>, Arc<dyn Clock>),
+    ) -> Result<Arc<Self>, String> {
+        let routes = configured.is_some();
+        let configured = configured.unwrap_or_default();
+        Self::opening(node, configured, storage, (audit, clock), routes)
     }
 
     /// The pickup of a node at `node` that routes by no Subscription: one
@@ -116,14 +145,14 @@ impl Pickup {
         storage: Arc<dyn XmipStorage>,
         audit: Option<ProgramAudit>,
     ) -> Result<Arc<Self>, String> {
-        Self::opening(node, Vec::new(), storage, audit, false)
+        Self::timed_by(node, None, storage, (audit, Arc::new(SystemClock)))
     }
 
     fn opening(
         node: &str,
         configured: Vec<ConfiguredSubscription>,
         storage: Arc<dyn XmipStorage>,
-        audit: Option<ProgramAudit>,
+        (audit, clock): (Option<ProgramAudit>, Arc<dyn Clock>),
         routes: bool,
     ) -> Result<Arc<Self>, String> {
         let now = now_unix_nanos();
@@ -166,6 +195,7 @@ impl Pickup {
             audit,
             state: Mutex::new(State { entries }),
             wake: Wake::new(),
+            clock,
         });
         let mut registered = REGISTERED.locked();
         registered.retain(|held| held.strong_count() > 0);
@@ -489,6 +519,36 @@ pub(crate) mod tests {
             ["two"],
             "resumed, not all picked up before the stop: picked up at the start"
         );
+    }
+
+    #[test]
+    fn a_queue_that_could_not_be_read_is_read_again_once_again_passed_on_the_clock() {
+        let failing = Failing::over(Arc::clone(crate::ledger::in_memory()));
+        let storage: Arc<dyn XmipStorage> = failing.clone();
+        let clock = Arc::new(xcore::clock::Stepped::default());
+        let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
+        let handed: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+        let pickup = Pickup::timed_by(
+            &node(),
+            Some(configured),
+            Arc::clone(&storage),
+            (None, handed),
+        )
+        .expect("opened");
+        pickup.act("orders", Act::Pause, "ilian").expect("paused");
+        assert_eq!(route(&pickup, &storage, "one"), 1, "paused: held");
+        pickup.act("orders", Act::Resume, "ilian").expect("resumed");
+
+        failing.fail(Operation::ReadHeld, 1);
+        assert!(pickup.released(Duration::ZERO, 8).is_empty(), "not read");
+        clock.pass(AGAIN.checked_sub(Duration::from_nanos(1)).expect("a span"));
+        assert!(
+            pickup.released(Duration::ZERO, 8).is_empty(),
+            "not read again before AGAIN"
+        );
+        clock.pass(Duration::from_nanos(1));
+        let released = pickup.released(Duration::ZERO, 8);
+        assert_eq!(bodies(&released), ["one"], "read again once AGAIN passed");
     }
 
     #[test]

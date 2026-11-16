@@ -8,7 +8,7 @@ use std::time::Duration;
 use persist::PersistError;
 use persist::storage::{
     ActOutcome, ActRecord, AdministrationKind, AdministrationRecord, AuditEntry, Claim, Claimed,
-    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, HeldQueue,
+    DeadEntry, DeadQueue, DuePart, DueQueue, Durable, FailedQueue, HandOn, Head, HeldQueue,
     JourneyRecord, KeptAudit, MessageRecord, Moved, Position, Publication, Query, Replay, Replayed,
     StreamChunk, StreamRecord, Waiter, XmipStorage,
 };
@@ -76,6 +76,14 @@ impl XmipStorage for Failing {
     fn read_held(&self, queue: u128, from: u64, most: u32) -> Result<HeldQueue, PersistError> {
         let asked = self.asked(Operation::ReadHeld)?;
         let answer = self.beneath.read_held(queue, from, most);
+        self.answered(Operation::ReadHeld, asked, answer)
+    }
+
+    /// Asked, counted and timed as the read of a queue it is, answered with
+    /// when what it read is durable as the Storage beneath says.
+    fn read_head(&self, queue: u128, most: u32) -> Result<Head, PersistError> {
+        let asked = self.asked(Operation::ReadHeld)?;
+        let answer = self.beneath.read_head(queue, most);
         self.answered(Operation::ReadHeld, asked, answer)
     }
 
@@ -185,7 +193,9 @@ impl XmipStorage for Failing {
     }
 
     fn release(&self, claim: &Claim) -> Result<bool, PersistError> {
-        self.beneath.release(claim)
+        let asked = self.asked(Operation::Release)?;
+        let answer = self.beneath.release(claim);
+        self.answered(Operation::Release, asked, answer)
     }
 
     fn turn(&self, turn: &persist::storage::Turn) -> Result<bool, PersistError> {
@@ -203,9 +213,16 @@ impl XmipStorage for Failing {
         self.beneath.read_instance_key(correlation)
     }
 
+    /// Asked, counted and timed; and, taken, when it was answered by its
+    /// Journey — once durable, as every hand-on answers.
     fn hand_on(&self, hand_on: HandOn) -> Result<(bool, Durable), PersistError> {
         let asked = self.asked(Operation::HandOn)?;
+        let journey = hand_on.claim.journey;
         let answer = self.beneath.hand_on(hand_on);
+        if matches!(answer, Ok((true, _))) {
+            let answered = std::time::Instant::now();
+            self.handed_on.locked().push((journey, answered));
+        }
         self.answered(Operation::HandOn, asked, answer)
     }
 

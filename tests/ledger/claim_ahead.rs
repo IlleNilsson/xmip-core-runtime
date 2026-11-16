@@ -41,7 +41,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A test Storage node in memory whose runtime database's syncs `hooks`
 /// steer.
-fn hooked() -> (Arc<dyn XmipStorage>, Arc<Hooks>) {
+pub fn hooked() -> (Arc<dyn XmipStorage>, Arc<Hooks>) {
     let hooks = Arc::new(Hooks::default());
     let keys = Held::new(secret::fixture::Memory::default());
     let kek = KekName::new("storage").expect("a name");

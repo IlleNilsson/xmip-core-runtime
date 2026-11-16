@@ -8,7 +8,7 @@ use persist::storage::{
 };
 use secret::{Held, KekName};
 use xcore::lock::Locked;
-use xcore::{AuditId, JourneyId, MessageId};
+use xcore::{AuditId, JourneyId, MessageId, SystemClock};
 
 use super::*;
 use crate::fixture::{Failing, Operation};
@@ -113,7 +113,12 @@ fn each_queue_another_writes_to_is_asked_at_once_with_what_is_due_and_a_stop_end
     std::thread::scope(|scope| {
         let (storage, asked, watch) = (&storage, &asked, &watch);
         let watching = scope.spawn(move || {
-            watch.run(storage.as_ref(), &[7, 9], HOUR, &asking(asked));
+            watch.run(
+                storage.as_ref(),
+                (&[7, 9], HOUR),
+                &SystemClock,
+                &asking(asked),
+            );
         });
         publish(storage.as_ref(), 9, 1);
         until(|| !asked.locked().is_empty(), "the queue written to asked");
@@ -145,7 +150,7 @@ fn a_head_named_while_waiting_is_waited_on_at_once_and_its_queue_asked_as_it_mov
     std::thread::scope(|scope| {
         let (failing, asked, watch) = (&failing, &asked, &watch);
         let watching = scope.spawn(move || {
-            watch.run(failing.as_ref(), &[7], HOUR, &asking(asked));
+            watch.run(failing.as_ref(), (&[7], HOUR), &SystemClock, &asking(asked));
         });
         until(
             || failing.asked_times(Operation::WaitQueues) == 1,
@@ -172,6 +177,24 @@ fn a_head_named_while_waiting_is_waited_on_at_once_and_its_queue_asked_as_it_mov
     });
 }
 
+/// A sequence's head named again is kept where the earliest saw it: a head
+/// only moves on, so one read before a move is told of it at once.
+#[test]
+fn a_head_named_again_is_kept_where_the_earliest_of_them_saw_it() {
+    let watch = QueueWatch::of("watching");
+    let head = |at| Position {
+        watched: Watched::Head(5),
+        at,
+    };
+    watch.wait_on(&[head(3)], 7);
+    watch.wait_on(&[head(4)], 8);
+    watch.wait_on(&[head(2)], 7);
+    let more = watch.more.locked();
+    assert_eq!(more.waits.len(), 1, "named once");
+    assert_eq!(more.waits[0].0.at, 2, "where the earliest saw it");
+    assert_eq!(more.waits[0].1, [7, 8], "each queue to read as it moves");
+}
+
 #[test]
 fn a_wait_storage_does_not_answer_rests_its_bound_and_is_asked_again() {
     let failing = Failing::over(storage());
@@ -185,7 +208,12 @@ fn a_wait_storage_does_not_answer_rests_its_bound_and_is_asked_again() {
     std::thread::scope(|scope| {
         let (storage, asked, watch) = (&storage, &asked, &watch);
         let watching = scope.spawn(move || {
-            watch.run(storage.as_ref(), &[7], bound, &asking(asked));
+            watch.run(
+                storage.as_ref(),
+                (&[7], bound),
+                &SystemClock,
+                &asking(asked),
+            );
         });
         until(|| !asked.locked().is_empty(), "asked once answered");
         watch.stop();
@@ -202,7 +230,12 @@ fn a_bound_of_nothing_asks_nothing_rather_than_without_pause() {
     std::thread::scope(|scope| {
         let (failing, watch) = (&failing, &watch);
         let watching = scope.spawn(move || {
-            watch.run(failing.as_ref(), &[7], Duration::ZERO, &|_, _| {});
+            watch.run(
+                failing.as_ref(),
+                (&[7], Duration::ZERO),
+                &SystemClock,
+                &|_, _| {},
+            );
         });
         until(
             || watching.is_finished() || failing.asked_times(Operation::WaitQueues) > 0,
@@ -224,7 +257,7 @@ fn a_wait_answered_with_nothing_before_its_bound_rests_the_rest_of_it() {
     std::thread::scope(|scope| {
         let (failing, watch) = (&failing, &watch);
         let watching = scope.spawn(move || {
-            watch.run(failing.as_ref(), &[7], bound, &|_, _| {});
+            watch.run(failing.as_ref(), (&[7], bound), &SystemClock, &|_, _| {});
         });
         until(
             || failing.asked_times(Operation::WaitQueues) >= 3,

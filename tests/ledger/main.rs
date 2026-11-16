@@ -44,7 +44,11 @@
 //! the pool, Messages another node holds keeping no place, renewal while a
 //! scan is held up, and failure evidence after a restart;
 //! `send_claim.rs` a claim found another's, or unconfirmed past its lease,
-//! stopping a send's further attempts; `send_waiting.rs` retries that wait
+//! stopping a send's further attempts; `send_beside.rs` the next of a
+//! sequence waiting beside the send ahead of it, never claimed again, and
+//! one further behind given back and taken up once; `send_after_durable.rs`
+//! the next of a sequence let out to its far end only once the hand-on
+//! ahead of it, another node's, is durable; `send_waiting.rs` retries that wait
 //! in the Ledger holding no claim and no place, a healthy Port sent past
 //! them, and a pass that tried nothing writing nothing; `send_streamed.rs`
 //! a fan-out of a Message far larger than a chunk sent in bounded memory,
@@ -104,6 +108,8 @@ mod roomed;
 mod said;
 mod searched;
 mod send;
+mod send_after_durable;
+mod send_beside;
 mod send_bounded;
 mod send_claim;
 mod send_group;

@@ -186,6 +186,11 @@ tcp = { package = "xmip-core-transport-tcp", git = "https://github.com/IlleNilss
 # Messages through a node: raw TCP spends a connection a Message, its
 # sender's side waiting minutes to close (ADR-0018, amendment 2026-10-21).
 http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
+# And a serial line on a bench port in place of a device (`serial::bench`),
+# so a test proves the node hands every Location what its Locations share:
+# two naming one device go through its one port (ADR-0064, amendment
+# 2026-11-15).
+serial = { package = "xmip-core-transport-serial", git = "https://github.com/IlleNilsson/xmip-core-transport-serial", branch = "main", features = ["test-support"] }
 # The test Storage node (the owner, 2026-10-01: *for testing purposes the
 # Xmip Nodes of Storage type can use SQLite in memory for administration and
 # RocksDB for runtime*), so the receive path is proved, timed and killed

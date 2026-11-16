@@ -52,7 +52,7 @@
 
 use std::cell::Cell;
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use authorize::{Action, Attempt, Decision, authorize};
 use context::IdentityFacts;
@@ -61,8 +61,7 @@ use route::Subscriber;
 use send::SendLevel;
 use transport::Outgoing;
 use transport::error::TransportError;
-use xcore::Purpose;
-use xcore::spent::on_io;
+use xcore::{Purpose, clock::between, spent::on_io};
 
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
@@ -225,7 +224,7 @@ fn depart_port(
             return departed;
         };
         let asked = (*sending, owned, kept, standing.fence);
-        let trying = Instant::now();
+        let trying = runtime.clock.monotonic_nanos();
         let Some(one) = depart_one(runtime, (work, facts), to.clone(), asked) else {
             return departed;
         };
@@ -237,7 +236,8 @@ fn depart_port(
         }
         let said = said(std::slice::from_ref(&one));
         // Its Port's guards judge the try (ADR-0048, amendment 2026-11-14).
-        standing.after = Sends::again(runtime.sends, port.name, (standing.tries, trying), &one);
+        let took = between(trying, runtime.clock.monotonic_nanos());
+        standing.after = Sends::again(runtime.sends, port.name, (standing.tries, took), &one);
         departed.push(one);
         if standing.after.is_some() {
             return departed;

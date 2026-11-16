@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use xcore::SystemClock;
 use xcore::lock::Locked;
 
 use serde_json::json;
@@ -217,6 +218,7 @@ impl Remote {
                 follows: std::sync::OnceLock::new(),
                 asking: Mutex::new(None),
                 line: Mutex::new(None),
+                clock: Arc::new(SystemClock),
                 #[cfg(feature = "node")]
                 fresh: Mutex::default(),
             }),

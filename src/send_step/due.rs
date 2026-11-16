@@ -9,16 +9,15 @@
 //! before a hand-on noted since (corrected 2026-11-14: such a page, read
 //! before a hand-on and scanned after its note, counted none waiting).
 
-use std::time::Instant;
-
 use schedule::due::{Due, earliest};
 
 use crate::queue_watch::Woken;
 
 impl super::State {
     /// When the dispatching wakes with nothing handed or asked: the
-    /// earliest retry due in any queue, or `until`, the next scan.
-    pub(super) fn wakes_at(&self, until: Instant) -> Instant {
+    /// earliest retry due in any queue, or `until`, the next scan — each a
+    /// reading of the step's Clock.
+    pub(super) fn wakes_at(&self, until: i128) -> i128 {
         earliest(self.due.values(), until)
     }
 }
@@ -30,11 +29,11 @@ impl super::SendStep {
     /// began as that wait was asked, and keeps every due time noted, which
     /// the page may not hold: it neither counts over a newer note nor
     /// forgets one.
-    pub(super) fn reading(&self, queue: u128, woken: Option<&Woken>) -> Instant {
+    pub(super) fn reading(&self, queue: u128, woken: Option<&Woken>) -> i128 {
         if let Some(woken) = woken.filter(|woken| woken.due.is_some()) {
             return woken.asked;
         }
-        let began = Instant::now();
+        let began = self.clock.monotonic_nanos();
         if let Some(due) = self.lock().due.get_mut(&queue) {
             due.reading();
         }
@@ -46,13 +45,13 @@ impl super::SendStep {
     /// woken for at that time, kept across a read under way, and how many
     /// wait read now, after it (`super::reading::waiting`); where Xmip
     /// Storage does not answer, one more than were counted.
-    pub(super) fn noted(&self, (port, queue): (&str, u128), at: Instant) {
+    pub(super) fn noted(&self, (port, queue): (&str, u128), at: i128) {
         self.lock()
             .due
             .entry(queue)
             .or_insert_with(|| Due::of(port))
             .wakes(at);
-        let began = Instant::now();
+        let began = self.clock.monotonic_nanos();
         let read = super::reading::waiting(self, queue);
         let mut state = self.lock();
         let due = state.due.entry(queue).or_insert_with(|| Due::of(port));
@@ -66,7 +65,7 @@ impl super::SendStep {
 
     /// The retry at a place of `queue`, the queue of the Send Port `port`,
     /// found not yet due under a scan's claim: woken for at `at`.
-    pub(super) fn not_due(&self, (port, queue): (&str, u128), at: Instant) {
+    pub(super) fn not_due(&self, (port, queue): (&str, u128), at: i128) {
         self.lock()
             .due
             .entry(queue)
@@ -77,7 +76,7 @@ impl super::SendStep {
 
     /// What a scan of `queue`, begun at `began`, found waiting, `waits`,
     /// reading `whole` the queue or part of it (`Due::found`).
-    pub(super) fn waited(&self, queue: u128, (waits, began): (Due, Instant), whole: bool) {
+    pub(super) fn waited(&self, queue: u128, (waits, began): (Due, i128), whole: bool) {
         self.lock()
             .due
             .entry(queue)
@@ -86,6 +85,9 @@ impl super::SendStep {
         self.wake.notify_all();
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+use xcore::clock::{between, nanos};
 
 #[cfg(any(test, feature = "test-support"))]
 impl super::SendStep {
@@ -99,14 +101,16 @@ impl super::SendStep {
     #[must_use]
     pub fn woken_late(&self, after: std::time::Duration) -> std::time::Duration {
         const QUEUE: u128 = 1;
-        let due = Instant::now() + after;
+        let now = || self.clock.monotonic_nanos();
+        let due = now().saturating_add(nanos(after));
         self.lock()
             .due
             .entry(QUEUE)
             .or_insert_with(|| Due::of("Out"))
             .at = Some(due);
-        let (_, _, (asked, _)) = self.next(Instant::now() + std::time::Duration::from_secs(10));
-        let late = Instant::now().saturating_duration_since(due);
+        let scan = now().saturating_add(nanos(std::time::Duration::from_secs(10)));
+        let (_, _, (asked, _)) = self.next(scan);
+        let late = between(due, now());
         assert_eq!(asked, vec![QUEUE], "woken for the retry");
         late
     }
@@ -122,11 +126,13 @@ impl super::SendStep {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use persist::fixture::crowd::{QUEUE, crowded};
     use persist::storage::{DueQueue, XmipStorage};
     use schedule::due::Due;
+    use xcore::SystemClock;
+    use xcore::clock::nanos;
 
     use crate::queue_watch::Woken;
     use crate::send_step::SendStep;
@@ -139,12 +145,18 @@ mod tests {
         let cluster = configure::fixture::test_cluster();
         let node = cluster.node_scope(0);
         let storage: Arc<dyn XmipStorage> = Arc::new(crowded(&node, waiting, 1));
-        SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), None)
+        let told = (None, Arc::new(SystemClock) as _);
+        SendStep::new((&cluster.scope(), &node), storage, &Tuning::default(), told)
+    }
+
+    /// `span` from now on `step`'s clock.
+    fn from_now(step: &SendStep, span: Duration) -> i128 {
+        step.clock.monotonic_nanos() + nanos(span)
     }
 
     /// A hand-on that set a Message of [`QUEUE`] waiting an hour, noted.
     fn noted(step: &SendStep) {
-        step.noted(("Out", QUEUE), Instant::now() + Duration::from_secs(3600));
+        step.noted(("Out", QUEUE), from_now(step, Duration::from_secs(3600)));
     }
 
     /// What a read of the whole queue finds: `waiting` waiting.
@@ -166,14 +178,14 @@ mod tests {
     fn a_hand_on_during_a_read_is_woken_for_at_its_due_time() {
         let step = step();
         let began = step.reading(QUEUE, None);
-        let due = Instant::now() + Duration::from_millis(20);
+        let due = from_now(&step, Duration::from_millis(20));
         step.noted(("Out", QUEUE), due);
         step.waited(QUEUE, (Due::of("Out"), began), true);
-        let scan = Instant::now() + Duration::from_secs(10);
+        let scan = from_now(&step, Duration::from_secs(10));
 
         assert_eq!(step.lock().wakes_at(scan), due, "woken at its due time");
         let (closed, _, (asked, _)) = step.next(scan);
-        let woke = Instant::now();
+        let woke = step.clock.monotonic_nanos();
 
         assert!(!closed);
         assert_eq!(asked, vec![QUEUE], "the queue is read again");
@@ -244,8 +256,9 @@ mod tests {
                 next_due_unix_nanos: None,
                 read_unix_nanos: 0,
             }),
-            at: Instant::now(),
-            asked: Instant::now(),
+            at: step.clock.monotonic_nanos(),
+            asked: step.clock.monotonic_nanos(),
+            moved: None,
         };
         noted(&step);
         assert_eq!(waiting(&step), 1, "the hand-on counted");

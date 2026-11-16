@@ -17,11 +17,12 @@
 //! reads its Message's place again (`super::under_claim`).
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use persist::PersistError;
 use persist::storage::{DuePart, DueQueue, Held};
 use schedule::due::Due;
+use xcore::clock::{between, nanos};
 
 use super::SendStep;
 use crate::queue_watch::Woken;
@@ -30,8 +31,9 @@ use crate::queue_watch::Woken;
 const PAGE: u32 = crate::queue_watch::DUE;
 
 /// One entry a scan read: the entry, how long it still waits for its due
-/// time where it is not due, and when the read of it was asked.
-pub(super) type Read = (Held, Option<Duration>, Instant);
+/// time where it is not due, and when the read of it was asked, on the
+/// step's Clock.
+pub(super) type Read = (Held, Option<Duration>, i128);
 
 /// What is left to read of a queue, and what was read of it so far.
 pub(super) struct Reading<'a> {
@@ -46,7 +48,7 @@ pub(super) struct Reading<'a> {
     retrying: u64,
     due_retries: u64,
     /// Its first page as a wake brought it, read in place of asking.
-    first: Option<(DueQueue, Instant)>,
+    first: Option<(DueQueue, i128)>,
     /// What the read of the latest page took: none where a wake brought it.
     took: Option<Duration>,
 }
@@ -114,22 +116,23 @@ impl<'a> Reading<'a> {
         part: DuePart,
         from: (u64, u64),
         waits: &mut Due,
-    ) -> Result<(Instant, DueQueue), PersistError> {
+    ) -> Result<(i128, DueQueue), PersistError> {
         let (asked, page) = match self.first.take() {
             Some((page, answered)) => {
                 self.took = None;
                 (answered, page)
             }
             None => {
-                let asked = Instant::now();
+                let clock = &self.step.clock;
+                let asked = clock.monotonic_nanos();
                 let page = self.step.storage.read_due(self.queue, part, from, PAGE)?;
-                self.took = Some(asked.elapsed());
+                self.took = Some(between(asked, clock.monotonic_nanos()));
                 (asked, page)
             }
         };
         self.retrying = page.retrying;
         if let Some(left) = page.next_due_in() {
-            waits.wakes_at(asked + left);
+            waits.wakes_at(asked.saturating_add(nanos(left)));
         }
         Ok((asked, page))
     }
@@ -177,7 +180,7 @@ fn due_retries(page: &DueQueue) -> u64 {
 }
 
 /// Each entry of `page`, asked at `asked`, with how long it still waits.
-fn read(page: &DueQueue, asked: Instant) -> impl Iterator<Item = Read> + '_ {
+fn read(page: &DueQueue, asked: i128) -> impl Iterator<Item = Read> + '_ {
     page.held
         .iter()
         .map(move |held| (held.clone(), page.due_in(held), asked))

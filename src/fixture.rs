@@ -277,6 +277,6 @@ pub fn send_step_of(
         (&cluster, node),
         Arc::clone(storage),
         tuning,
-        None,
+        (None, Arc::new(xcore::SystemClock)),
     )))
 }
