@@ -252,9 +252,15 @@ fn fill(content: &mut dyn Read, chunk: usize) -> Result<Vec<u8>, String> {
 }
 
 /// Xmip Storage in this process's memory, sealed under a key held in
-/// memory, for a test's Runtime to borrow for the test's length.
-#[cfg(test)]
-pub(crate) fn in_memory() -> &'static Arc<dyn XmipStorage> {
+/// memory, for a test's Runtime to borrow for the test's length: this
+/// crate's tests and xmip-core-operate's.
+///
+/// # Panics
+/// When the storage in memory does not open, which a test must not go on
+/// without.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn in_memory() -> &'static Arc<dyn XmipStorage> {
     use persist::fixture::Memory;
     let keys = secret::Held::new(secret::fixture::Memory::default());
     let kek = secret::KekName::new(crate::storage::KEK).expect("a name");

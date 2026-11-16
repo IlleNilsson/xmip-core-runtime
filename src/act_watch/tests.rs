@@ -5,6 +5,7 @@
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use audit_file::FileSink;
 use node::{Capability, NodeRole};
 use observe::{Act, Noun, Order};
 use path::expression::Expression;
@@ -37,7 +38,10 @@ fn storage() -> Arc<dyn XmipStorage> {
 
 fn audit() -> ProgramAudit {
     let at = std::env::temp_dir().join(format!("xmip-act-watch-audit-{}", std::process::id()));
-    ProgramAudit::new("xmip-core-runtime act watch tests", Some(&at))
+    ProgramAudit::new(
+        "xmip-core-runtime act watch tests",
+        Some(FileSink::new(&at)),
+    )
 }
 
 /// The node at `node` routing by the Subscription `Orders` over `storage`,

@@ -7,6 +7,7 @@
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use audit_file::FileSink;
 use transport::{Acknowledgement, Arrivals, Directions, Transport, TransportError};
 use xaudit::program_audit::ProgramAudit;
 use xmip_core_runtime::ledger::CHUNK;
@@ -109,7 +110,7 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
             pace: xmip_core_runtime::tuning::Tuning::default().pace(),
             audit: Some(ProgramAudit::new(
                 "xmip-runtime untold tests",
-                Some(&audited),
+                Some(FileSink::new(&audited)),
             )),
         };
         let stopping = xmip_core_runtime::stopping::Stopping::default();
@@ -123,7 +124,7 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
     ended.expect("the Location went on, and stopped when asked");
     xaudit::keeper::settle();
     let text =
-        std::fs::read_to_string(audited.join(xaudit::file_sink::FILE_NAME)).expect("audited");
+        std::fs::read_to_string(audited.join(xaudit::audit_store::FILE_NAME)).expect("audited");
     let told = text.matches("could not tell its far end").count();
     assert_eq!(told, 2, "once for each reason: {text}");
     assert!(text.contains("Receive Location 'In'"), "{text}");

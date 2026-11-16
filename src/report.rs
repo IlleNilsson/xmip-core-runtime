@@ -15,7 +15,9 @@
 //! (ADR-0072 Open 1), and each data domain kept where
 //! [`storage::keeping`] decides, the one decision a node starts by. A
 //! module adds a Report or a Quest with [`carry`]. The export is
-//! `ffi/report.rs`.
+//! xmip-core-operate's `ffi/report.rs`, which hands in the audit a probe is
+//! recorded in ([`Audited`]): the sink is the program's, never the
+//! runtime's (ADR-0062, amendment 2026-11-16).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,6 +38,11 @@ use crate::storage::{self, Keeping};
 
 /// The action a probe is audited under, and its last one read back by.
 pub const PROBED: &str = "quest.probe";
+
+/// The audit of `program` whose records go to the directory stated, or
+/// where the audit capability's rule says with none stated: made by the
+/// program that runs, with the sink it links.
+pub type Audited<'a> = &'a dyn Fn(&str, Option<&Path>) -> ProgramAudit;
 
 /// Every Report: Xmip's own and each one carried, once the first is
 /// carried; Xmip's own alone until then.
@@ -76,12 +83,17 @@ fn listed<Read>(read: impl FnOnce(&Reports) -> Read) -> Read {
 /// for a caller with `room` bytes for the answer. An `open` whose answer
 /// is longer than `room` is answered for its length alone, and its probe is
 /// not audited: the caller asks again with room for it (section 5), and
-/// that call's probe is the one recorded.
+/// that call's probe is the one recorded, in the audit `audited` makes.
 ///
 /// # Errors
 /// As [`Unanswered`] says, for an act that is none, arguments that do not
 /// read, and what `list` and `open` refuse or fail at.
-pub fn act(act: &str, arguments: &str, room: usize) -> Result<String, Unanswered> {
+pub fn act(
+    act: &str,
+    arguments: &str,
+    room: usize,
+    audited: Audited<'_>,
+) -> Result<String, Unanswered> {
     let arguments = if arguments.trim().is_empty() {
         "{}"
     } else {
@@ -89,7 +101,7 @@ pub fn act(act: &str, arguments: &str, room: usize) -> Result<String, Unanswered
     };
     match act {
         "list" => list(&given(arguments)?),
-        "open" => open(&given(arguments)?, room),
+        "open" => open(&given(arguments)?, room, audited),
         other => Err(Unanswered::Refused(format!(
             "REFUSED: {other:?} is no act on the Reports; list or open."
         ))),
@@ -206,7 +218,7 @@ impl LastProbes for AuditProbes {
 /// The Report asked for opened: its Quest probes the configuration at the
 /// path given, and the probe is audited where its answer fits `room`. A
 /// Report that cannot be opened is refused before anything is read.
-fn open(asked: &Opening, room: usize) -> Result<String, Unanswered> {
+fn open(asked: &Opening, room: usize, audited: Audited<'_>) -> Result<String, Unanswered> {
     let refused = |said: String| Unanswered::Refused(format!("REFUSED: {said}."));
     if asked.program.trim().is_empty() {
         return Err(refused(
@@ -238,7 +250,7 @@ fn open(asked: &Opening, room: usize) -> Result<String, Unanswered> {
     })
     .map_err(Unanswered::Refused)?;
     if answer.len() <= room {
-        record(asked, &installation, took)?;
+        record(asked, &installation, took, audited)?;
     }
     Ok(answer)
 }
@@ -268,8 +280,14 @@ fn configuration(text: &str, node: Option<&str>) -> Result<XmipConfigurationDocu
     }
 }
 
-/// One probe audited: the program's record of it, finished.
-fn record(asked: &Opening, installation: &Composed, took: Duration) -> Result<(), Unanswered> {
+/// One probe audited: the program's record of it, finished, in the audit
+/// `audited` makes.
+fn record(
+    asked: &Opening,
+    installation: &Composed,
+    took: Duration,
+    audited: Audited<'_>,
+) -> Result<(), Unanswered> {
     let node = &installation.configuration.service.node_name;
     let took_ms = answer::milliseconds(took);
     let mut properties = BTreeMap::from([
@@ -286,7 +304,7 @@ fn record(asked: &Opening, installation: &Composed, took: Duration) -> Result<()
         "The {} Report's Quest probed {probed} in {took_ms} ms and changed nothing.",
         asked.report
     );
-    ProgramAudit::new(&asked.program, stated(&asked.directory))
+    audited(&asked.program, stated(&asked.directory))
         .record(
             PROBED,
             ExecutionPhase::Finished,

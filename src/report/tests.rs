@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use audit_file::FileSink;
 use report::{AtRest, Data, Installation, Report, Reports, answer};
 use serde_json::{Value, json};
 use xaudit::audit_query::AuditQuery;
 use xaudit::audit_store;
+use xaudit::program_audit::ProgramAudit;
 
 use super::{Composed, PROBED, Unanswered, act, carry, configuration};
 
@@ -35,13 +37,18 @@ fn written(folder: &Path, text: &str) -> String {
     path.display().to_string()
 }
 
+/// The audit a probe is recorded in, as a program makes it: the file sink.
+fn audited(program: &str, directory: Option<&Path>) -> ProgramAudit {
+    ProgramAudit::new(program, FileSink::stated(directory))
+}
+
 fn opened(arguments: &Value) -> Result<Value, Unanswered> {
-    act("open", &arguments.to_string(), usize::MAX)
+    act("open", &arguments.to_string(), usize::MAX, &audited)
         .map(|answer| serde_json::from_str(&answer).expect("JSON"))
 }
 
 fn listing(arguments: &Value) -> Result<Value, Unanswered> {
-    act("list", &arguments.to_string(), usize::MAX)
+    act("list", &arguments.to_string(), usize::MAX, &audited)
         .map(|answer| serde_json::from_str(&answer).expect("JSON"))
 }
 

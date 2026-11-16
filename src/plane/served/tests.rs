@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use audit_file::FileSink;
 use context::{AuthenticatedIdentity, Verified};
 use net::fixture::pinging::{Pinging, calmed};
 use net::http2::Limits;
@@ -22,7 +23,7 @@ use crate::plane::{Board, Grants};
 fn a_connections_frames_in_a_span_are_counted_on_the_listeners_clock() {
     let pings = u64::from(Limits::DEFAULT.control_frames) * 3 / 5;
     let at = std::env::temp_dir().join(format!("xmip-runtime-served-{}", std::process::id()));
-    let audit = ProgramAudit::new("xmip-core-runtime tests", Some(&at));
+    let audit = ProgramAudit::new("xmip-core-runtime tests", Some(FileSink::new(&at)));
     let caller = AuthenticatedIdentity::new(
         xcore::mechanism::peer_credentials(),
         r"HOST\surface",

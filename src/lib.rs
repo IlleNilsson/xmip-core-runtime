@@ -1,5 +1,7 @@
 //! The Xmip runtime: a node started from its configuration, the message path
-//! it runs, and the native library the operator surfaces load.
+//! it runs, and the operate plane's two ends. The native library the
+//! operator surfaces load is xmip-core-operate's, over this crate (ADR-0058,
+//! amendment 2026-11-16).
 //!
 //! [`running::activation::started`] starts a node by the slices its trust
 //! admits ([`signed`]), in order: [`running::Running::start`] runs ADR-0018's
@@ -13,8 +15,8 @@
 //! Two builds (ADR-0014, amendment 2026-10-14). The `node` feature, the
 //! default, is all of the above. The `remote` feature alone is a surface
 //! that follows nodes over their operate listener and runs none, the
-//! phone: [`plane`]'s surface end and the exports a surface reads with
-//! (`xmip_operate.h` sections 7, 8, 9, 18 and section 17's client).
+//! phone: [`plane`]'s surface end, which xmip-core-operate's remote build
+//! exports (`xmip_operate.h` sections 7, 8, 9, 18 and section 17's client).
 
 #[cfg(feature = "node")]
 pub mod act_watch;
@@ -35,8 +37,6 @@ pub mod dead_message;
 pub mod declared;
 #[cfg(feature = "node")]
 pub mod departure;
-#[cfg(feature = "node")]
-pub mod design;
 #[cfg(feature = "node")]
 pub mod directory_watch;
 #[cfg(feature = "node")]
@@ -60,8 +60,6 @@ pub mod linked;
 pub mod membership;
 #[cfg(feature = "node")]
 pub mod message_path;
-#[cfg(feature = "node")]
-pub mod operator;
 #[cfg(feature = "node")]
 pub mod operator_certificate;
 #[cfg(feature = "node")]
@@ -122,7 +120,5 @@ pub mod storage;
 pub mod stream_share;
 #[cfg(feature = "node")]
 pub mod tuning;
-#[cfg(feature = "remote")]
-mod wire;
 #[cfg(feature = "node")]
 pub mod work_step;

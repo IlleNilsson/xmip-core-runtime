@@ -36,7 +36,7 @@
 //! Subscriptions and holds what it opens in their queues.
 //!
 //! The one [`Pickup`] of each node in this process is registered, so the
-//! runtime's library lists and acts on it (`xmip_operate.h` section 14).
+//! operate library lists and acts on it (`xmip_operate.h` section 14).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -92,7 +92,7 @@ fn uri(node: &str, name: &str) -> String {
 impl Pickup {
     /// The Subscriptions of the node at `node` (`xmip:///<cluster>/node/<name>`),
     /// each with its standing and what it holds read back from `storage`,
-    /// registered for the runtime's library. `audit` records every act. A
+    /// registered for the operate library. `audit` records every act. A
     /// queue read again waits on the operating system's clock; a node's
     /// pickup is [`Pickup::timed_by`] its own.
     ///
@@ -135,7 +135,7 @@ impl Pickup {
     /// The pickup of a node at `node` that routes by no Subscription: one
     /// that starts no Receive Location and runs no Work Process, though its
     /// slice carries the cluster's Subscriptions. It publishes none, and an
-    /// act on one is refused in words; registered for the runtime's library
+    /// act on one is refused in words; registered for the operate library
     /// as every node's is (ADR-0018 and ADR-0056, amendments 2026-11-11).
     ///
     /// # Errors
@@ -358,17 +358,14 @@ impl Pickup {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::time::Duration;
 
-    use journey::{Journey, JourneyMessageRef};
-    use path::expression::Expression;
-    use persist::storage::{AuditEntry, AuditFacts, MessageFacts, MessageRecord, Publication};
-    use route::{Promoted, Subscriber, publish};
-    use xcore::{AuditId, IdGenerator, MessageId, StreamId, UuidV7Generator};
+    use journey::Journey;
 
     use super::*;
-    use crate::fixture::{Failing, Operation};
+    use crate::fixture::{Failing, Operation, published, subscription};
+    use audit_file::FileSink;
 
     /// This module's node: the test cluster's first, named apart so no other
     /// test's pickup is listed with it.
@@ -379,60 +376,9 @@ pub(crate) mod tests {
         )
     }
 
-    pub(crate) fn subscription(name: &str) -> route::Subscription {
-        route::Subscription::new(
-            name,
-            Subscriber::SendPort("Out".to_string()),
-            Expression::parse("true").expect("compiles"),
-        )
-    }
-
     fn opened(storage: &Arc<dyn XmipStorage>) -> Arc<Pickup> {
         let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
         Pickup::open(&node(), configured, Arc::clone(storage), None).expect("opened")
-    }
-
-    /// One Message matched to every one of `subscriptions`, published
-    /// through `pickup` into `storage` as the receive path publishes it,
-    /// `body` kept beside what is held: how many were held, or why the
-    /// Publication was not taken.
-    pub(crate) fn published(
-        pickup: &Pickup,
-        storage: &dyn XmipStorage,
-        subscriptions: &[route::Subscription],
-        body: &str,
-    ) -> Result<usize, String> {
-        let ids = UuidV7Generator;
-        let routing = publish(&Promoted::new(), subscriptions);
-        let message = MessageId::new(ids.next_u128());
-        let held = JourneyMessageRef {
-            message_id: message,
-            stream_id: StreamId::new(ids.next_u128()),
-        };
-        let opened = crate::ledger::opened(&routing, pickup, held, &ids);
-        let journeys: Vec<Journey> = opened.iter().map(|o| o.journey.clone()).collect();
-        let holding = pickup.holding(&opened, || body.as_bytes().to_vec());
-        let publication = Publication {
-            message: MessageRecord {
-                message,
-                body: Vec::new(),
-                facts: MessageFacts::default(),
-            },
-            journeys: journeys.iter().map(crate::ledger::journey_record).collect(),
-            held: holding.holds().to_vec(),
-            dead: None,
-            audit: AuditEntry {
-                id: AuditId::new(ids.next_u128()),
-                body: Vec::new(),
-                audited: None,
-                facts: AuditFacts::default(),
-            },
-            claims: Vec::new(),
-            lease_nanos: 0,
-        };
-        storage.publish(publication).map_err(|e| e.to_string())?;
-        pickup.published(&holding);
-        Ok(holding.holds().len())
     }
 
     fn route(pickup: &Pickup, storage: &Arc<dyn XmipStorage>, body: &str) -> usize {
@@ -569,7 +515,7 @@ pub(crate) mod tests {
     fn a_remove_or_a_subscription_not_configured_is_refused_and_every_act_is_audited() {
         let at = std::env::temp_dir().join(format!("xmip-pickup-audit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&at);
-        let audit = ProgramAudit::new("xmip-runtime pickup tests", Some(&at));
+        let audit = ProgramAudit::new("xmip-runtime pickup tests", Some(FileSink::new(&at)));
         let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
         let storage = Arc::clone(crate::ledger::in_memory());
         let pickup = Pickup::open(&node(), configured, storage, Some(audit)).expect("opened");
@@ -589,7 +535,7 @@ pub(crate) mod tests {
         pickup.act("orders", Act::Resume, "ilian").expect("resumed");
 
         xaudit::keeper::settle();
-        let text = std::fs::read_to_string(at.join(xaudit::file_sink::FILE_NAME)).expect("kept");
+        let text = std::fs::read_to_string(at.join(xaudit::audit_store::FILE_NAME)).expect("kept");
         assert!(text.contains("action = \"subscription.pause\""), "{text}");
         assert!(text.contains("action = \"subscription.resume\""), "{text}");
         assert!(text.contains("\"by\" = \"ilian\""), "{text}");

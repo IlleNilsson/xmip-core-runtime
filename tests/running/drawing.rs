@@ -100,7 +100,8 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
     assert!(declared.can(node::Stage::Send), "{evidence}");
 
     // Its pickup routes by none (`Pickup::routing_none`), which section 14
-    // lists as none and refuses an act on in words (`ffi::subscription`):
+    // lists as none and refuses an act on in words (the operate library's
+    // `ffi::subscription`):
     // the publication, section 14 and an order agree.
     assert!(running.pickup().standing().is_empty(), "it takes none up");
     let refused = running

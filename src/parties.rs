@@ -16,7 +16,7 @@
 //!
 //! A node serving lends its Parties to its process while it serves
 //! ([`Parties::serve`]): a program in that process — one that loaded the
-//! runtime's library and subscribes to Events — is the account the
+//! operate library and subscribes to Events — is the account the
 //! operating system names, resolved through them ([`Parties::serving`]),
 //! and never a Party it names (ADR-0019, amendment 2026-11-11).
 

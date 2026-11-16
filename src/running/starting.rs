@@ -188,7 +188,7 @@ impl Running {
 
 /// Phases 2 to 5: what the node starts, bound; every gate, filter and
 /// compiled call checked against what the program linked; the Parties lent
-/// to this process while it serves (`ffi::event`), and its connects' SYN
+/// to this process while it serves (the operate library's `ffi::event`), and its connects' SYN
 /// retransmission (`net::retransmit_by`); the receive policies set
 /// up from the Locations it starts, before the capabilities are registered;
 /// and the Host Services its Modules need, started.
@@ -214,7 +214,8 @@ fn validated(
     } = check(&tree, linked)
         .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
     // Lent to this process while the node serves: a program in it is
-    // resolved through them, never by a Party it names (`ffi::event`).
+    // resolved through them, never by a Party it names (the operate library's
+    // `ffi::event`).
     let parties = Arc::new(parties);
     Parties::serve(&parties);
     // Lent the same way: every TCP connect the process makes from here on,
@@ -276,7 +277,7 @@ fn opened(
     .map_err(|problems| Refusal::at(StartupPhase::AcceptWork, problems))
 }
 
-/// The node's send step, registered for the runtime's library, and its work
+/// The node's send step, registered for the operate library, and its work
 /// step over the Work Processes `running` opened, both over `storage`, each
 /// step's decisions — scans, timers, leases, retries due — on `clock`.
 fn steps(

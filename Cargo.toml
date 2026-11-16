@@ -7,41 +7,42 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-runtime"
-description = "The Xmip runtime: a node started from its configuration and the technologies its program links, the message path it runs, and the native library the operator surfaces load."
+description = "The Xmip runtime: a node started from its configuration and the technologies its program links, the message path it runs, and the operate plane's two ends."
 
 [lib]
 path = "src/lib.rs"
-# rlib for the estate, cdylib for the surfaces. ADR-0014: the xmip executable,
-# the PowerShell module and the GUI are .NET and P/Invoke a C ABI, so there
-# has to be a native library that exports xmip_operate_v1 for them to load.
-# This is it.
-crate-type = ["rlib", "cdylib"]
+# An rlib alone: the native library the surfaces load, exporting
+# xmip_operate.h over this crate, is xmip-core-operate's (ADR-0058, amendment
+# 2026-11-16).
+crate-type = ["rlib"]
 
 [lints.rust]
 # deny, not forbid, because forbid cannot be lowered anywhere. The runtime's
 # C boundary is one folder, src/ffi/ (ADR-0050, refined 2026-09-25): the
-# operator's table and the exports of xmip_operate.h sections 5 to 11
-# (ADR-0027, the boundary facing out), and the loader that opens somebody
-# else's library and calls through its table (ADR-0057, the boundary facing
-# in). Each file there allows unsafe at its top with its reason; nothing
-# outside the folder may, and test/Unsafe.Test.ps1 holds it.
+# loader that opens somebody else's library and calls through its table
+# (ADR-0057, the boundary facing in) and the calls a directory watch makes.
+# The boundary facing out, xmip_operate.h, is xmip-core-operate's (ADR-0050,
+# amendment 2026-11-16). Each file there allows unsafe at its top with its
+# reason; nothing outside the folder may, and test/Unsafe.Test.ps1 holds it.
 unsafe_code = "deny"
 
-# What a remote surface needs — `abi`, `node`, `observe`, `net`, `tls`,
+# What a remote surface needs — `node`, `observe`, `net`, `tls`,
 # `serde_json` and the local endpoint's connecting end — is always linked; every
 # dependency marked optional is the running node's, and only the `node`
 # feature turns it on (see [features]).
 [dependencies]
 serde ={ version = "1", features = ["derive"], optional = true }
-# Section 10 hands an Xmip Application's routes and edits to the designer's
-# language server as JSON, in memory only (ADR-0031 clause 2, ADR-0064).
+# The operate plane's calls and answers, and the catalogue and the Reports a
+# surface is handed, as JSON, in memory only (ADR-0031 clause 2).
 serde_json = "1"
 # Optional: only a node that loads modules links a loader, and only the
 # dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
 # nothing more — the flags specification section 3 requires are passed by
 # ffi/loaded_module.rs, which does not take the crate's defaults on Windows.
 libloading = { version = "0.9", optional = true }
-abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main" }
+# A module's manifest and the table a loaded module is called through
+# (`xmip_module.h`).
+abi = { package = "xmip-core-abi", git = "https://github.com/IlleNilsson/xmip-core-abi", branch = "main", optional = true }
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 context = { package = "xmip-core-context", git = "https://github.com/IlleNilsson/xmip-core-context", branch = "main", optional = true }
 journey = { package = "xmip-core-journey", git = "https://github.com/IlleNilsson/xmip-core-journey", branch = "main", optional = true }
@@ -57,9 +58,10 @@ authenticate = { package = "xmip-core-authenticate", git = "https://github.com/I
 send = { package = "xmip-core-send", git = "https://github.com/IlleNilsson/xmip-core-send", branch = "main", optional = true }
 authorize = { package = "xmip-core-authorize", git = "https://github.com/IlleNilsson/xmip-core-authorize", branch = "main", optional = true }
 route = { package = "xmip-core-route", git = "https://github.com/IlleNilsson/xmip-core-route", branch = "main", optional = true }
-# Section 9: a program's audit record, forwarded to the capability that owns
-# it (ADR-0062). xaudit, as xcore, because the export's own file is ffi/audit.rs.
-xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
+# What a node audits, through the capability that owns it (ADR-0062).
+# xaudit, as xcore, because xmip-core-operate's export of it is
+# ffi/audit.rs.
+xaudit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main", optional = true }
 # Section 11: Events, subscribed from any language: the Event and its
 # filter are the event crate's (ADR-0065). xevent, as xaudit, because the
 # export's own file is ffi/event.rs.
@@ -108,17 +110,16 @@ secret = { package = "xmip-core-secret", git = "https://github.com/IlleNilsson/x
 # the local endpoint's named pipe on Windows (`net::pipe`).
 net ={ package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
-# A person's certificate (ADR-0034, amendment 2026-10-15): the request a
-# surface makes — the phone's build too — and, on a node's, the signing by
-# the authority `[provision.operator]` names. The capability alone; the
-# runtime links no technology of it.
-provision = { package = "xmip-core-provision", git = "https://github.com/IlleNilsson/xmip-core-provision", branch = "main" }
-# The private key a request is made with is overwritten when its answer is
-# dropped.
-zeroize = "1"
+# A person's certificate (ADR-0034, amendment 2026-10-15), signed on a node
+# by the authority `[provision.operator]` names, and a node's own. The
+# capability alone; the runtime links no technology of it.
+provision = { package = "xmip-core-provision", git = "https://github.com/IlleNilsson/xmip-core-provision", branch = "main", optional = true }
 # A test authority and each end's certificate, for the operate plane's
 # tests (`fixture::authority`): only the test-support feature turns it on.
 rcgen = { version = "0.14", optional = true }
+# A test's Subscription written as the expression its filter is
+# (`fixture::subscription`): only the test-support feature turns it on.
+path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main", optional = true }
 # The one byte cursor a loaded contract reads the content through, the
 # percent-encoding of a call's refusal, and the wide string a directory
 # watch names its directory to Windows by (`codec::wide`).
@@ -128,7 +129,7 @@ codec ={ package = "xmip-core-library-codec", git = "https://github.com/IlleNils
 # event that ends its wait. The local operate endpoint's pipe on Windows is
 # `net::pipe`'s (ADR-0014, amendment 2026-10-21).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"], optional = true }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
 # its name, and the group a shared socket belongs to. Only the node's side
@@ -176,6 +177,9 @@ route-party = { package = "xmip-core-route-party", git = "https://github.com/Ill
 # (`linked::Linked::retry`), so a Send Port's `retry` is judged as
 # xmip-service judges it.
 retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
+# The sink a test hands its audit, as a program hands it, read back from
+# the file: the file technology of the audit capability.
+audit-file = { package = "xmip-core-audit-file", git = "https://github.com/IlleNilsson/xmip-core-audit-file", branch = "main" }
 # The tests write a Subscription's filter as the expression it is (ADR-0066).
 path = { package = "xmip-core-path", git = "https://github.com/IlleNilsson/xmip-core-path", branch = "main" }
 # One real transport with a loopback far end, so a test starts a node that
@@ -213,19 +217,19 @@ default = ["node"]
 # `send_step`, the Ledger, Xmip Storage), the service and its registration,
 # the runtime store (`persist`) and its key home (`secret`), the transports
 # a program links, and the node's side of the operate plane — the operate
-# listener and its board (`plane::listener`, `plane::served`), with
-# `xmip_operate.h` sections 1, 5, 6 and 10 to 16, section 17's serve
-# exports, section 19's signing (`xmip_operator_sign_v1`, by the authority
-# `[provision.operator]` names) and section 21, a host's listener in Xmip's
-# own protection and the certificate an authority issues it
-# (`secure_listener`), and section 22, a node's certificate from the
-# cluster's authority (`ffi::node_certificate`), and section 23, the
-# cluster's authority kept in a folder and a node's certificate carried
-# across an air gap (`ffi::authority`), and section 25, every Report listed
-# and a Quest probing a node's configuration (`ffi::report`, over
-# `report`). Everything a remote surface has, too.
+# listener and its board (`plane::listener`, `plane::served`) — with what
+# xmip-core-operate's node build exports over it: a person's request signed
+# by the authority `[provision.operator]` names (`operator_certificate`), a
+# host's listener in Xmip's own protection and the certificate an authority
+# issues it (`secure_listener`), and every Report listed and a Quest probing
+# a node's configuration (`report`, over `report`). Everything a remote
+# surface has, too.
 node = [
     "remote",
+    "dep:abi",
+    "dep:xaudit",
+    "dep:provision",
+    "dep:windows-sys",
     "dep:serde",
     "dep:context",
     "dep:journey",
@@ -254,16 +258,10 @@ node = [
 ]
 # A surface that follows nodes on other machines and runs none, the phone
 # (ADR-0014, amendment 2026-10-14): `plane::remote` and the operate plane's
-# call, local endpoint and role it stands on, with `xmip_operate.h` section
-# 7 (the rules), section 8 (a publication read), section 9 (a program's audit
-# record), section 18 (the role and the gate), section 17's client exports
-# (`xmip_remote_*`, the kept open too) and section 19's request
-# (`xmip_operator_request_v1`, a person's key and request, and its two
-# halves around a keeper's signature, `xmip_operator_information_v1` and
-# `xmip_operator_assemble_v1`, and the chain and anchors kept whole,
-# `xmip_operator_keep_v1`), and a refusal's message percent-encoded on the
-# call (`codec::percent`), with the authenticated identity the gate's role
-# check takes (`context::AuthenticatedIdentity`). Built alone with
+# call, local endpoint and role it stands on, which xmip-core-operate's
+# remote build exports, and a refusal's message percent-encoded on the call
+# (`codec::percent`), with the authenticated identity the gate's role check
+# takes (`context::AuthenticatedIdentity`). Built alone with
 # `--no-default-features --features remote`.
 remote = ["dep:codec", "dep:authorize", "dep:context"]
 # ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
@@ -272,10 +270,18 @@ remote = ["dep:codec", "dep:authorize", "dep:context"]
 # silently always false.
 dynamic-loading = ["node", "dep:libloading"]
 # The gates' stand-ins the runtime's tests run a node with (`fixture`),
-# placed once for its unit tests and its integration tests. Enabled only by
-# the dev-dependency on this crate below, so never in a production build.
-# It names its nodes from the test cluster's `cluster.xmip` (`configure::fixture`).
-test-support = ["configure?/test-support", "dep:rcgen"]
+# placed once for its unit tests, its integration tests and
+# xmip-core-operate's, with Xmip Storage in memory (`ledger::in_memory`).
+# Enabled only by a dev-dependency on this crate, so never in a production
+# build. It names its nodes from the test cluster's `cluster.xmip`
+# (`configure::fixture`).
+test-support = [
+    "configure?/test-support",
+    "persist?/test-support",
+    "secret?/test-support",
+    "dep:rcgen",
+    "dep:path",
+]
 
 # Every integration suite runs a node.
 [[test]]
