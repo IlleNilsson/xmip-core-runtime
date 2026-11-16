@@ -210,7 +210,8 @@ fn a_monitoring_node_gathers_every_member_itself_in_process_and_follows_them_ane
             };
         }
         let address = member.operate.clone().unwrap_or_default();
-        let through = Remote::retrying(&address, &identity, vec![Duration::from_millis(50)])
+        let retry = vec![Duration::from_millis(50)];
+        let through = Remote::retrying(&address, &identity, retry, Arc::new(xcore::SystemClock))
             .map(|remote| Arc::new(remote) as Arc<dyn Follow>);
         Reach {
             at: format!("at {address}"),

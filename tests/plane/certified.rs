@@ -21,6 +21,7 @@ pub fn node(authority: &Authority, board: &Arc<Board>, grants: Grants) -> (Liste
         Arc::clone(board) as Arc<dyn xmip_core_runtime::plane::Published>,
         grants,
         &audit,
+        Arc::new(xcore::SystemClock),
     )
     .expect("it serves");
     (served, audit)
@@ -38,6 +39,7 @@ pub fn remote_as(authority: &Authority, listener: &Listener, name: &str) -> Remo
         &address,
         &authority.identity(name),
         vec![Duration::from_millis(50)],
+        Arc::new(xcore::SystemClock),
     )
     .expect("a remote")
 }

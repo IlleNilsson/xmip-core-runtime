@@ -28,7 +28,8 @@
 //! replay a certificate it once saw.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
+use xcore::Clock;
 use xcore::lock::Locked;
 
 use authenticate::x509::{Anchors, Chain, Usage, verify};
@@ -68,12 +69,13 @@ type Known = (AuthenticatedIdentity, i64);
 
 impl Relaying {
     /// The accounts and subjects `relay` names, relaying callers whose
-    /// certificates reach `anchors` (PEM).
+    /// certificates reach `anchors` (PEM), the nonces it issues them fresh
+    /// on `clock`, the node's.
     ///
     /// # Errors
     ///
     /// Anchors that hold no certificate, in words.
-    pub fn new(relay: Vec<String>, anchors: &str) -> Result<Self, String> {
+    pub fn new(relay: Vec<String>, anchors: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
         let anchors = Anchors::from_pem(anchors).map_err(|failed| failed.to_string())?;
         if anchors.is_empty() {
             return Err("[operate] relay needs anchors that hold a certificate".to_string());
@@ -81,7 +83,7 @@ impl Relaying {
         Ok(Self {
             relay,
             anchors,
-            fresh: Fresh::default(),
+            fresh: Fresh::timed_by(clock),
             vouched: Mutex::default(),
             known: Mutex::default(),
         })
@@ -293,13 +295,36 @@ pub fn unvouched(relaying: &Relaying, through: &str, message: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::fixture::Authority;
+    use crate::plane::fresh::WITHIN;
+    use std::time::Duration;
+    use xcore::clock::Stepped;
+
+    fn relaying(anchors: &str, clock: Arc<dyn Clock>) -> Relaying {
+        Relaying::new(vec!["HOST\\gui".to_string()], anchors, clock).expect("anchors")
+    }
+
+    #[test]
+    fn its_nonces_are_fresh_on_the_clock_it_was_handed() {
+        let (_, _, anchors) = Authority::new().pem("alice");
+        let clock = Arc::new(Stepped::default());
+        let relaying = relaying(&anchors, Arc::clone(&clock) as Arc<dyn Clock>);
+        let issued = relaying.fresh.issue("HOST\\gui", b"leaf", 2);
+        let (first, second) = (vec![issued[0].to_vec()], vec![issued[1].to_vec()]);
+        let short = WITHIN.checked_sub(Duration::from_nanos(1));
+        clock.pass(short.expect("a span of seconds"));
+        let spent = relaying.fresh.spend(&first, "HOST\\gui");
+        assert_eq!(spent, Some(b"leaf".to_vec()), "fresh within its span");
+        clock.pass(Duration::from_nanos(1));
+        let stale = relaying.fresh.spend(&second, "HOST\\gui");
+        assert_eq!(stale, None, "stale at its span on the node's Clock");
+    }
 
     #[test]
     fn a_caller_is_vouched_for_by_its_certificate_and_known_through_its_relay_alone() {
         let authority = Authority::new();
         let (person, _, anchors) = authority.pem("alice");
         let leaf = Chain::from_pem(&person).expect("a chain").leaf().to_vec();
-        let relaying = Relaying::new(vec!["HOST\\gui".to_string()], &anchors).expect("anchors");
+        let relaying = relaying(&anchors, Arc::new(Stepped::default()));
         assert!(relaying.relays("host\\GUI") && !relaying.relays("HOST\\other"));
 
         // The caller holds the role its own certificate is listed with; a
@@ -336,7 +361,7 @@ mod tests {
         let refused =
             vouch(&relaying, "HOST\\gui", &[leaf], &grants).expect_err("not under the anchors");
         assert!(refused.starts_with("REFUSED. The certificate"), "{refused}");
-        assert!(Relaying::new(Vec::new(), "").is_err());
+        assert!(Relaying::new(Vec::new(), "", Arc::new(Stepped::default())).is_err());
     }
 
     #[test]
@@ -353,7 +378,7 @@ mod tests {
             .chain(chain.intermediates())
             .map(|certificate| certificate.to_vec())
             .collect();
-        let relaying = Relaying::new(vec!["HOST\\gui".to_string()], &root.pem()).expect("anchors");
+        let relaying = relaying(&root.pem(), Arc::new(Stepped::default()));
         let (_, until) = verified(&relaying, &der, Usage::ClientAuth).expect("verified");
         assert_eq!(until, at + DAY, "the intermediate ends first");
     }

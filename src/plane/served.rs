@@ -392,3 +392,6 @@ pub(crate) fn noted(serve: &Serve, peer: &str, message: &str) {
         properties,
     );
 }
+
+#[cfg(test)]
+mod tests;

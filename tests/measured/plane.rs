@@ -68,6 +68,7 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
         &address.to_string(),
         &authority.identity("surface"),
         vec![Duration::from_millis(50)],
+        Arc::new(xcore::SystemClock),
     )
     .expect("a remote");
 
@@ -93,6 +94,7 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
         Arc::clone(&board) as Arc<dyn xmip_core_runtime::plane::Published>,
         endpoint::listing(Role::Observer, &["CN=surface"]),
         &audit,
+        Arc::new(xcore::SystemClock),
     )
     .expect("it serves");
     let mut state = surface.state();
@@ -161,7 +163,8 @@ fn a_connection_on_this_machine_is_proven_and_answered_within_the_millisecond() 
     let mut rounds = Rounds::crossing(WAKES);
     for _ in 0..200 {
         let answered = rounds.round(|| {
-            Remote::local_retrying(&called, WAIT, vec![Duration::from_millis(50)])
+            let clock = Arc::new(xcore::SystemClock);
+            Remote::local_retrying(&called, WAIT, vec![Duration::from_millis(50)], clock)
                 .and_then(|surface| surface.publication())
         });
         assert!(answered.is_ok(), "{answered:?}");

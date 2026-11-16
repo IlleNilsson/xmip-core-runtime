@@ -30,7 +30,10 @@ fn a_relayed_act_is_the_browsers_by_its_own_role_proven_by_its_handshake_and_aud
     let (_, _, anchors) = authority.pem("anchors");
     let account = running_as().expect("this process's account");
     // Each node its own: its relays, its nonces and the callers it holds.
-    let relaying = || Arc::new(Relaying::new(vec![account.clone()], &anchors).expect("anchors"));
+    let relaying = || {
+        let clock = Arc::new(xcore::SystemClock);
+        Arc::new(Relaying::new(vec![account.clone()], &anchors, clock).expect("anchors"))
+    };
     let board = Arc::new(Board::default());
     let (operating, audit, called) = node(&board, account_as(Role::Operator, &["CN=alice"]));
     operating.relay(relaying());
@@ -72,7 +75,8 @@ fn an_account_that_is_no_relay_or_a_listener_the_node_does_not_trust_acts_for_no
     // The node relays for another account alone: it gives no nonce.
     let (elsewhere, _, called) = node(&board, account_as(Role::Developer, &["CN=bob"]));
     let (_, _, anchors) = authority.pem("anchors");
-    let other = Relaying::new(vec!["NOBODY\\relay".to_string()], &anchors).expect("anchors");
+    let clock = Arc::new(xcore::SystemClock);
+    let other = Relaying::new(vec!["NOBODY\\relay".to_string()], &anchors, clock).expect("anchors");
     elsewhere.relay(Arc::new(other));
     // The node relays for this account, but its anchors are another
     // authority's: the host's listener is none of its own.
@@ -80,7 +84,7 @@ fn an_account_that_is_no_relay_or_a_listener_the_node_does_not_trust_acts_for_no
     let (_, _, theirs) = stranger.pem("anchors");
     let (trusting, _, trusted) = node(&board, account_as(Role::Developer, &["CN=bob"]));
     trusting.relay(Arc::new(
-        Relaying::new(vec![account], &theirs).expect("anchors"),
+        Relaying::new(vec![account], &theirs, Arc::new(xcore::SystemClock)).expect("anchors"),
     ));
     let (untold, unbound) = (reached(&called), reached(&trusted));
     let listener = listening(&authority);
@@ -106,7 +110,7 @@ fn two_browsers_acting_at_once_through_one_surface_each_reach_the_node_as_their_
     let browsers = ["CN=carol", "CN=dave"];
     let (watching, _, called) = node(&board, account_as(Role::Observer, &browsers));
     watching.relay(Arc::new(
-        Relaying::new(vec![account], &anchors).expect("anchors"),
+        Relaying::new(vec![account], &anchors, Arc::new(xcore::SystemClock)).expect("anchors"),
     ));
     let shared = Arc::new(reached(&called));
     let listener = listening(&authority);

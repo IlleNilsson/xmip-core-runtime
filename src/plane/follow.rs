@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use xcore::lock::Locked;
 
 use serde_json::json;
@@ -24,11 +24,12 @@ use crate::plane::shared::Shared;
 /// silence, and on one that keeps none by the process's deadline thread
 /// (`plane::deadline`); a try that ran out says so in the one sentence,
 /// *the node did not answer within …* (until 2026-11-13 the first try of a
-/// hung node waited out the follow's long silence).
+/// hung node waited out the follow's long silence), how long it waited
+/// counted on the surface's Clock (`Shared::ran_out`).
 pub(crate) fn run(shared: &Arc<Shared>) {
     let mut attempt = 0usize;
     while !shared.ending() {
-        let began = Instant::now();
+        let began = shared.clock.monotonic_nanos();
         shared.trying.arm(shared.patience);
         shared.connecting.store(true, Ordering::SeqCst);
         let opened = Line::open(
@@ -44,7 +45,7 @@ pub(crate) fn run(shared: &Arc<Shared>) {
             Ok(line) => held(shared, line),
             Err(why) => (why, false),
         };
-        let ran_out = shared.trying.disarm();
+        let fired = shared.trying.disarm();
         if shared.ending() {
             return;
         }
@@ -55,7 +56,7 @@ pub(crate) fn run(shared: &Arc<Shared>) {
         if answered {
             attempt = 0;
         }
-        let why = if !answered && (ran_out || began.elapsed() >= shared.patience) {
+        let why = if !answered && shared.ran_out(began, fired) {
             deadline::not_answered(shared.patience)
         } else {
             why
@@ -147,8 +148,10 @@ fn pause(shared: &Shared, delay: Duration) {
         .wait_timeout_while(&shared.state, state, delay, |_| !shared.ending());
 }
 
-#[cfg(all(test, feature = "node"))]
+#[cfg(test)]
+#[cfg(feature = "node")]
 mod tests {
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use crate::plane::deadline::{Hung, not_answered};
@@ -166,7 +169,8 @@ mod tests {
             let name = format!("xmip-follow-hung-{}-{round}", std::process::id());
             let _hung = Hung::at(&name);
             let retry = vec![Duration::from_secs(30)];
-            let surface = Remote::local_retrying(&name, within, retry).expect("a surface");
+            let clock = Arc::new(xcore::SystemClock);
+            let surface = Remote::local_retrying(&name, within, retry, clock).expect("a surface");
             let began = Instant::now();
             let state = surface
                 .follow(follows, 0, Duration::from_secs(10))

@@ -78,7 +78,8 @@ impl Running {
 
     /// How it reaches each member: `itself`, the node of that scope, through
     /// `own`, its publication; every other over its operate address,
-    /// presenting its own `[operate]` identity.
+    /// presenting its own `[operate]` identity, the surface telling time by
+    /// the node's Clock.
     fn reaching(&self, itself: &str, own: &Arc<dyn Published>) -> Reaching {
         let identity = self.operate.as_ref().map_or_else(
             || Err(NO_IDENTITY.to_string()),
@@ -92,6 +93,7 @@ impl Running {
             },
         );
         let (itself, own) = (itself.to_string(), gather::own(Arc::clone(own)));
+        let clock = Arc::clone(&self.clock);
         let kept: Mutex<BTreeMap<String, Arc<Remote>>> = Mutex::default();
         Box::new(move |member: &Member| {
             if member.node == itself {
@@ -114,7 +116,7 @@ impl Running {
                     if let Some(remote) = kept.get(address) {
                         return Ok(Arc::clone(remote) as Arc<dyn Follow>);
                     }
-                    let remote = Arc::new(Remote::open(address, identity)?);
+                    let remote = Arc::new(Remote::open(address, identity, Arc::clone(&clock))?);
                     kept.insert(address.to_string(), Arc::clone(&remote));
                     Ok(remote as Arc<dyn Follow>)
                 });

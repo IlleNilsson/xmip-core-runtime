@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+use xcore::Clock;
 use xcore::clock::nanos;
 use xcore::lock::Locked;
-use xcore::{Clock, SystemClock};
 
 use context::AuthenticatedIdentity;
 use serde_json::{Value, json};
@@ -47,15 +47,8 @@ pub struct Fresh {
     clock: Arc<dyn Clock>,
 }
 
-/// None issued, fresh by the operating system's clock.
-impl Default for Fresh {
-    fn default() -> Self {
-        Self::timed_by(Arc::new(SystemClock))
-    }
-}
-
 impl Fresh {
-    /// None issued, each fresh for [`WITHIN`] on `clock`.
+    /// None issued, each fresh for [`WITHIN`] on `clock`, the node's.
     #[must_use]
     pub fn timed_by(clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -161,10 +154,14 @@ impl Fresh {
 mod tests {
     use super::*;
 
+    fn stepped() -> Fresh {
+        Fresh::timed_by(Arc::new(xcore::clock::Stepped::default()))
+    }
+
     #[test]
     fn a_nonce_is_spent_once_by_its_relay_alone_and_names_its_listener() {
-        let fresh = Fresh::default();
-        let other = Fresh::default();
+        let fresh = stepped();
+        let other = stepped();
         let issued = fresh.issue("HOST\\gui", b"leaf", 3);
         assert_eq!(issued.len(), 3);
         let list: Vec<Vec<u8>> = issued.iter().map(|nonce| nonce.to_vec()).collect();

@@ -67,7 +67,9 @@ mod tests {
     fn a_handshake_that_proves_nothing_is_refused_in_words_and_spends_no_nonce() {
         let authority = Authority::new();
         let (_, _, anchors) = authority.pem("anchors");
-        let relaying = Relaying::new(vec!["HOST\\gui".to_string()], &anchors).expect("anchors");
+        let clock = std::sync::Arc::new(xcore::clock::Stepped::default());
+        let relaying =
+            Relaying::new(vec!["HOST\\gui".to_string()], &anchors, clock).expect("anchors");
         let issued = relaying.fresh.issue("HOST\\gui", b"listener", 1);
         let nonces = vec![issued[0].to_vec()];
         let refused =

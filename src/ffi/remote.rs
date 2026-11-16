@@ -11,7 +11,7 @@
 mod act;
 mod cluster;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use xcore::lock::Locked;
 
@@ -71,6 +71,13 @@ unsafe fn handed_text(
         return status::TRUNCATED;
     }
     status::OK
+}
+
+/// What a surface or a listener a program opens through the C ABI tells
+/// time by: the program hands no Clock across the boundary, so the
+/// operating system's (ADR-0068, amendment 2026-11-16).
+pub(crate) fn hosted_clock() -> Arc<dyn xcore::Clock> {
+    Arc::new(xcore::SystemClock)
 }
 
 /// The identity three PEM texts make, or why not.
@@ -143,8 +150,8 @@ unsafe fn remote_open(
     else {
         return status::MALFORMED;
     };
-    let opened =
-        identity(certificate, key, anchors).and_then(|identity| Remote::open(address, &identity));
+    let opened = identity(certificate, key, anchors)
+        .and_then(|identity| Remote::open(address, &identity, hosted_clock()));
     // SAFETY: per the contract above.
     unsafe { handed(opened, out, report, cap, out_len) }
 }
@@ -187,8 +194,9 @@ unsafe fn remote_open_local(
         return status::MALFORMED;
     };
     let within = std::time::Duration::from_millis(u64::from(within_ms));
+    let opened = Remote::local(endpoint, within, hosted_clock());
     // SAFETY: per the contract above.
-    unsafe { handed(Remote::local(endpoint, within), out, report, cap, out_len) }
+    unsafe { handed(opened, out, report, cap, out_len) }
 }
 
 /// A remote opened, as a handle in `out`, or why not in `report`.
