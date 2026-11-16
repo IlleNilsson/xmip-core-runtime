@@ -172,28 +172,25 @@ const fn always(_: &str, _: &[(String, Given)]) -> bool {
 /// test's [`Open`] can wrap it, as the running tests count what a node builds.
 ///
 /// # Errors
-/// What the technology refuses of the Location, its node, guard or secret.
+/// What the technology refuses of the Location, its node, guard, secret or listener.
 pub fn open<T: Configured + Send + Sync + 'static>(
     address: &str,
     side: Applies,
     given: &[(String, Given)],
     on: OnNode<'_>,
 ) -> Opened {
-    Ok(Box::new(built_on(T::open(address, side, given)?, on)?))
+    let built = T::open(address, side, given)?;
+    Ok(Box::new(built_on(built, side, on)?))
 }
 
-/// `built`, a Location's transport, given once, as it is built, its node
-/// (the owner, 2026-10-03; `Configured::on_node`), the keys its far ends are
-/// held to (`pinned_by`), what its node's Locations share (`shared_by`), its
-/// turns' most (`turning_within`), its Clock (`timed_by`), its receives' TLS
-/// (`guarded_by`) and its Location's secret (`secured_by`). Public so a
-/// test's [`Open`] building a transport its own way — on a bench port for a
-/// device — has the node give it the rest.
+/// `built` on `side`, given all [`OnNode`] holds, and a Receive Location's
+/// listener (`Configured::listening`; *Bind at open*); public for a test's [`Open`].
 ///
 /// # Errors
-/// What the technology refuses of its node, its guard or its secret.
+/// What the technology refuses of its node, guard, secret or listener.
 pub fn built_on<T: Configured>(
     built: T,
+    side: Applies,
     (node, guard, pins, sharing, secured, turn, clock): OnNode<'_>,
 ) -> transport::Result<T> {
     let built = built
@@ -203,6 +200,9 @@ pub fn built_on<T: Configured>(
         .turning_within(turn)
         .timed_by(clock)
         .guarded_by(guard)?;
+    if side == Applies::Receive {
+        built.listening()?;
+    }
     match secured {
         Some(secured) => built.secured_by(secured),
         None => Ok(built),

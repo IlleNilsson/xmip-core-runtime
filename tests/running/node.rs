@@ -12,7 +12,7 @@ use http::HttpTransport;
 use tcp::TcpTransport;
 use transport::{Configured, Transport};
 use xcore::settings::{Applies, Given};
-use xmip_core_runtime::fixture::{Always, Open, until_listening};
+use xmip_core_runtime::fixture::{Always, Open};
 use xmip_core_runtime::linked::{Linked, LinkedTransport, OnNode, Opened};
 
 thread_local! {
@@ -170,8 +170,15 @@ pub fn path_text(path: &Path) -> &str {
     path.to_str().expect("a UTF-8 path")
 }
 
-/// Send `payload` to the node at `target` by `sender`, asked again while
-/// its Receive Location has not yet bound (`fixture::until_listening`).
+/// Send `payload` to the node at `target` by `sender`, once: a node's
+/// Receive Location listens from the moment its start returns (the owner,
+/// 2026-11-16, *Bind at open*).
+///
+/// # Panics
+///
+/// Where the node did not take it.
 pub fn deliver(sender: &dyn Transport, target: &str, payload: &[u8]) {
-    until_listening(target, || sender.send(target, payload));
+    sender
+        .send(target, payload)
+        .unwrap_or_else(|failed| panic!("nothing took it at {target}: {failed:?}"));
 }

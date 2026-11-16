@@ -52,7 +52,11 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
     let storage = test_node(&at.join("node"));
     let audited = at.join("audit");
     let http = HttpTransport::new("127.0.0.1:0").timing_out_after(RECEIVE_WAIT);
-    let address = http.listening().expect("bound").to_string();
+    let address = http
+        .listening()
+        .expect("bound")
+        .expect("listens")
+        .to_string();
     let stopping = Stopping::default();
     let (ended, (from, sent)) = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         let location = Receiving {
@@ -80,18 +84,22 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
 }
 
 #[test]
-fn a_listener_that_cannot_bind_stops_the_location() {
+fn a_location_whose_listener_fails_stops() {
+    // Never opened to listen: a receive binds nothing (the owner,
+    // 2026-11-16, *Bind at open*), so the listener's own failure is the
+    // receive's, and stops the Location. A node's start binds it, and a
+    // port that is taken refuses the start (`tests/running`).
     let at = directory("turned-away-listener");
     let storage = test_node(&at.join("node"));
-    let http = HttpTransport::new("127.0.0.1:99999").timing_out_after(RECEIVE_WAIT);
+    let http = HttpTransport::new("127.0.0.1:0").timing_out_after(RECEIVE_WAIT);
     let ended = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
-        let location = location("http://127.0.0.1:99999", Box::new(http), gate);
+        let location = location("http://127.0.0.1:0", Box::new(http), gate);
         let stopping = Stopping::default();
         std::thread::scope(|scope| location.serve(scope, runtime, pickup, &stopping, |_| {}))
     });
     let why = ended.expect_err("no listener, no Location");
     assert!(
-        why.starts_with("the Receive Location 'In' stopped: binding the listener"),
+        why.starts_with("the Receive Location 'In' stopped: nothing listens"),
         "{why}"
     );
     let _ = std::fs::remove_dir_all(&at);

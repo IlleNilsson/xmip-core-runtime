@@ -267,9 +267,11 @@ pub(crate) type Handed<'a> = (
 /// terminate TLS with where the node has one, the most one caller's turn
 /// on its receives takes (`[tuning] receive_turn`), and the secret it
 /// names, read from `secrets` as it connects (ADR-0019, amendment
-/// 2026-10-29), and held to the direction it serves; the Send Ports with
-/// `guards`, as phase
-/// 3 built them ([`check`]).
+/// 2026-10-29), and held to the direction it serves; each Receive
+/// Location listening once built (`crate::linked::built_on`; the owner,
+/// 2026-11-16, *Bind at open*), a port that is taken refusing the start
+/// here, naming the Location, the address and the port; the Send Ports
+/// with `guards`, as phase 3 built them ([`check`]).
 pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,

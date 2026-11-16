@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use http::HttpTransport;
 use net::fixture::unheld;
-use transport::Transport;
 use transport::socket::connect_tcp;
+use transport::{Configured, Transport};
 use xcore::latency::{PlainWake, spread, woke_beside_a_plain_wake, worked_beside_a_plain_wake};
-use xmip_core_runtime::fixture::{Failing, started, until_listening};
+use xmip_core_runtime::fixture::{Failing, started};
 
 use super::node::{linked, node, path_text, written};
 
@@ -30,7 +30,11 @@ fn node_keeping_connections(receive: &str, far: &str) -> String {
 /// it listens.
 fn kept_far_end() -> (HttpTransport, String) {
     let far = HttpTransport::loopback();
-    let address = far.listening().expect("the far end binds").to_string();
+    let address = far
+        .listening()
+        .expect("the far end binds")
+        .expect("listens")
+        .to_string();
     (far, address)
 }
 
@@ -111,10 +115,10 @@ fn eight_senders_at_once_are_carried_side_by_side() {
     })
     .expect("the node starts");
     let counted = counting.lock().expect("held").clone().expect("opened");
-    // Its Receive Location binds on its first receive: the warm-up connect
-    // asks again until it listens; the senders connect after it was taken.
+    // Its Receive Location listens from the moment its start returns (the
+    // owner, 2026-11-16, *Bind at open*): the warm-up connects once.
     posted_as(
-        &mut until_listening(&receive, || connect_tcp(&receive, Some(CONNECT))),
+        &mut connect_tcp(&receive, Some(CONNECT)).expect("taken on its first connect"),
         "warm",
         b"warm",
     );
