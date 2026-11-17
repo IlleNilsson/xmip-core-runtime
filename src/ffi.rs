@@ -10,13 +10,21 @@
 
 #[cfg(all(windows, feature = "node"))]
 pub(crate) mod directory_watch;
+/// The table a module is created with (`XmipHost`), kept beside it.
+#[cfg(feature = "loader")]
+pub(crate) mod host_table;
 /// The contract trait of a loaded module (ADR-0057 clause 8 step 2).
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_contract;
-/// Opening a module for real. Behind the feature that has always named it.
-#[cfg(feature = "dynamic-loading")]
+/// Opening a module for real: what a node opens with, and what a probe
+/// asks through.
+#[cfg(feature = "loader")]
 pub mod loaded_module;
 /// The work process trait of a loaded module: a Work Process unit compiled
 /// from a design (ADR-0066, amendment 2026-10-22).
 #[cfg(feature = "dynamic-loading")]
 pub mod loaded_work_process;
+/// What a module library declares, judged once for every surface
+/// (`xmip_module_probe_v1`; ADR-0012, amendment 2026-11-17).
+#[cfg(feature = "loader")]
+pub mod probed;

@@ -12,73 +12,46 @@
 //! the first call that needs it. A node opens every Module its configuration
 //! starts through here, once, as it starts (`library.rs`, startup phase 6),
 //! and the descriptor the module filled is judged by `abi::accepts`, the one
-//! compatibility rule, beside the descriptor's own.
+//! compatibility rule, beside the descriptor's own. A surface's probe of a
+//! library opens it through here too (`probed.rs`; ADR-0012, amendment
+//! 2026-11-17), so what a node would take and what a probe says are one
+//! opening and one judgment.
 //!
 //! What a loaded module is then *asked* is the trait's subject and lives with
 //! the trait: `loaded_contract.rs` for creation wave one's contract table.
 //!
-//! **This file and `loaded_contract.rs` are the only two in the runtime that
-//! cross the module boundary inward**, both in `ffi/`, the one folder of the
-//! runtime that may hold unsafe code (ADR-0050, refined 2026-09-25).
-//! `operate.rs` and `start.rs` beside them allow
-//! `unsafe` for the boundary that faces the other way (ADR-0027): a surface
-//! handing this process a pointer. Here the process is the host and the
-//! pointer comes out of somebody else's library, so every block below says
-//! which invariant makes it sound — where the pointer came from, how long it
-//! is good for, and who frees it. Specification section 4 is the rule all
-//! three answers serve: whoever allocates, releases, and no allocator is
-//! shared across the boundary.
+//! **This file, the table it hands a module (`host_table.rs`) and the
+//! traits' tables (`loaded_contract.rs`, `loaded_work_process.rs`) are the
+//! runtime's only crossings of the module boundary**, all in `ffi/`, the one
+//! folder of the runtime that may hold unsafe code (ADR-0050, refined
+//! 2026-09-25); the boundary that faces the other way, a surface handing a
+//! process a pointer, is xmip-core-operate's (ADR-0050, amendment
+//! 2026-11-16). Here the process is the host and the pointer comes out of
+//! somebody else's library, so every block below says which invariant makes
+//! it sound — where the pointer came from, how long it is good for, and who
+//! frees it. Specification section 4 is the rule all three answers serve:
+//! whoever allocates, releases, and no allocator is shared across the
+//! boundary.
 //!
 //! Unwinding crosses in neither direction (ADR-0012 clause 8; specification
 //! section 6). Rust aborts the whole process where a panic reaches an
 //! `extern "C"` frame, and the process is a node or a surface's host, so
-//! every callback this host hands a module runs its body through
-//! `abi::guarded`, the boundary's one guard, and answers a panic in words
-//! its type has.
+//! every callback this host hands a module (`host_table.rs`) runs its body
+//! through `abi::guarded`, the boundary's one guard, and answers a panic in
+//! words its type has.
 #![allow(unsafe_code)]
 
+#[cfg(feature = "dynamic-loading")]
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
 use abi::ffi::{CreateModuleFn, Host, Module, Str, status};
-use abi::{Expectation, ModuleDescriptor, XMIP_ABI_VERSION, XMIP_ENTRYPOINT, accepts};
+#[cfg(feature = "dynamic-loading")]
+use abi::{Expectation, accepts};
+use abi::{ModuleDescriptor, XMIP_ENTRYPOINT};
 use libloading::Library;
 
-// ----------------------------------------------------------------------
-// The host table. Header section 6: a module gets no allocator, no thread
-// pool, no clock and no configuration store, and may call all three of these
-// at any time between create and destroy.
-// ----------------------------------------------------------------------
-
-/// The runtime has no log sink to give a loaded module yet, and a null
-/// function pointer is not the way to say so — a module is entitled to call
-/// what the table carries. Discarding is honest; routing these into
-/// `xmip-core-observe` is work this slice did not do.
-unsafe extern "C" fn discard_log(_ctx: *mut c_void, _level: i32, _target: Str, _message: Str) {
-    abi::guarded((), || {});
-}
-
-/// Nothing this host asks a module to do today is cancellable, so the answer
-/// is always no.
-unsafe extern "C" fn never_cancelled(_ctx: *mut c_void) -> i32 {
-    abi::guarded(0, || 0)
-}
-
-/// Empty, which header section 6 makes the right answer for a module running
-/// outside a journey — and a module loaded to be verified is.
-unsafe extern "C" fn no_journey(_ctx: *mut c_void) -> Str {
-    abi::guarded(Str::empty(), Str::empty)
-}
-
-fn host_table() -> Host {
-    Host {
-        abi_version: XMIP_ABI_VERSION,
-        ctx: std::ptr::null_mut(),
-        log: Some(discard_log),
-        cancelled: Some(never_cancelled),
-        journey_id: Some(no_journey),
-    }
-}
+use crate::ffi::host_table::{Heard, host_table};
 
 // ----------------------------------------------------------------------
 // Reading what the module lent us.
@@ -169,12 +142,30 @@ pub struct LoadedModule {
     path: PathBuf,
     descriptor: ModuleDescriptor,
     module: Module,
+    /// The table the module was created with, and what its `ctx` lends:
+    /// never read again, kept so both outlive the instance (header section
+    /// 7) and dropped after `destroy`.
+    #[expect(dead_code, reason = "held so the host table outlives the instance")]
+    host: Box<Host>,
+    #[expect(
+        dead_code,
+        reason = "held so the log the table lends outlives the instance"
+    )]
+    heard: Option<Heard>,
     /// Never read again after `open`. Its whole job is to outlive every
     /// pointer this struct hands out and to close in `Drop`, after `destroy`
     /// — specification section 3: unloading frees the library's code, and any
     /// pointer still held into it becomes a jump into unmapped memory.
     #[expect(dead_code, reason = "held so the library outlives the instance")]
     library: Option<Library>,
+}
+
+/// An entrypoint that refused to create a module: the status it returned,
+/// and the sentence that says so, naming the library.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Refused {
+    pub status: i32,
+    pub sentence: String,
 }
 
 impl std::fmt::Debug for LoadedModule {
@@ -197,28 +188,58 @@ impl LoadedModule {
     /// [`accepts`] turns down — which names the field that disagreed. A
     /// refusal after creation still destroys the instance and unloads the
     /// library, because the guard is built before the judgment is made.
+    #[cfg(feature = "dynamic-loading")]
     pub fn open(path: &Path, expected: &Expectation) -> Result<Self, String> {
-        let library = open_library(path)
-            .map_err(|why| format!("{} would not open: {why}", path.display()))?;
-
-        let create = resolve(&library, path)?;
-        Self::create(path, create, Some(library), expected)
+        let (create, library) = Self::resolved(path)?;
+        Self::accepted(Self::instance(path, create, Some(library), None), expected)
     }
 
     /// A module whose entrypoint is linked into this test program: the
     /// boundary crossed as a library's would be, with no library opened.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "dynamic-loading"))]
     pub(crate) fn linked(create: CreateModuleFn, expected: &Expectation) -> Result<Self, String> {
-        Self::create(Path::new("linked"), create, None, expected)
+        Self::accepted(
+            Self::instance(Path::new("linked"), create, None, None),
+            expected,
+        )
     }
 
-    fn create(
+    /// The instance kept only if the capability that asked takes it. Built
+    /// before the descriptor is judged, so a refusal leaves through `Drop`
+    /// and the instance is destroyed and the library closed: a module the
+    /// host will not take is still a module it created (ADR-0055: refused,
+    /// never half-loaded anyway).
+    #[cfg(feature = "dynamic-loading")]
+    fn accepted(instance: Result<Self, Refused>, expected: &Expectation) -> Result<Self, String> {
+        let loaded = instance.map_err(|refused| refused.sentence)?;
+        accepts(&loaded.descriptor, expected)?;
+        Ok(loaded)
+    }
+
+    /// `path` opened, privately, and its one entrypoint found.
+    ///
+    /// # Errors
+    /// The library would not open, or exports no entrypoint: why, naming
+    /// the path.
+    pub(crate) fn resolved(path: &Path) -> Result<(CreateModuleFn, Library), String> {
+        let library = open_library(path)
+            .map_err(|why| format!("{} would not open: {why}", path.display()))?;
+        let create = resolve(&library, path)?;
+        Ok((create, library))
+    }
+
+    /// One instance created through `create`, its descriptor copied out and
+    /// judged by no one yet. Its lines go into `heard` where one is given.
+    ///
+    /// # Errors
+    /// The entrypoint refused: its status, and the sentence that says so.
+    pub(crate) fn instance(
         path: &Path,
         create: CreateModuleFn,
         library: Option<Library>,
-        expected: &Expectation,
-    ) -> Result<Self, String> {
-        let host = host_table();
+        heard: Option<Heard>,
+    ) -> Result<Self, Refused> {
+        let host = host_table(heard.as_ref());
 
         // SAFETY: all-zero is a valid `Module` — null pointers, and `None`
         // for every `Option<extern "C" fn>` — which is how the host can tell
@@ -226,33 +247,31 @@ impl LoadedModule {
         // `*out` untouched on a refusal.
         let mut module: Module = unsafe { std::mem::zeroed() };
 
-        // SAFETY: `host` outlives the call, and its three callbacks are
-        // `'static` items in this binary. The module writes `*out` only on
-        // OK. Nothing can unwind back out: the entrypoint is `extern "C"`.
-        let answer = unsafe { create(&raw const host, &raw mut module) };
+        // SAFETY: `host` is boxed and kept beside the instance, so it
+        // outlives the module, and its three callbacks are `'static` items
+        // in this binary. The module writes `*out` only on OK. Nothing can
+        // unwind back out: the entrypoint is `extern "C"`.
+        let answer = unsafe { create(&raw const *host, &raw mut module) };
 
         if answer != status::OK {
-            return Err(format!(
-                "{} refused to create a module: status {answer}, and *out was \
-                 left untouched as header section 7 requires",
-                path.display()
-            ));
+            return Err(Refused {
+                status: answer,
+                sentence: format!(
+                    "{} refused to create a module: status {answer}, and *out was \
+                     left untouched as header section 7 requires",
+                    path.display()
+                ),
+            });
         }
 
-        // Built before the descriptor is judged, so a refusal below leaves
-        // through `Drop` and the instance is destroyed and the library
-        // closed. A module the host will not take is still a module it
-        // created (ADR-0055: refused, never half-loaded anyway).
-        let loaded = Self {
+        Ok(Self {
             path: path.to_path_buf(),
             descriptor: read_descriptor(&module),
             module,
+            host,
+            heard,
             library,
-        };
-
-        accepts(&loaded.descriptor, expected)?;
-
-        Ok(loaded)
+        })
     }
 
     #[must_use]
@@ -267,6 +286,7 @@ impl LoadedModule {
 
     /// Module-private state, opaque to the host and handed back untouched to
     /// every call on this instance.
+    #[cfg(feature = "dynamic-loading")]
     pub(crate) const fn state(&self) -> *mut c_void {
         self.module.state
     }
@@ -275,6 +295,7 @@ impl LoadedModule {
     /// type by that name; a mismatch is a load-time rejection, not a cast,
     /// which is why this hands back the untyped pointer the header defines
     /// and the trait's own file does the selecting.
+    #[cfg(feature = "dynamic-loading")]
     pub(crate) const fn vtable(&self) -> *const c_void {
         self.module.vtable
     }
@@ -330,7 +351,7 @@ impl Drop for LoadedModule {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dynamic-loading"))]
 mod tests {
     use super::*;
 
