@@ -35,8 +35,8 @@ serde ={ version = "1", features = ["derive"], optional = true }
 # The operate plane's calls and answers, and the catalogue and the Reports a
 # surface is handed, as JSON, in memory only (ADR-0031 clause 2).
 serde_json = "1"
-# Optional: only a node that loads modules links a loader, and only the
-# dynamic-loading feature turns it on. The portable dlopen/LoadLibraryEx pair,
+# Optional: only a node that loads modules, or a surface's library that
+# probes one, links a loader, and only the loader feature turns it on. The portable dlopen/LoadLibraryEx pair,
 # nothing more — the flags specification section 3 requires are passed by
 # ffi/loaded_module.rs, which does not take the crate's defaults on Windows.
 libloading = { version = "0.9", optional = true }
@@ -264,11 +264,16 @@ node = [
 # takes (`context::AuthenticatedIdentity`). Built alone with
 # `--no-default-features --features remote`.
 remote = ["dep:codec", "dep:authorize", "dep:context"]
-# ffi/loaded_module.rs, ffi/loaded_contract.rs and what library.rs opens with
-# them are guarded on this.
-# Declared so the cfg is a real switch rather than a condition that is
-# silently always false.
-dynamic-loading = ["node", "dep:libloading"]
+# The host opening a module's library, `ffi/loaded_module.rs`, and the one
+# probe of what a library declares, `ffi/probed.rs`, which
+# xmip-core-operate exports as `xmip_module_probe_v1` (ADR-0012, amendment
+# 2026-11-17): a surface's library probes and runs no module.
+loader = ["dep:abi", "dep:libloading"]
+# ffi/loaded_contract.rs, ffi/loaded_work_process.rs and what library.rs
+# opens with them are guarded on this: a node that opens what its
+# configuration starts. Declared so the cfg is a real switch rather than a
+# condition that is silently always false.
+dynamic-loading = ["node", "loader"]
 # The gates' stand-ins the runtime's tests run a node with (`fixture`),
 # placed once for its unit tests, its integration tests and
 # xmip-core-operate's, with Xmip Storage in memory (`ledger::in_memory`).
