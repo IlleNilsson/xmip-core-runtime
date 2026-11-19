@@ -4,9 +4,11 @@
 //! seen; a candidate refused at accept-work lets go of what it opened, so
 //! the active configuration starts over the same embedded Storage node; and
 //! starting alone writes nothing, only activation replaces the active
-//! configuration.
+//! configuration. A candidate absent or unreadable is refused by the trust
+//! that reads it, and the active configuration runs, or, with none, the
+//! start is refused at read-configuration (amendment 2026-11-19).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use configure::signed::{Pin, active_at, pin_at};
 use net::fixture::unheld;
@@ -106,7 +108,7 @@ fn starting_alone_writes_nothing_and_only_activation_replaces_the_active_configu
         &node(&unheld().to_string(), &unheld().to_string()),
     );
     let file = kept(&path);
-    let admitted = signed::admitted(&path, &file).expect("trusted");
+    let admitted = signed::admitted(&path).expect("trusted");
     let slice = admitted.candidate.expect("admitted").expect("a candidate");
     let attempt = Attempt {
         slice,
@@ -177,6 +179,105 @@ fn a_candidate_refused_at_accept_work_lets_go_so_the_active_one_starts_over_its_
     running.stop();
     assert_eq!(kept(&active_at(&path)), active);
     let _ = std::fs::remove_dir_all(path.parent().and_then(Path::parent).expect("its own"));
+}
+
+/// A test's own folder, the one `written` made around a configuration,
+/// removed as the test ends, passing or failing.
+struct Made(PathBuf);
+
+impl Made {
+    /// The folder around the configuration at `path`.
+    fn around(path: &Path) -> Self {
+        Self(
+            path.parent()
+                .and_then(Path::parent)
+                .expect("its own")
+                .into(),
+        )
+    }
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A node that ran its slice once and stopped, its folder, and what it
+/// keeps: the active configuration and the pin.
+fn ran_once(test: &str) -> (PathBuf, Made, String, Pin) {
+    let path = written(test, &node(&unheld().to_string(), &unheld().to_string()));
+    let made = Made::around(&path);
+    started(path_text(&path), || linked(&path))
+        .expect("the node starts")
+        .stop();
+    let active = kept(&active_at(&path));
+    let pin = Pin::read(&kept(&pin_at(&path))).expect("pinned");
+    (path, made, active, pin)
+}
+
+/// The node at `path`, its candidate gone or unreadable, runs `active`
+/// and says so, tries the candidate again at its next start, and keeps
+/// both its files as they were.
+fn runs_the_active_one(path: &Path, active: &str, pin: &Pin) {
+    let running = started(path_text(path), || linked(path)).expect("the active one runs");
+    assert!(
+        matches!(running.attempt().tried, Tried::Fallback { again: true, .. }),
+        "{:?}",
+        running.attempt().tried
+    );
+    let (health, evidence) = standing(&running);
+    assert_eq!(health, Health::Stressed, "{evidence}");
+    for words in [
+        "candidate refused: ",
+        "node.xmip is refused: it cannot be read",
+        "the node runs its active configuration, serial",
+        "tries the candidate again",
+    ] {
+        assert!(evidence.contains(words), "{words}: {evidence}");
+    }
+    running.stop();
+    assert_eq!(kept(&active_at(path)), active, "the active one is kept");
+    let held = Pin::read(&kept(&pin_at(path))).expect("pinned");
+    assert_eq!(&held, pin, "and the pin");
+}
+
+#[test]
+fn valid_active_plus_missing_candidate_runs_active_with_the_fallback_recorded() {
+    let (path, _made, active, pin) = ran_once("missing");
+    std::fs::remove_file(&path).expect("the candidate taken away");
+    runs_the_active_one(&path, &active, &pin);
+}
+
+#[test]
+fn valid_active_plus_unreadable_candidate_likewise() {
+    let (path, _made, active, pin) = ran_once("unreadable");
+    std::fs::remove_file(&path).expect("the candidate taken away");
+    // A folder where the file goes: no platform reads it as a file, and
+    // an administrator's account reads past a file's permissions.
+    std::fs::create_dir(&path).expect("a folder in its place");
+    runs_the_active_one(&path, &active, &pin);
+}
+
+#[test]
+fn no_active_plus_missing_candidate_is_refused_at_read_configuration() {
+    let path = written("none", &node(&unheld().to_string(), &unheld().to_string()));
+    let _made = Made::around(&path);
+    std::fs::remove_file(&path).expect("the candidate taken away");
+    let refused = started(path_text(&path), || linked(&path))
+        .err()
+        .expect("refused");
+    assert_eq!(refused.phase, StartupPhase::ReadConfiguration);
+    assert!(
+        refused.problems[0].contains("node.xmip is refused: it cannot be read"),
+        "{refused}"
+    );
+    assert_eq!(
+        refused.problems.last().map(String::as_str),
+        Some("and the node has no active configuration to run"),
+        "{refused}"
+    );
+    assert!(!active_at(&path).exists() && !pin_at(&path).exists());
 }
 
 /// What the tests' program links, keeping Xmip Storage itself as a node

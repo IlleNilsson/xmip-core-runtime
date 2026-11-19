@@ -2,18 +2,48 @@
 //! signature, a swapped anchor, an older serial, another file at the serial
 //! seen and another node's slice; and trust kept apart from what runs
 //! (ADR-0031, amendment 2026-11-12): admission pins and never activates.
+//! And the candidate read by admission alone (amendment 2026-11-19): one
+//! absent or unreadable is refused, and the active configuration runs.
+
+use std::path::PathBuf;
 
 use super::*;
 
+/// The path of a node's configuration in a test's own folder, which goes
+/// as the test ends, passing or failing.
+struct Configured(PathBuf);
+
+impl std::ops::Deref for Configured {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Configured {
+    fn drop(&mut self) {
+        if let Some(base) = self.0.parent().and_then(Path::parent) {
+            let _ = std::fs::remove_dir_all(base);
+        }
+    }
+}
+
 /// A node's configuration at `config/node.xmip` in a folder of its own,
 /// its cluster's authority beside it, and that authority.
-fn folder(name: &str) -> (std::path::PathBuf, Issuer) {
+fn folder(name: &str) -> (Configured, Issuer) {
     let base = std::env::temp_dir().join(format!("xmip-signed-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let configuration = base.join("config");
     let issuer = Issuer::kept_or_made(&configuration.join(AUTHORITY), "xmip-cluster", 0, 3600)
         .expect("an authority");
-    (configuration.join("node.xmip"), issuer)
+    (Configured(configuration.join("node.xmip")), issuer)
+}
+
+/// `file` placed at `path` as the node's candidate.
+fn placed<'a>(path: &'a Path, file: &str) -> &'a Path {
+    std::fs::write(path, file).expect("the candidate placed");
+    path
 }
 
 fn slice(node: &str) -> String {
@@ -48,7 +78,7 @@ fn serial_of(file: &str) -> u64 {
 /// What the node at `path` admits of `file`, and activates where it is its
 /// candidate: a node that ran it.
 fn ran(path: &Path, file: &str) -> Admitted {
-    let admitted = admitted(path, file).expect("admitted");
+    let admitted = admitted(placed(path, file)).expect("admitted");
     if let Ok(Some(candidate)) = &admitted.candidate {
         activated(path, candidate).expect("activated");
     }
@@ -59,7 +89,7 @@ fn ran(path: &Path, file: &str) -> Admitted {
 fn a_candidate_above_the_pin_is_pinned_as_seen_and_admission_activates_nothing() {
     let (path, issuer) = folder("seen");
     let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
-    let admitted = admitted(&path, &file).expect("admitted");
+    let admitted = admitted(placed(&path, &file)).expect("admitted");
     let candidate = admitted.candidate.expect("trusted").expect("a candidate");
     assert_eq!(candidate.text, slice("r1"));
     assert_eq!(admitted.active.expect_err("none"), NONE_TO_RUN);
@@ -75,8 +105,8 @@ fn a_candidate_above_the_pin_is_pinned_as_seen_and_admission_activates_nothing()
 fn the_same_candidate_at_the_seen_serial_is_admitted_again_and_another_file_there_refused() {
     let (path, issuer) = folder("again");
     let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
-    admitted(&path, &file).expect("admitted");
-    let again = admitted(&path, &file).expect("admitted again");
+    admitted(placed(&path, &file)).expect("admitted");
+    let again = admitted(&path).expect("admitted again");
     assert!(matches!(again.candidate, Ok(Some(_))), "tried again");
 
     let at = (serial_of(&file), 0);
@@ -86,12 +116,12 @@ fn the_same_candidate_at_the_seen_serial_is_admitted_again_and_another_file_ther
         &slice("r1").replace("data", "store"),
         at,
     );
-    let refused = admitted(&path, &other.expect("signed"))
+    let refused = admitted(placed(&path, &other.expect("signed")))
         .expect("read")
         .candidate
         .expect_err("another file at the serial seen");
     assert!(
-        refused.contains("is the one this node has seen"),
+        refused.why.contains("is the one this node has seen"),
         "{refused}"
     );
 }
@@ -103,12 +133,12 @@ fn a_valid_slice_below_the_serial_seen_is_refused_though_above_the_active_one() 
     let between = sign(&issuer, "cluster", &slice("r1").replace("data", "between"));
     let seen = sign(&issuer, "cluster", &slice("r1").replace("data", "seen"));
     ran(&path, &first);
-    admitted(&path, &seen.expect("signed")).expect("seen, never run");
+    admitted(placed(&path, &seen.expect("signed"))).expect("seen, never run");
 
-    let admitted = admitted(&path, &between.expect("signed")).expect("read");
+    let admitted = admitted(placed(&path, &between.expect("signed"))).expect("read");
     let refused = admitted.candidate.expect_err("older than the serial seen");
-    assert!(refused.contains("is not above"), "{refused}");
-    assert!(refused.contains("older, or replayed"), "{refused}");
+    assert!(refused.why.contains("is not above"), "{refused}");
+    assert!(refused.why.contains("older, or replayed"), "{refused}");
     assert_eq!(
         admitted.active.expect("runs").file,
         first,
@@ -121,7 +151,7 @@ fn the_active_configuration_given_again_is_no_candidate() {
     let (path, issuer) = folder("active");
     let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
     ran(&path, &file);
-    let again = admitted(&path, &file).expect("admitted");
+    let again = admitted(&path).expect("admitted");
     assert_eq!(again.candidate, Ok(None));
     assert_eq!(again.active.expect("runs").file, file);
 }
@@ -134,11 +164,51 @@ fn an_edited_candidate_is_refused_and_the_active_configuration_runs() {
     let seen = pin(&path);
 
     let edited = file.replace("[service]\n", "[service]\nname = \"edited\"\n");
-    let admitted = admitted(&path, &edited).expect("read");
+    let admitted = admitted(placed(&path, &edited)).expect("read");
     let refused = admitted.candidate.expect_err("edited");
-    assert!(refused.contains("changed after it was signed"), "{refused}");
+    assert!(
+        refused.why.contains("changed after it was signed"),
+        "{refused}"
+    );
+    assert!(!refused.again, "what trust refuses it refuses again");
     assert_eq!(admitted.active.expect("runs").text, slice("r1"));
     assert_eq!(pin(&path), seen, "a refused candidate pins nothing");
+}
+
+/// The node at `path`, its candidate gone or unreadable, admits nothing of
+/// it, tries it again at its next start, and runs `file`, its active
+/// configuration, pinning nothing.
+fn unread_and_the_active_one_runs(path: &Path, file: &str) {
+    let seen = pin(path);
+    let admitted = admitted(path).expect("read");
+    let refused = admitted.candidate.expect_err("nothing to admit");
+    let unread = format!("{} is refused: it cannot be read: ", path.display());
+    assert!(refused.why.starts_with(&unread), "{refused}");
+    assert!(refused.again, "tried again at the next start");
+    assert_eq!(admitted.active.expect("runs").file, file);
+    assert_eq!(pin(path), seen, "an unread candidate pins nothing");
+    assert_eq!(checked(path).expect("what runs"), slice("r1"));
+}
+
+#[test]
+fn a_missing_candidate_is_refused_by_admission_and_the_active_is_what_runs() {
+    let (path, issuer) = folder("missing");
+    let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
+    ran(&path, &file);
+    std::fs::remove_file(&*path).expect("the candidate taken away");
+    unread_and_the_active_one_runs(&path, &file);
+}
+
+#[test]
+fn an_unreadable_candidate_likewise() {
+    let (path, issuer) = folder("unreadable");
+    let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
+    ran(&path, &file);
+    std::fs::remove_file(&*path).expect("the candidate taken away");
+    // A folder where the file goes: no platform reads it as a file, and an
+    // administrator's account reads past a file's permissions.
+    std::fs::create_dir(&*path).expect("a folder in its place");
+    unread_and_the_active_one_runs(&path, &file);
 }
 
 #[test]
@@ -150,7 +220,7 @@ fn an_active_configuration_edited_in_the_data_directory_is_no_fallback() {
     std::fs::write(signed::active_at(&path), &edited).expect("edited");
 
     let next = sign(&issuer, "cluster", &slice("r1").replace("data", "next"));
-    let admitted = admitted(&path, &next.expect("signed")).expect("read");
+    let admitted = admitted(placed(&path, &next.expect("signed"))).expect("read");
     let none = admitted.active.expect_err("no fallback");
     assert!(none.contains("active configuration at"), "{none}");
     assert!(none.contains("so it has none to run"), "{none}");
@@ -164,7 +234,7 @@ fn the_pin_outlives_the_active_configuration_so_a_replay_is_still_refused() {
     ran(&path, &newer);
     std::fs::remove_file(signed::active_at(&path)).expect("removed");
 
-    let refused = checked(&path, &older).expect_err("replayed");
+    let refused = checked(placed(&path, &older)).expect_err("replayed");
     assert!(refused.contains("is not above"), "{refused}");
     assert!(refused.contains(NONE_TO_RUN), "{refused}");
 }
@@ -173,7 +243,7 @@ fn the_pin_outlives_the_active_configuration_so_a_replay_is_still_refused() {
 fn a_check_writes_neither_file() {
     let (path, issuer) = folder("checked");
     let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
-    assert_eq!(checked(&path, &file).expect("runs"), slice("r1"));
+    assert_eq!(checked(placed(&path, &file)).expect("runs"), slice("r1"));
     assert!(
         !signed::pin_at(&path).exists(),
         "only the running node pins"
@@ -187,7 +257,7 @@ fn a_node_with_no_pin_pins_the_first_slice_it_admits() {
     let file = sign(&issuer, "cluster", &slice("r1")).expect("signed");
     ran(&path, &file);
     std::fs::remove_file(signed::pin_at(&path)).expect("unpinned on purpose");
-    admitted(&path, &file).expect("the active one again");
+    admitted(&path).expect("the active one again");
     assert_eq!(pin(&path).serial, serial_of(&file), "the active one pins");
 }
 
@@ -209,7 +279,7 @@ fn both_files_are_kept_by_the_configurations_place_never_by_what_a_slice_says() 
 #[test]
 fn an_unsigned_slice_with_nothing_active_is_refused_in_words() {
     let (path, _) = folder("unsigned");
-    let refused = checked(&path, &slice("r1")).expect_err("unsigned");
+    let refused = checked(placed(&path, &slice("r1"))).expect_err("unsigned");
     assert!(
         refused.contains("it is not signed; and the node has no active configuration"),
         "{refused}"
@@ -221,7 +291,7 @@ fn a_slice_another_authority_signed_is_refused() {
     let (path, _) = folder("other");
     let (_, stranger) = folder("stranger");
     let file = sign(&stranger, "cluster", &slice("r1")).expect("signed");
-    let refused = checked(&path, &file).expect_err("a stranger's");
+    let refused = checked(placed(&path, &file)).expect_err("a stranger's");
     assert!(
         refused.contains("an authority other than this node's"),
         "{refused}"
@@ -238,7 +308,7 @@ fn a_swapped_anchor_with_a_slice_it_signed_is_refused() {
     let (_, stranger) = folder("swapper");
     swapped(&path, &stranger);
     let forged = sign(&stranger, "cluster", &slice("r1")).expect("signed");
-    let refused = admitted(&path, &forged).expect_err("the pin holds");
+    let refused = admitted(placed(&path, &forged)).expect_err("the pin holds");
     assert!(
         refused.contains("not the one this node pinned"),
         "{refused}"
@@ -257,10 +327,12 @@ fn another_nodes_slice_is_refused() {
     );
 
     let theirs = sign(&issuer, "cluster", &slice("r2")).expect("signed");
-    let admitted = admitted(&path, &theirs).expect("read");
+    let admitted = admitted(placed(&path, &theirs)).expect("read");
     let refused = admitted.candidate.expect_err("another node's");
     assert!(
-        refused.contains("the slice of the node r2, and this node is r1"),
+        refused
+            .why
+            .contains("the slice of the node r2, and this node is r1"),
         "{refused}"
     );
     assert_eq!(admitted.active.expect("its own runs").text, slice("r1"));

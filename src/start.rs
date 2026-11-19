@@ -55,15 +55,15 @@ pub struct ApplicationFile {
 
 /// Startup phase 1 as whoever reads a node's configuration without running
 /// it reads it: the slice the node at `path` would try first, as its trust
-/// admits it and writing nothing (`signed::checked`), [`parsed`]. A plan,
+/// reads and admits it, writing nothing (`signed::checked`), [`parsed`]: its
+/// active configuration where the file at `path` cannot be read. A plan,
 /// an install and a surface read this way.
 ///
 /// # Errors
-/// The file cannot be read, trust admits nothing to run, or as [`parsed`].
+/// Trust admits nothing to run, the file at `path` unread among the
+/// reasons, or as [`parsed`].
 pub fn read(path: &str) -> Result<Read, Unread> {
-    let file = std::fs::read_to_string(path)
-        .map_err(|error| unread(format!("cannot read {path}: {error}")))?;
-    let source = crate::signed::checked(std::path::Path::new(path), &file).map_err(unread)?;
+    let source = crate::signed::checked(std::path::Path::new(path)).map_err(unread)?;
     parsed(path, &source)
 }
 
@@ -303,13 +303,20 @@ mod tests {
 
     #[test]
     fn starting_from_a_missing_file_is_done_and_says_which_file() {
-        let snapshot = start("Z:/no/such/node.xmip");
+        let (directory, path) = written(&service().0, "start-missing");
+        std::fs::remove_file(&path).expect("taken away");
+        let snapshot = start(&path);
+        let _ = std::fs::remove_dir_all(&directory);
 
         assert_eq!(snapshot.worst("xmip:///"), Some(Health::Done));
+        let evidence = &snapshot.health("xmip:///")[0].evidence;
         assert!(
-            snapshot.health("xmip:///")[0]
-                .evidence
-                .contains("no/such/node.xmip")
+            evidence.starts_with(&format!("{path} is refused: it cannot be read")),
+            "{evidence}"
+        );
+        assert!(
+            evidence.ends_with("and the node has no active configuration to run"),
+            "{evidence}"
         );
     }
 

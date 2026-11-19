@@ -145,7 +145,10 @@ impl Followed {
         self.read.wake();
     }
 
-    /// Its row written again saying it stopped, where it was written once.
+    /// Its row written again saying it stopped, where it was written once:
+    /// its own row alone, whether it is its node's latest as Xmip Storage
+    /// keeps it, so a successor started meanwhile stays the member
+    /// (`XmipStorage::write_member`).
     pub(super) fn stopped(&self) -> Result<(), persist::PersistError> {
         if !self.written() {
             return Ok(());

@@ -2,9 +2,10 @@
 //! (ADR-0031, amendment 2026-11-12). Runtime startup owns the order:
 //!
 //! ```text
-//! 1 trust      node.xmip read beside the pinned anchor; a candidate above
-//!              the serial seen is pinned as seen before anything reads it
-//!              (signed::admitted)
+//! 1 trust      node.xmip read by the trust alone, beside the pinned anchor,
+//!              one absent or unreadable refused like any other; a
+//!              candidate above the serial seen is pinned as seen before
+//!              anything reads it (signed::admitted)
 //! 2 attempt    the candidate: every startup phase (Running::start), then
 //!              the program's own steps that can refuse, serving nothing
 //! 3 activate   the active configuration replaced by the candidate's file,
@@ -31,7 +32,7 @@ use super::{Refusal, Running};
 use crate::linked::Linked;
 use crate::membership::{self, Joined};
 use crate::service::StartupPhase;
-use crate::signed::{self, Admitted, Slice, Which};
+use crate::signed::{self, Admitted, Refused, Slice, Which};
 
 mod standing;
 
@@ -46,7 +47,8 @@ pub enum Tried {
     /// The node's active configuration, given no candidate.
     Active,
     /// The node's active configuration, its candidate refused for `why`;
-    /// tried again at the next start where `again`, its refusal not trust's.
+    /// tried again at the next start where `again`: it could not be read,
+    /// or a step of its attempt refused it, not trust.
     Fallback { why: String, again: bool },
 }
 
@@ -144,6 +146,10 @@ impl Running {
 /// program's while the node runs. A refused attempt is dropped, which lets
 /// go of everything it opened, before the next.
 ///
+/// The configuration is read by its trust alone (`signed::admitted`):
+/// nothing reads it before, so one absent or unreadable is a candidate
+/// refused, and the active configuration runs.
+///
 /// # Errors
 /// Nothing to run: the candidate's refusal, at its phase, and why the
 /// active configuration did not run either. A pin or an anchor the node
@@ -160,10 +166,7 @@ pub fn started<T>(
         Ok((running, made))
     };
     let unread = |reason: String| Refusal::at(StartupPhase::ReadConfiguration, vec![reason]);
-    let file = std::fs::read_to_string(path)
-        .map_err(|error| unread(format!("cannot read {path}: {error}")))?;
-    let Admitted { candidate, active } =
-        signed::admitted(Path::new(path), &file).map_err(unread)?;
+    let Admitted { candidate, active } = signed::admitted(Path::new(path)).map_err(unread)?;
     let refused = match candidate {
         Ok(None) => return attempted(active.map_err(unread)?, Tried::Active),
         Ok(Some(candidate)) => {
@@ -174,7 +177,7 @@ pub fn started<T>(
                 Err(refusal) => Candidate::Started(named, refusal),
             }
         }
-        Err(why) => Candidate::Trusted(why),
+        Err(refused) => Candidate::Admission(refused),
     };
     let active = match active {
         Ok(active) => active,
@@ -186,10 +189,11 @@ pub fn started<T>(
         .map_err(|fallback| refused.and(&format!("its active configuration, {runs}, {fallback}")))
 }
 
-/// How a candidate was refused: by trust, in its words, or at a step of its
-/// attempt, named by its file and which slice it is.
+/// How a candidate was refused: by its admission, unread or by trust, in
+/// its words, or at a step of its attempt, named by its file and which
+/// slice it is.
 enum Candidate {
-    Trusted(String),
+    Admission(Refused),
     Started(String, Refusal),
 }
 
@@ -198,7 +202,7 @@ impl Candidate {
     /// again at its next start for a reason that may have gone.
     fn said(&self) -> (String, bool) {
         match self {
-            Self::Trusted(why) => (why.clone(), false),
+            Self::Admission(refused) => (refused.why.clone(), refused.again),
             Self::Started(named, refusal) => (format!("{named}, {refusal}"), true),
         }
     }
@@ -207,7 +211,9 @@ impl Candidate {
     /// `none`, why nothing else ran.
     fn and(self, none: &str) -> Refusal {
         let mut refusal = match self {
-            Self::Trusted(why) => Refusal::at(StartupPhase::ReadConfiguration, vec![why]),
+            Self::Admission(refused) => {
+                Refusal::at(StartupPhase::ReadConfiguration, vec![refused.why])
+            }
             Self::Started(_, refusal) => refusal,
         };
         refusal.problems.push(format!("and {none}"));

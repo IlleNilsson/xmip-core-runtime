@@ -117,6 +117,33 @@ fn a_node_s_row_is_written_and_the_members_followed_as_another_writes_its_own() 
     assert!(kept.iter().any(|m| m.process == 2 && m.runs()));
 }
 
+/// A node started again while its earlier start still runs, then the
+/// earlier start stopped in order: its stop is written to its own row, and
+/// its successor stays the node's member, as its successor follows it.
+#[test]
+fn an_earlier_process_s_stop_leaves_its_successor_the_member() {
+    let storage = storage();
+    let start = |process| {
+        let own = (row(process, 0, "sha256:a"), nowhere());
+        Joined::start(Arc::clone(&storage), own, (LONG, REST)).expect("started")
+    };
+    let mut earlier = start(1);
+    earlier.followed().revision().wait(0, LONG);
+    let mut successor = start(2);
+    let followed = Arc::clone(successor.followed());
+    let first = followed.revision().wait(0, LONG);
+    assert_eq!(processes(&followed.rows()), [2], "registered");
+
+    assert_eq!(earlier.stop(Ok(())), None, "stopped in order");
+    followed.revision().wait(first, LONG);
+    let rows = followed.rows();
+    assert_eq!(processes(&rows), [2], "its successor is the member");
+    assert!(rows[0].runs());
+    let kept = storage.read_members().expect("read");
+    assert_eq!(processes(&kept), [2]);
+    assert_eq!(successor.stop(Ok(())), None);
+}
+
 /// The stop of a node whose Storage its client knows not to answer writes
 /// nothing, waits on nothing, and says why its row still says it runs.
 #[test]
