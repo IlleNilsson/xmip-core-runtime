@@ -18,7 +18,7 @@ use provision::Issuer;
 
 mod admission;
 
-pub use admission::{Admitted, Slice, Which, activated, admitted, checked};
+pub use admission::{Admitted, Refused, Slice, Which, activated, admitted, checked};
 
 /// The folder beside a node's configuration that holds its cluster
 /// authority's certificate, and its key on the node that keeps it.

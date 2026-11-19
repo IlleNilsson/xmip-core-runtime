@@ -1,9 +1,13 @@
 //! What a node trusts of its configuration as it starts, kept apart from what
 //! it runs (ADR-0031, amendment 2026-11-12).
 //!
-//! The node is given a candidate, `node.xmip`, and never writes it. It keeps
-//! two private files of its own in the default data directory
-//! (`configure::signed::pin_at`, `active_at`): its pin, the authority's
+//! The node is given a candidate, `node.xmip`, and never writes it; it is
+//! read here, and nothing reads it before (ADR-0031, amendment 2026-11-19).
+//! None of what the node trusts it by is found from it: the authority's
+//! certificate is in the `authority` folder beside the configuration
+//! ([`super::anchor`]), and the node keeps two private files of its own in
+//! the default data directory (`configure::signed::pin_at`, `active_at`),
+//! found from where the configuration is: its pin, the authority's
 //! fingerprint, the node, the highest serial seen in a slice that verified
 //! and that slice's digest, written as a candidate is admitted and before
 //! anything reads it; and its active configuration, the signed file of the
@@ -15,8 +19,10 @@
 //! one, is signed for the pinned node, and carries a serial above the
 //! pinned one, or the pinned serial and the pinned slice's digest: the same
 //! candidate seen before and not yet run. Anything else is refused in words
-//! and never runs. The active configuration is verified again each start,
-//! and is what runs where the candidate is refused or where there is none.
+//! and never runs; so is a candidate absent or unreadable, which the node
+//! tries again at its next start. The active configuration is verified
+//! again each start, and is what runs where the candidate is refused or
+//! where there is none.
 
 use std::io::ErrorKind;
 use std::path::Path;
@@ -80,14 +86,29 @@ impl Slice {
     }
 }
 
+/// Why a candidate was refused, `<path> is refused: <why>`, and whether the
+/// node tries it again at its next start: where it could not be read, a
+/// cause that may pass, and never where trust refused what it read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub why: String,
+    pub again: bool,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
 /// What trust admits of a node's configuration as it starts.
 #[derive(Debug)]
 pub struct Admitted {
     /// The configuration file's slice, where trust admits it and it is not
     /// the active configuration: what the node tries first. `Ok(None)` where
     /// it is the active configuration, byte for byte; why it was refused
-    /// otherwise, `<path> is refused: <why>`.
-    pub candidate: Result<Option<Slice>, String>,
+    /// otherwise, absent and unreadable among the reasons.
+    pub candidate: Result<Option<Slice>, Refused>,
     /// The node's active configuration, verified again: what runs where the
     /// candidate is refused or where there is none; why there is none
     /// otherwise, in words that also follow "and".
@@ -118,28 +139,29 @@ enum Keep {
     No,
 }
 
-/// What trust admits of `file`, the configuration at `path`, as the running
-/// node starts: the candidate pinned as seen where its serial is above the
-/// pin's, or the first slice admitted where nothing is pinned, before
-/// anything reads it.
+/// What trust admits of the configuration at `path`, read here, as the
+/// running node starts: the candidate pinned as seen where its serial is
+/// above the pin's, or the first slice admitted where nothing is pinned,
+/// before anything reads it.
 ///
 /// # Errors
 /// No anchor beside the configuration, one other than the node pinned, or a
 /// pin or an active configuration that cannot be read, or a pin that cannot
-/// be written; each in words. The node does not start.
-pub fn admitted(path: &Path, file: &str) -> Result<Admitted, String> {
-    admission(path, file, Keep::Yes)
+/// be written; each in words. The node does not start. A candidate that
+/// cannot be read is no error: it is refused, and the active configuration
+/// runs.
+pub fn admitted(path: &Path) -> Result<Admitted, String> {
+    admission(path, Keep::Yes)
 }
 
-/// The text the node whose configuration at `path` holds `file` tries
-/// first, writing nothing: for whoever reads a configuration without
-/// running it. A pin or an active configuration this reader may not read
-/// pins nothing for it.
+/// The text the node configured at `path` tries first, writing nothing: for
+/// whoever reads a configuration without running it. A pin or an active
+/// configuration this reader may not read pins nothing for it.
 ///
 /// # Errors
 /// As [`admitted`], and nothing to run, in words.
-pub fn checked(path: &Path, file: &str) -> Result<String, String> {
-    let admitted = admission(path, file, Keep::No)?;
+pub fn checked(path: &Path) -> Result<String, String> {
+    let admitted = admission(path, Keep::No)?;
     admitted.first().map(|slice| slice.text.clone())
 }
 
@@ -158,7 +180,7 @@ pub fn activated(path: &Path, slice: &Slice) -> Result<(), String> {
 }
 
 /// [`admitted`] and [`checked`], once.
-fn admission(path: &Path, file: &str, keep: Keep) -> Result<Admitted, String> {
+fn admission(path: &Path, keep: Keep) -> Result<Admitted, String> {
     let pin_at = signed::pin_at(path);
     let pin = held(&pin_at, keep, "pin")?
         .map(|text| {
@@ -180,13 +202,7 @@ fn admission(path: &Path, file: &str, keep: Keep) -> Result<Admitted, String> {
             pin_at.display()
         ));
     }
-    let candidate = if active.as_deref() == Some(file) {
-        Ok(None)
-    } else {
-        Slice::verified(file, &anchor)
-            .and_then(|slice| follows(pin.as_ref(), &slice).map(|()| Some(slice)))
-            .map_err(|why| format!("{} is refused: {why}", path.display()))
-    };
+    let candidate = candidate(path, &anchor, pin.as_ref(), active.as_deref());
     let node = pin.as_ref().map(|pin| pin.node.clone()).or_else(|| {
         let admitted = candidate.as_ref().ok().and_then(Option::as_ref);
         admitted.map(|slice| slice.signature.node.clone())
@@ -209,6 +225,30 @@ fn admission(path: &Path, file: &str, keep: Keep) -> Result<Admitted, String> {
         seen(&pin_at, pin.as_ref(), &by, (&candidate, &active))?;
     }
     Ok(Admitted { candidate, active })
+}
+
+/// The candidate at `path`, read here and nowhere before: none where it is
+/// `active`, byte for byte; the slice where it verifies against `anchor`
+/// and follows `pin`; refused otherwise, and tried again only where it
+/// could not be read.
+fn candidate(
+    path: &Path,
+    anchor: &str,
+    pin: Option<&Pin>,
+    active: Option<&str>,
+) -> Result<Option<Slice>, Refused> {
+    let refused = |why: String, again: bool| Refused {
+        why: format!("{} is refused: {why}", path.display()),
+        again,
+    };
+    let file = std::fs::read_to_string(path)
+        .map_err(|error| refused(format!("it cannot be read: {error}"), true))?;
+    if active == Some(file.as_str()) {
+        return Ok(None);
+    }
+    Slice::verified(&file, anchor)
+        .and_then(|slice| follows(pin, &slice).map(|()| Some(slice)))
+        .map_err(|why| refused(why, false))
 }
 
 /// Whether `slice` may follow what `pin` holds: the same node, and a serial
@@ -255,7 +295,7 @@ fn seen(
     at: &Path,
     pin: Option<&Pin>,
     by: &str,
-    (candidate, active): (&Result<Option<Slice>, String>, &Result<Slice, String>),
+    (candidate, active): (&Result<Option<Slice>, Refused>, &Result<Slice, String>),
 ) -> Result<(), String> {
     let first = match (candidate, active) {
         (Ok(Some(candidate)), _) => Some(candidate),

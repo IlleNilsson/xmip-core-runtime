@@ -28,16 +28,14 @@
 use std::io::{Read, Write};
 #[cfg(feature = "node")]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(feature = "node")]
-use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-#[cfg(feature = "node")]
-use std::path::PathBuf;
 #[cfg(feature = "node")]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "node")]
+use net::socket_file::SocketFile;
 #[cfg(feature = "node")]
 use nix::unistd::{Gid, Group, Uid, User};
 
@@ -125,25 +123,28 @@ fn socket_group(named: Option<&str>) -> Result<(Gid, String), String> {
         .ok_or_else(|| format!("[operate] group: the system knows no group called \"{name}\""))
 }
 
-/// The made end, waiting for a connection; its socket file goes with it.
+/// The made end, waiting for a connection; its socket file, its own and
+/// nothing that took its place, goes with it (`net::socket_file`).
 #[cfg(feature = "node")]
 pub(crate) struct Acceptor {
-    inner: UnixListener,
-    path: PathBuf,
+    socket: SocketFile,
     admitted: Arc<Admitted>,
 }
 
 #[cfg(feature = "node")]
 impl Acceptor {
     /// Make the socket at `path`, for the node's account and whom
-    /// `admitting` names. A socket file a node that stopped left behind is
-    /// replaced; one a running node answers on is not.
+    /// `admitting` names, on the path claimed through `net::socket_file`:
+    /// a socket file a node that stopped left behind is replaced; one
+    /// another node holds is refused without a word to it, as are one
+    /// something answers on and a file of another kind, which is kept.
     ///
     /// # Errors
     ///
     /// A folder others may write or someone else owns, a name the system
     /// does not know, a group the node's account may not give the socket,
-    /// a path that cannot be bound, or one another node listens on.
+    /// a path that cannot be bound, one another node holds or something
+    /// answers on, or a file of another kind there.
     pub(crate) fn bind(path: &Path, admitting: super::Admitting<'_>) -> Result<Self, String> {
         let said = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
         let admitted = Arc::new(Admitted::named(admitting.admit)?);
@@ -154,13 +155,8 @@ impl Acceptor {
             None
         };
         super::folders::readied(path)?;
-        if path.exists() {
-            if UnixStream::connect(path).is_ok() {
-                return Err(said(&"another node listens there"));
-            }
-            std::fs::remove_file(path).map_err(|e| said(&e))?;
-        }
-        let inner = UnixListener::bind(path).map_err(|e| said(&e))?;
+        // Its refusals name the path.
+        let socket = SocketFile::bind(path).map_err(|error| error.to_string())?;
         if let Some((gid, name)) = group {
             std::os::unix::fs::chown(path, None, Some(gid.as_raw())).map_err(|error| {
                 said(&format_args!(
@@ -172,11 +168,7 @@ impl Acceptor {
         let mode = if shared { 0o660 } else { 0o600 };
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
             .map_err(|e| said(&e))?;
-        Ok(Self {
-            inner,
-            path: path.to_path_buf(),
-            admitted,
-        })
+        Ok(Self { socket, admitted })
     }
 
     /// The next connection; waits until one comes.
@@ -186,17 +178,10 @@ impl Acceptor {
     /// The socket's own failure.
     pub(crate) fn accept(&self) -> std::io::Result<Stream> {
         // bounded: a listener waits as long as its node runs; a stop wakes it
-        self.inner.accept().map(|(stream, _)| Stream {
+        self.socket.listener().accept().map(|(stream, _)| Stream {
             socket: stream,
             admitted: Some(Arc::clone(&self.admitted)),
         })
-    }
-}
-
-#[cfg(feature = "node")]
-impl Drop for Acceptor {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -340,6 +325,7 @@ pub(crate) fn wake(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+    use std::path::PathBuf;
 
     #[test]
     fn the_node_and_the_superuser_are_admitted_and_others_only_where_named() {
@@ -367,21 +353,38 @@ mod tests {
     }
 
     /// A folder of local endpoints only its owner writes, with a node's
-    /// folder in it, for a test's sockets.
-    fn folder(test: &str) -> PathBuf {
-        let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
-        let own = folder.join("node");
-        std::fs::create_dir_all(&own).expect("a folder");
-        for shut in [&folder, &own] {
-            std::fs::set_permissions(shut, std::fs::Permissions::from_mode(0o755)).expect("shut");
+    /// folder in it, for a test's sockets; it goes with everything in it
+    /// when the test ends, also when it fails.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(test: &str) -> Self {
+            let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
+            let own = folder.join("node");
+            std::fs::create_dir_all(&own).expect("a folder");
+            for shut in [&folder, &own] {
+                std::fs::set_permissions(shut, std::fs::Permissions::from_mode(0o755))
+                    .expect("shut");
+            }
+            Self(folder)
         }
-        folder
+
+        /// The node's socket, in the node's folder.
+        fn socket(&self) -> PathBuf {
+            self.0.join("node").join("node.sock")
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn a_socket_others_are_admitted_to_is_0660_of_its_group_and_0600_otherwise() {
-        let folder = folder("socket-group");
-        let path = folder.join("node").join("node.sock");
+        let folder = Folder::new("socket-group");
+        let path = folder.socket();
         let alone = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
         let found = std::fs::metadata(&path).expect("the socket");
         assert_eq!(found.mode() & 0o777, 0o600);
@@ -430,6 +433,25 @@ mod tests {
             let refused = Acceptor::bind(&path, foreign).err().expect("refused");
             assert!(refused.contains("must be a member"), "{refused}");
         }
-        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_second_node_on_the_same_endpoint_is_refused() {
+        let folder = Folder::new("second-node");
+        let path = folder.socket();
+        let first = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
+        let second = Acceptor::bind(&path, super::super::Admitting::default());
+        let refused = second.err().expect("refused");
+        // The first was never asked: the first connection it takes is a
+        // caller's, not a probe's that hung up.
+        let mut caller = connect(&path, Duration::from_secs(5)).expect("it still answers");
+        caller.write_all(b"x").expect("written");
+        let mut served = first.accept().expect("accepted");
+        let mut byte = [0u8; 1];
+        served.read_exact(&mut byte).expect("the caller's byte");
+        assert_eq!(byte, *b"x");
+        assert!(refused.contains("another listener holds"), "{refused}");
+        drop(first);
+        assert!(!path.exists(), "its socket goes with the first");
     }
 }
