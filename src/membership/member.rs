@@ -19,7 +19,8 @@ impl Membership for Followed {
     fn members(&self) -> Result<Vec<Member>, ClusterError> {
         if !self.written() {
             let why = self
-                .problem()
+                .refused()
+                .or_else(|| self.problem())
                 .unwrap_or_else(|| "not tried yet".to_string());
             return Err(ClusterError::new(format!(
                 "the members are not read yet: this node's row is not in Xmip Storage: {why}"

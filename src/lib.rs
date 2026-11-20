@@ -51,6 +51,8 @@ pub mod held_work;
 #[cfg(feature = "node")]
 pub mod host;
 #[cfg(feature = "node")]
+mod kept;
+#[cfg(feature = "node")]
 pub mod ledger;
 #[cfg(feature = "node")]
 pub mod library;

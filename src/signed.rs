@@ -43,16 +43,17 @@ fn der(pem: &str) -> Result<Vec<u8>, String> {
 
 /// A fresh serial and the Unix second it was taken in: the clock's
 /// nanoseconds, one above the last this process gave where the clock has
-/// not moved, so two slices signed in a row never share one.
+/// not moved (`xcore::clock::serial`), so two slices signed in a row never
+/// share one.
 fn serial() -> (u64, i64) {
     static LAST: AtomicU64 = AtomicU64::new(0);
-    let now = u64::try_from(observe::now_unix_nanos()).unwrap_or(0);
+    let now = i128::from(observe::now_unix_nanos());
     let last = LAST
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-            Some(now.max(last + 1))
+            Some(xcore::clock::serial(last, now))
         })
         .unwrap_or_else(|last| last);
-    let serial = now.max(last + 1);
+    let serial = xcore::clock::serial(last, now);
     (
         serial,
         i64::try_from(serial / 1_000_000_000).unwrap_or(i64::MAX),

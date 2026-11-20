@@ -29,6 +29,7 @@ fn row() -> MemberRecord {
     let declared = node::Capability::of(&[node::NodeRole::Receiving]);
     MemberRecord {
         process: 1,
+        start: 1,
         node: configure::fixture::test_cluster().node_scope(0),
         roles: declared.words(),
         evidence: declared.evidence(),
@@ -72,7 +73,7 @@ fn stopped_with_storage_gone(authority: &Authority, behind: &Arc<dyn XmipStorage
         .expect("reached");
     let mut joined = Joined::start(
         Arc::clone(reached.storage()),
-        (row(), reached.placing()),
+        (row(), reached.placing(), Box::new(|_| Ok(()))),
         (LONG, Duration::from_millis(1)),
     )
     .expect("started");

@@ -24,12 +24,12 @@
 //! again each start, and is what runs where the candidate is refused or
 //! where there is none.
 
-use std::io::ErrorKind;
 use std::path::Path;
 
 use configure::signed::{self, Pin, Signature};
 
 use super::{anchor, der, digest, verified};
+use crate::kept::kept;
 
 /// Why there is no active configuration to run, in words a refusal joins
 /// with "and".
@@ -316,25 +316,11 @@ fn seen(
     kept(at, pin.written().as_bytes(), "pin")
 }
 
-/// The file at `at`, the node's `what`; none where it is absent, or, for a
-/// reader that keeps nothing, where it may not be read.
+/// The file at `at`, the node's `what` (`crate::kept::held`); none where it
+/// is absent, or, for a reader that keeps nothing, where it may not be read.
 fn held(at: &Path, keep: Keep, what: &str) -> Result<Option<String>, String> {
-    match std::fs::read_to_string(at) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == ErrorKind::NotFound || keep == Keep::No => Ok(None),
-        Err(error) => Err(format!(
-            "cannot read the node's {what} at {}: {error}",
-            at.display()
-        )),
-    }
-}
-
-/// `bytes` kept at `at` as the node's `what`, a private file written whole
-/// or not at all (`secret::private_file::replace`), in a directory made
-/// private where it is absent.
-fn kept(at: &Path, bytes: &[u8], what: &str) -> Result<(), String> {
-    let place = at.parent().unwrap_or_else(|| Path::new("."));
-    secret::private_file::directory(place)
-        .and_then(|()| secret::private_file::replace(at, bytes))
-        .map_err(|error| format!("cannot keep the node's {what} at {}: {error}", at.display()))
+    crate::kept::held(at, what).or_else(|refused| match keep {
+        Keep::No => Ok(None),
+        Keep::Yes => Err(refused),
+    })
 }

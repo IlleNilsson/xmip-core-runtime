@@ -32,8 +32,11 @@ pub fn peers_save(members: &[MemberRecord]) -> Option<&str> {
 
 impl Followed {
     /// The node's membership as `<node>/membership` says it, handed to
-    /// `record`: Working until its row reaches Xmip Storage; Stressed where
-    /// the save it runs is not its peers' ([`peers_save`]); Fine otherwise.
+    /// `record`: Working until its row reaches Xmip Storage; Done where a
+    /// later start of its node is the member — its own refused as
+    /// superseded, or registered before a successor that runs beside it
+    /// (ADR-0056, amendment 2026-11-20); Stressed where the save it runs is
+    /// not its peers' ([`peers_save`]); Fine otherwise.
     pub fn publish(&self, node: &str, mut record: impl FnMut(String, Health, String)) {
         let scope = format!("{node}/{MEMBERSHIP}");
         let (health, evidence) = self.said();
@@ -42,6 +45,9 @@ impl Followed {
 
     fn said(&self) -> (Health, String) {
         let row = self.row();
+        if let Some(refused) = self.refused() {
+            return (Health::Done, format!("not a member: {refused}"));
+        }
         if !self.written() {
             let why = self.problem().unwrap_or_else(|| "writing it".to_string());
             return (
@@ -50,14 +56,21 @@ impl Followed {
             );
         }
         let members = self.rows();
+        if let Some(later) = members
+            .iter()
+            .find(|member| member.node == row.node && member.process != row.process)
+        {
+            return (Health::Done, superseded(&row, later));
+        }
         let own = members
             .iter()
             .find(|member| member.process == row.process)
             .unwrap_or(&row);
         let mut said = format!(
-            "a member since {}, as process {:032x}: {}; runs serial {} of save {}",
+            "a member since {}, as process {:032x}, start {}: {}; runs serial {} of save {}",
             CivilTime::from_unix_nanos(i128::from(own.started_unix_nanos)).rfc3339(),
             row.process,
+            row.start,
             listening(&row),
             row.serial,
             row.save
@@ -80,6 +93,21 @@ impl Followed {
         ));
         (Health::Stressed, said)
     }
+}
+
+/// Why the start `row` is not its node's member, in words: `later`, a later
+/// start of its node, registered after it and is.
+fn superseded(row: &MemberRecord, later: &MemberRecord) -> String {
+    let runs = if later.runs() {
+        "runs"
+    } else {
+        "stopped in order"
+    };
+    format!(
+        "not its node's member: start {} of this node, as process {:032x}, registered after \
+         this start {}, as process {:032x}, and {runs}",
+        later.start, later.process, row.start, row.process
+    )
 }
 
 /// Where the node answers, in words: its operate listener on the network,

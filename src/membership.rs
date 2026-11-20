@@ -12,8 +12,13 @@
 //! declares and its capability's evidence, where its operate listener
 //! answers on the network, where its sync listener answers (none starts
 //! one yet, ADR-0065), its place among the Storage nodes where it is one,
-//! found by the process it answers as, the signed save it runs and its
-//! process, drawn new at each start. A Storage node of several writes
+//! found by the process it answers as, the signed save it runs, its
+//! process, drawn new at each start, and which start of its node it is,
+//! numbered by the node itself and kept before the row is first tried
+//! ([`numbering`]). A start whose first write lands after a later start of
+//! its node registered is refused as superseded: it floors its node's start
+//! file there, tries nothing more, and says so (ADR-0056, amendment
+//! 2026-11-20). A Storage node of several writes
 //! through the Xmip Storage it already holds for its own work: its own
 //! databases while the primary, the primary over the wire while not.
 //!
@@ -27,13 +32,15 @@
 //! **A save not its peers' is flagged** (ADR-0031, amendment 2026-11-06,
 //! point 3): `<node>/membership` is Stressed where the save the node runs is
 //! not the one most of the running members run, alone at the most
-//! ([`peers_save`]).
+//! ([`peers_save`]); and Done where a later start of its node is the
+//! member.
 
 mod followed;
 mod member;
+pub mod numbering;
 mod said;
 
-pub use followed::{Followed, Place};
+pub use followed::{Floor, Followed, Place};
 pub use said::{MEMBERSHIP, peers_save};
 
 use std::sync::Arc;
@@ -50,20 +57,23 @@ pub struct Joined {
 }
 
 impl Joined {
-    /// `row` written to `storage` once it is reached, its place among the
-    /// Storage nodes as `place` finds it, and the members followed there,
-    /// each wait for at most `bound` — the node's `[tuning] storage_wait` —
-    /// and each try that fails `rest` apart, its `storage_pass_over`.
+    /// `row` written to `storage` once it is reached, numbered as its node
+    /// numbered the start (`numbering`), its place among the Storage nodes
+    /// as `place` finds it, and the members followed there, each wait for
+    /// at most `bound` — the node's `[tuning] storage_wait` — and each try
+    /// that fails `rest` apart, its `storage_pass_over`. Where Xmip Storage
+    /// refuses it as superseded, `floor` raises the node's start file to the
+    /// later start's number, and nothing more is tried.
     ///
     /// # Errors
     ///
     /// Where its thread does not start, in words.
     pub fn start(
         storage: Arc<dyn XmipStorage>,
-        (row, place): (MemberRecord, Place),
+        (row, place, floor): (MemberRecord, Place, Floor),
         (bound, rest): (Duration, Duration),
     ) -> Result<Self, String> {
-        let followed = Arc::new(Followed::new(storage, (row, place), (bound, rest)));
+        let followed = Arc::new(Followed::new(storage, (row, place, floor), (bound, rest)));
         let running = Arc::clone(&followed);
         let thread = std::thread::Builder::new()
             .name("xmip-membership".to_string())
