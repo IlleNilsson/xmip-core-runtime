@@ -30,11 +30,12 @@ fn storage() -> Arc<dyn XmipStorage> {
 }
 
 /// The node at `place`, receiving, its row keyed by `process` and running
-/// `save`.
+/// `save`: a later process a later start.
 fn row(process: u128, place: usize, save: &str) -> MemberRecord {
     let declared = node::Capability::of(&[NodeRole::Receiving]).with_online(true);
     MemberRecord {
         process,
+        start: u64::try_from(process).expect("a start"),
         node: scope(place),
         roles: declared.words(),
         evidence: declared.evidence(),
@@ -52,6 +53,11 @@ fn row(process: u128, place: usize, save: &str) -> MemberRecord {
 
 fn nowhere() -> Place {
     Box::new(|| None)
+}
+
+/// A start file no test reads: a floor taken, kept nowhere.
+fn unfloored() -> Floor {
+    Box::new(|_| Ok(()))
 }
 
 fn processes(rows: &[MemberRecord]) -> Vec<u128> {
@@ -75,7 +81,7 @@ fn said(followed: &Followed, node: &str) -> (String, Health, String) {
 fn a_node_s_row_is_written_and_the_members_followed_as_another_writes_its_own() {
     let storage = storage();
     let place: Place = Box::new(|| Some(1));
-    let own = (row(1, 0, "sha256:a"), place);
+    let own = (row(1, 0, "sha256:a"), place, unfloored());
     let mut joined = Joined::start(Arc::clone(&storage), own, (LONG, REST)).expect("started");
     let followed = Arc::clone(joined.followed());
     let first = followed.revision().wait(0, LONG);
@@ -124,7 +130,7 @@ fn a_node_s_row_is_written_and_the_members_followed_as_another_writes_its_own() 
 fn an_earlier_process_s_stop_leaves_its_successor_the_member() {
     let storage = storage();
     let start = |process| {
-        let own = (row(process, 0, "sha256:a"), nowhere());
+        let own = (row(process, 0, "sha256:a"), nowhere(), unfloored());
         Joined::start(Arc::clone(&storage), own, (LONG, REST)).expect("started")
     };
     let mut earlier = start(1);
@@ -151,7 +157,7 @@ fn a_stop_with_storage_not_answering_writes_nothing_and_says_why() {
     let storage = storage();
     let mut joined = Joined::start(
         Arc::clone(&storage),
-        (row(1, 0, "sha256:a"), nowhere()),
+        (row(1, 0, "sha256:a"), nowhere(), unfloored()),
         (LONG, REST),
     )
     .expect("started");
@@ -172,7 +178,7 @@ fn a_node_whose_row_cannot_be_written_is_no_member_yet_and_says_why_and_stops_wr
     let storage: Arc<dyn XmipStorage> = Arc::clone(&failing) as Arc<dyn XmipStorage>;
     let mut joined = Joined::start(
         Arc::clone(&storage),
-        (row(1, 0, "sha256:a"), nowhere()),
+        (row(1, 0, "sha256:a"), nowhere(), unfloored()),
         (LONG, REST),
     )
     .expect("started");
@@ -196,7 +202,7 @@ fn a_node_whose_row_cannot_be_written_is_no_member_yet_and_says_why_and_stops_wr
     failing.heal();
     let joined = Joined::start(
         Arc::clone(&storage),
-        (row(3, 0, "sha256:a"), nowhere()),
+        (row(3, 0, "sha256:a"), nowhere(), unfloored()),
         (LONG, REST),
     )
     .expect("started");
@@ -219,7 +225,7 @@ fn a_save_not_its_peers_is_flagged_and_where_two_saves_tie_neither_is_theirs() {
     }
     let joined = Joined::start(
         Arc::clone(&storage),
-        (row(1, 0, "sha256:b"), nowhere()),
+        (row(1, 0, "sha256:b"), nowhere(), unfloored()),
         (LONG, REST),
     )
     .expect("started");
@@ -245,4 +251,96 @@ fn a_save_not_its_peers_is_flagged_and_where_two_saves_tie_neither_is_theirs() {
         .collect();
     assert_eq!(peers_save(&stopped), Some("sha256:b"), "only what runs");
     assert_eq!(peers_save(&[]), None);
+}
+
+/// A start whose first write lands only after its successor registered —
+/// its tries unanswered meanwhile — is refused as superseded: it floors
+/// its node's start file at its successor's number, says so at
+/// `<node>/membership`, tries nothing more and follows nothing, and its
+/// stop writes nothing, so its successor stays the member, running. Until
+/// 2026-11-20 it registered then, and its stop said the node had stopped
+/// while its successor ran.
+#[test]
+fn a_first_write_landing_after_its_successor_s_registration_leaves_its_successor_the_member() {
+    let beneath = storage();
+    let failing = Failing::over(Arc::clone(&beneath));
+    failing.fail(Operation::WriteMember, u32::MAX);
+    let floors = Arc::new(Mutex::new(Vec::new()));
+    let floor: Floor = {
+        let floors = Arc::clone(&floors);
+        Box::new(move |latest| {
+            floors.lock().expect("floored").push(latest);
+            Ok(())
+        })
+    };
+    let late: Arc<dyn XmipStorage> = Arc::clone(&failing) as Arc<dyn XmipStorage>;
+    let own = (row(1, 0, "sha256:a"), nowhere(), floor);
+    let mut earlier = Joined::start(late, own, (LONG, REST)).expect("started");
+    let followed = Arc::clone(earlier.followed());
+    let deadline = Instant::now() + LONG;
+    while followed.problem().is_none() {
+        assert!(Instant::now() < deadline, "never tried");
+        std::thread::yield_now();
+    }
+
+    let own = (row(2, 0, "sha256:a"), nowhere(), unfloored());
+    let mut successor = Joined::start(Arc::clone(&beneath), own, (LONG, REST)).expect("started");
+    successor.followed().revision().wait(0, LONG);
+    assert_eq!(processes(&successor.followed().rows()), [2], "registered");
+
+    failing.heal();
+    followed.revision().wait(0, LONG);
+    let (_, health, evidence) = said(&followed, &scope(0));
+    assert_eq!(health, Health::Done, "{evidence}");
+    assert!(
+        evidence.contains("start 1") && evidence.contains("start 2"),
+        "{evidence}"
+    );
+    assert_eq!(
+        *floors.lock().expect("floors"),
+        [2],
+        "floored at its successor"
+    );
+    assert!(followed.members().is_err(), "no members followed");
+    let asked = failing.asked_times(Operation::WriteMember);
+
+    assert_eq!(earlier.stop(Ok(())), None, "no row: nothing to write");
+    assert_eq!(
+        failing.asked_times(Operation::WriteMember),
+        asked,
+        "nothing more tried, its stop included"
+    );
+    let rows = beneath.read_members().expect("read");
+    assert_eq!(processes(&rows), [2], "its successor is the member");
+    assert!(rows[0].runs(), "and runs");
+    assert_eq!(successor.stop(Ok(())), None);
+}
+
+/// A start registered before its successor, still running once its
+/// successor registered, says it is not its node's member: the members it
+/// follows name a later start of its node.
+#[test]
+fn an_earlier_start_still_running_says_it_is_not_its_node_s_member() {
+    let storage = storage();
+    let start = |process| {
+        let own = (row(process, 0, "sha256:a"), nowhere(), unfloored());
+        Joined::start(Arc::clone(&storage), own, (LONG, REST)).expect("started")
+    };
+    let mut earlier = start(1);
+    let followed = Arc::clone(earlier.followed());
+    let first = followed.revision().wait(0, LONG);
+    let (_, health, evidence) = said(&followed, &scope(0));
+    assert_eq!(health, Health::Fine, "{evidence}");
+
+    let mut successor = start(2);
+    successor.followed().revision().wait(0, LONG);
+    followed.revision().wait(first, LONG);
+    let (_, health, evidence) = said(&followed, &scope(0));
+    assert_eq!(health, Health::Done, "{evidence}");
+    assert!(
+        evidence.contains("start 2") && evidence.contains(&format!("{:032x}", 2)),
+        "{evidence}"
+    );
+    assert_eq!(earlier.stop(Ok(())), None);
+    assert_eq!(successor.stop(Ok(())), None);
 }

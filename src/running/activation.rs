@@ -30,7 +30,7 @@ use persist::storage::MemberRecord;
 use super::serving::serve;
 use super::{Refusal, Running};
 use crate::linked::Linked;
-use crate::membership::{self, Joined};
+use crate::membership::{self, Floor, Joined};
 use crate::service::StartupPhase;
 use crate::signed::{self, Admitted, Refused, Slice, Which};
 
@@ -93,15 +93,26 @@ impl Running {
         self.gather();
     }
 
-    /// Its membership of the cluster begun: its row written to Xmip Storage
-    /// once it is reached, and the members followed (`crate::membership`).
-    /// A thread that does not start leaves it no member, said as the node's
-    /// failure.
+    /// Its membership of the cluster begun: its process drawn and its start
+    /// numbered and kept (`membership::numbering`), then its row written to
+    /// Xmip Storage once it is reached, and the members followed
+    /// (`crate::membership`). A start that cannot be numbered, or a thread
+    /// that does not start, leaves it no member, said as the node's
+    /// failure; a start is never numbered later, which could rank it above
+    /// a start after it.
     fn join(&mut self) {
+        let start = match membership::numbering::numbered(&self.configuration, &*self.clock) {
+            Ok(start) => start,
+            Err(problem) => {
+                self.tally.fail(&self.node, problem);
+                return;
+            }
+        };
         let declared = node::Capability::of(&self.roles).with_online(self.online);
         let runs = self.attempt.slice.which();
         let row = MemberRecord {
             process: membership::process(),
+            start,
             node: self.location(),
             roles: declared.words(),
             evidence: declared.evidence(),
@@ -117,7 +128,10 @@ impl Running {
         };
         let timings = (self.tuning.storage_wait, self.tuning.storage().pass_over);
         let storage = Arc::clone(self.storage.storage());
-        match Joined::start(storage, (row, self.storage.placing()), timings) {
+        let configuration = self.configuration.clone();
+        let floor: Floor =
+            Box::new(move |latest| membership::numbering::floored(&configuration, latest));
+        match Joined::start(storage, (row, self.storage.placing(), floor), timings) {
             Ok(joined) => self.membership = Some(joined),
             Err(problem) => self.tally.fail(&self.node, problem),
         }
