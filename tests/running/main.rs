@@ -24,13 +24,11 @@ mod node;
 mod own_share;
 mod sharing;
 
-#[cfg(feature = "dynamic-loading")]
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use file::temporary::Folder;
 use net::fixture::unheld;
-use observe::Health;
+use observe::{Health, HealthRecord};
 use tcp::TcpTransport;
 use xmip_core_runtime::fixture::started;
 #[cfg(feature = "dynamic-loading")]
@@ -122,11 +120,21 @@ fn a_node_stops_cleanly_and_lets_its_listener_go() {
         .taken()
         .expect("read whole");
 
-    let health = running.snapshot().health(&first().1);
-    assert!(
-        !health.is_empty() && health.iter().all(|record| record.health == Health::Fine),
-        "{health:?}"
-    );
+    // A node serves before its start is a member: the start's number is kept
+    // and its row written after serving begins (ADR-0056, amendment
+    // 2026-11-20), so its membership may still be Working here.
+    let fine = |health: &[HealthRecord]| {
+        !health.is_empty() && health.iter().all(|record| record.health == Health::Fine)
+    };
+    let waiting = Instant::now();
+    let deadline = waiting + Duration::from_secs(5);
+    let mut health = running.snapshot().health(&first().1);
+    while !fine(&health) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+        health = running.snapshot().health(&first().1);
+    }
+    assert!(fine(&health), "{health:?}");
+    println!("the membership read Fine after {:?}", waiting.elapsed());
 
     let stopping = Instant::now();
     let outcomes = running.stop();
@@ -247,17 +255,20 @@ fn a_library_module_is_refused_where_the_runtime_opens_none() {
 #[cfg(feature = "dynamic-loading")]
 #[test]
 fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
+    use std::path::PathBuf;
+
+    // Where cargo built `test/core/module` in this build directory, found
+    // above the test program (`file::built`, the estate's one rule).
     let library = std::env::var("XMIP_MODULE_LIBRARY").map_or_else(
         |_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../test/core/module/target/debug")
-                .join(if cfg!(windows) {
-                    "xmip_core_test_module.dll"
-                } else if cfg!(target_os = "macos") {
-                    "libxmip_core_test_module.dylib"
-                } else {
-                    "libxmip_core_test_module.so"
-                })
+            let name = if cfg!(windows) {
+                "xmip_core_test_module.dll"
+            } else if cfg!(target_os = "macos") {
+                "libxmip_core_test_module.dylib"
+            } else {
+                "libxmip_core_test_module.so"
+            };
+            file::built::found(name).unwrap_or_else(|| PathBuf::from(name))
         },
         PathBuf::from,
     );

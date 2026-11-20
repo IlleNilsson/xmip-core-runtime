@@ -347,11 +347,11 @@ fn read_diagnostics(first: *const Diagnostic, count: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    /// Where the real module is. `XMIP_MODULE_LIBRARY` first; else the
-    /// estate's own mount, because this repository is a submodule of it and
-    /// the technology it drives is another.
+    /// Where the real module is. `XMIP_MODULE_LIBRARY` first; else where
+    /// cargo built `test/core/module` in this build directory, found above
+    /// the test program (`file::built`, the estate's one rule).
     ///
     /// Not skipped when neither is there. A proof that quietly passes because
     /// nothing was built is the failure ADR-0057 exists to stop, so the
@@ -371,9 +371,7 @@ mod tests {
             "libxmip_core_test_module.so"
         };
 
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../test/core/module/target/debug")
-            .join(name)
+        file::built::found(name).unwrap_or_else(|| PathBuf::from(name))
     }
 
     fn open() -> LoadedModule {

@@ -39,7 +39,8 @@ impl Changes {
     /// Watch the files in `directory`: one created, renamed into it,
     /// removed, or written and closed is a change — the last so a file a
     /// producer wrote in place tells as it is finished — and so is a folder
-    /// made in it or taken away, as inotify and kqueue tell one.
+    /// made in it, as inotify and kqueue tell one, or taken away, as kqueue
+    /// does.
     pub(crate) fn new(directory: &Path) -> std::io::Result<Self> {
         let wide = codec::wide::terminated(directory.as_os_str().encode_wide())
             .map_err(std::io::Error::other)?;
