@@ -28,6 +28,7 @@ mod sharing;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use file::temporary::Folder;
 use net::fixture::unheld;
 use observe::Health;
 use tcp::TcpTransport;
@@ -36,15 +37,17 @@ use xmip_core_runtime::fixture::started;
 use xmip_core_runtime::host::HostService;
 use xmip_core_runtime::service::StartupPhase;
 
-use node::{
-    count_anew, deliver, first, given, linked, node, node_sending, path_text, test_storage, written,
-};
+use node::{count_anew, deliver, first, given, linked, node, node_sending, path_text, written};
 
 #[test]
 fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
     let unsound = node(&unheld().to_string(), &unheld().to_string())
         .replace("timeout = \"100ms\"", "timeout = 5\ncolor = \"lime\"");
-    let path = written("declared", &unsound);
+    let (declared, declared_sound) = (
+        Folder::new("runtime-running-declared"),
+        Folder::new("runtime-running-declared-sound"),
+    );
+    let path = written(&declared, &unsound);
 
     let refused = started(path_text(&path), || linked(&path))
         .err()
@@ -72,7 +75,7 @@ fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
     // Once a node has loaded tcp, a surface validating in this process
     // holds a tcp Location to the same declaration (xmip_validate_v1).
     let sound = written(
-        "declared-sound",
+        &declared_sound,
         &node(&unheld().to_string(), &unheld().to_string()),
     );
     started(path_text(&sound), || linked(&sound))
@@ -83,14 +86,12 @@ fn a_location_is_held_to_its_technologys_declaration_as_the_node_starts() {
         problems.iter().any(|p| p.contains("\"color\"")),
         "{problems:?}"
     );
-    for written in [path, sound] {
-        let _ = std::fs::remove_dir_all(written.parent().expect("its directory"));
-    }
 }
 
 #[test]
 fn every_transport_is_given_its_nodes_location_as_it_is_built() {
-    let path = written("given", &node(&unheld().to_string(), &unheld().to_string()));
+    let folder = Folder::new("runtime-running-given");
+    let path = written(&folder, &node(&unheld().to_string(), &unheld().to_string()));
     count_anew();
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     let given = given();
@@ -105,15 +106,15 @@ fn every_transport_is_given_its_nodes_location_as_it_is_built() {
     );
     assert_eq!(running.location(), first().1);
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 #[test]
 fn a_node_stops_cleanly_and_lets_its_listener_go() {
+    let folder = Folder::new("runtime-running-stops");
     let far = TcpTransport::loopback();
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
-    let path = written("stops", &node(&receive, &far_address));
+    let path = written(&folder, &node(&receive, &far_address));
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     deliver(&TcpTransport::loopback(), &receive, b"before the stop");
     far.accept_one(&listener)
@@ -150,7 +151,6 @@ fn a_node_stops_cleanly_and_lets_its_listener_go() {
         .expect("read whole");
     drop(again);
     assert!(std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err());
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 #[test]
@@ -185,7 +185,8 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
     ];
 
     for (configuration, reason) in cases {
-        let path = written("unlinked", &configuration);
+        let folder = Folder::new("runtime-running-unlinked");
+        let path = written(&folder, &configuration);
         let refused = started(path_text(&path), || linked(&path))
             .err()
             .expect("refused");
@@ -195,13 +196,13 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
             "{reason}: {:?}",
             refused.problems
         );
-        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 
     // ADR-0066 clause 1: a filter naming what no route technology this
     // node was built with reads is refused now, not at the first Message.
+    let unread = Folder::new("runtime-running-unread");
     let directory = written(
-        "unread",
+        &unread,
         &base.replace("xmip.transport.mechanism", "party:sender"),
     );
     let refused = started(path_text(&directory), || linked(&directory))
@@ -212,25 +213,6 @@ fn what_the_program_was_not_built_with_refuses_the_node_at_start() {
         refused.problems[0].contains("no route technology"),
         "{refused}"
     );
-    let _ = std::fs::remove_dir_all(directory.parent().expect("its directory"));
-}
-
-/// The directories are named for the process, and Windows gives a
-/// process id again: what an earlier process of the same id left —
-/// a ledger sealed under a key-encryption key that ended with it — is
-/// not what the next one's test Storage node opens.
-#[test]
-fn what_an_earlier_process_of_the_same_id_left_is_gone() {
-    // A slice is signed for its node, so even this one names one.
-    let named = "[service]\nnode_name = \"left\"\n";
-    let earlier = written("left", named);
-    let place = earlier.parent().expect("its directory").join("ledger");
-    drop(test_storage(&place));
-
-    let path = written("left", named);
-
-    drop(test_storage(&place));
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 const LIBRARY_MODULE: &str = "\n[[modules]]\nname = \"test-module\"\nstart = true\n\
@@ -247,7 +229,8 @@ fn a_library_module_is_refused_where_the_runtime_opens_none() {
         "{}{LIBRARY_MODULE}library_path = \"xmip_core_test_module.dll\"\n",
         node(&unheld().to_string(), &unheld().to_string())
     );
-    let path = written("library", &configuration);
+    let folder = Folder::new("runtime-running-library");
+    let path = written(&folder, &configuration);
 
     let refused = started(path_text(&path), || linked(&path))
         .err()
@@ -255,7 +238,6 @@ fn a_library_module_is_refused_where_the_runtime_opens_none() {
 
     assert_eq!(refused.phase, StartupPhase::LoadModules);
     assert!(refused.problems[0].contains("dynamic-loading"), "{refused}");
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 /// ADR-0057: a Module the configuration starts is opened from its
@@ -289,7 +271,8 @@ fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
         node(&unheld().to_string(), &unheld().to_string()),
         library.display()
     );
-    let path = written("opened", &configuration);
+    let folder = Folder::new("runtime-running-opened");
+    let path = written(&folder, &configuration);
 
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
@@ -304,7 +287,6 @@ fn a_library_module_is_opened_once_and_let_go_at_the_stop() {
     );
     assert!(running.host_services().iter().all(HostService::in_process));
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 #[test]
@@ -319,7 +301,8 @@ fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_
         "{}\n[[correlations]]\nname = \"InOrder\"\nkeys = [\"send-port\"]\n",
         node_sending(&receive, &far_address, sequential)
     );
-    let path = written("paused", &configured);
+    let folder = Folder::new("runtime-running-paused");
+    let path = written(&folder, &configured);
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     deliver(&TcpTransport::loopback(), &receive, b"before the pause");
     far.accept_one(&listener)
@@ -378,5 +361,4 @@ fn a_paused_subscription_holds_at_the_node_and_its_resume_sends_what_it_held_in_
     }
     let outcomes = running.stop();
     assert_eq!((outcomes.held, outcomes.sent), (3, 4), "{outcomes:?}");
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

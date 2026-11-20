@@ -324,6 +324,7 @@ pub(crate) fn wake(path: &Path) -> bool {
 #[cfg(feature = "node")]
 mod tests {
     use super::*;
+    use file::temporary::Folder;
     use std::os::unix::fs::MetadataExt;
     use std::path::PathBuf;
 
@@ -353,38 +354,21 @@ mod tests {
     }
 
     /// A folder of local endpoints only its owner writes, with a node's
-    /// folder in it, for a test's sockets; it goes with everything in it
-    /// when the test ends, also when it fails.
-    struct Folder(PathBuf);
-
-    impl Folder {
-        fn new(test: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
-            let own = folder.join("node");
-            std::fs::create_dir_all(&own).expect("a folder");
-            for shut in [&folder, &own] {
-                std::fs::set_permissions(shut, std::fs::Permissions::from_mode(0o755))
-                    .expect("shut");
-            }
-            Self(folder)
+    /// folder in it, for a test's sockets, and the node's socket in the
+    /// node's folder.
+    fn endpoints(test: &str) -> (Folder, PathBuf) {
+        let folder = Folder::new(&format!("runtime-unix-{test}"));
+        let own = folder.join("node");
+        std::fs::create_dir(&own).expect("a folder");
+        for shut in [folder.to_path_buf(), own.clone()] {
+            std::fs::set_permissions(shut, std::fs::Permissions::from_mode(0o755)).expect("shut");
         }
-
-        /// The node's socket, in the node's folder.
-        fn socket(&self) -> PathBuf {
-            self.0.join("node").join("node.sock")
-        }
-    }
-
-    impl Drop for Folder {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+        (folder, own.join("node.sock"))
     }
 
     #[test]
     fn a_socket_others_are_admitted_to_is_0660_of_its_group_and_0600_otherwise() {
-        let folder = Folder::new("socket-group");
-        let path = folder.socket();
+        let (_folder, path) = endpoints("socket-group");
         let alone = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
         let found = std::fs::metadata(&path).expect("the socket");
         assert_eq!(found.mode() & 0o777, 0o600);
@@ -437,8 +421,7 @@ mod tests {
 
     #[test]
     fn a_second_node_on_the_same_endpoint_is_refused() {
-        let folder = Folder::new("second-node");
-        let path = folder.socket();
+        let (_folder, path) = endpoints("second-node");
         let first = Acceptor::bind(&path, super::super::Admitting::default()).expect("bound");
         let second = Acceptor::bind(&path, super::super::Admitting::default());
         let refused = second.err().expect("refused");

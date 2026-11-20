@@ -81,7 +81,6 @@ fn a_caller_past_a_bound_is_turned_away_and_the_next_caller_served() {
         std::fs::read_to_string(audited.join(xaudit::audit_store::FILE_NAME)).expect("audited");
     let turned = format!("the Receive Location 'In' turned away the caller at {from}");
     assert!(text.contains(&turned), "{text}");
-    let _ = std::fs::remove_dir_all(&at);
 }
 
 #[test]
@@ -103,5 +102,4 @@ fn a_location_whose_listener_fails_stops() {
         why.starts_with("the Receive Location 'In' stopped: nothing listens"),
         "{why}"
     );
-    let _ = std::fs::remove_dir_all(&at);
 }

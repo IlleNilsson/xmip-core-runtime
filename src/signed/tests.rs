@@ -7,37 +7,40 @@
 
 use std::path::PathBuf;
 
+use file::temporary::Folder;
+
 use super::*;
 
 /// The path of a node's configuration in a test's own folder, which goes
 /// as the test ends, passing or failing.
-struct Configured(PathBuf);
+struct Configured {
+    path: PathBuf,
+    _folder: Folder,
+}
 
 impl std::ops::Deref for Configured {
     type Target = Path;
 
     fn deref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Configured {
-    fn drop(&mut self) {
-        if let Some(base) = self.0.parent().and_then(Path::parent) {
-            let _ = std::fs::remove_dir_all(base);
-        }
+        &self.path
     }
 }
 
 /// A node's configuration at `config/node.xmip` in a folder of its own,
 /// its cluster's authority beside it, and that authority.
 fn folder(name: &str) -> (Configured, Issuer) {
-    let base = std::env::temp_dir().join(format!("xmip-signed-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = Folder::new(&format!("runtime-signed-{name}"));
     let configuration = base.join("config");
     let issuer = Issuer::kept_or_made(&configuration.join(AUTHORITY), "xmip-cluster", 0, 3600)
         .expect("an authority");
-    (Configured(configuration.join("node.xmip")), issuer)
+    let path = configuration.join("node.xmip");
+    (
+        Configured {
+            path,
+            _folder: base,
+        },
+        issuer,
+    )
 }
 
 /// `file` placed at `path` as the node's candidate.
@@ -343,6 +346,27 @@ fn a_slice_naming_no_node_is_not_signed() {
     let (_, issuer) = folder("nameless");
     let refused = sign(&issuer, "cluster", "[service]\n").expect_err("no node");
     assert!(refused.contains("names no node"), "{refused}");
+}
+
+#[test]
+fn a_slice_signed_by_a_kept_authority_is_named_for_the_environments_cluster() {
+    let (path, _) = folder("sliced");
+    let base = path.parent().and_then(Path::parent).expect("its own");
+    let file = base.join("cluster.xmip");
+    let test = configure::fixture::test_cluster();
+    let node = &test.node(0).name;
+    let cluster = format!("[service]\nname = \"n\"\n\n[nodes.{node}]\n");
+    let kept = path.parent().expect("a folder").join(AUTHORITY);
+    let signed =
+        sliced_signed(&cluster, &file, node, Some(&test.name), Some(&kept)).expect("signed");
+    std::fs::write(&*path, signed).expect("placed");
+    let text = checked(&path).expect("admitted");
+    let named = format!("cluster_name = \"{}\"", test.name);
+    assert!(text.contains(&named), "{text}");
+    assert!(
+        !base.join(AUTHORITY).exists(),
+        "no authority made beside the file"
+    );
 }
 
 #[test]

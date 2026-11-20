@@ -186,8 +186,8 @@ fn an_act_asked_at_a_door_is_taken_and_answered_within_a_millisecond_of_storages
     let configured = vec![ConfiguredSubscription::unfiled(subscription)];
     let pickup = Pickup::open(&node, configured, Arc::clone(&storage), None).expect("opened");
     let operators = vec![WHO.to_string()];
-    let at = std::env::temp_dir().join(format!("xmip-acted-audit-{}", std::process::id()));
-    let audit = ProgramAudit::new("acted timing", Some(FileSink::new(&at)));
+    let at = file::temporary::Folder::new("runtime-acted-audit");
+    let audit = ProgramAudit::new("acted timing", Some(FileSink::new(&*at)));
     let grants = Grants::listed([&[], &operators, &[]]);
     let watch = ActWatch::new(&node, Arc::clone(&storage), grants, &audit);
     let _watching = watch.start(Duration::from_secs(60)).expect("watching");

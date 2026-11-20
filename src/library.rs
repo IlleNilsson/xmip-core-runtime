@@ -315,7 +315,8 @@ mod tests {
         let file = process::generate::library_file(ORIGIN.module);
         let base = Path::new("configuration");
         assert_eq!(located(&module, base), Ok(base.join(&file)));
-        let absolute = std::env::temp_dir().join(&file);
+        let folder = file::temporary::Folder::new("runtime-library-absolute");
+        let absolute = folder.join(&file);
         let mut elsewhere = module.clone();
         elsewhere.manifest.entrypoint.library_path = Some(absolute.display().to_string());
         assert_eq!(located(&elsewhere, base), Ok(absolute));
@@ -374,18 +375,23 @@ mod tests {
         use process::{Act, Arrival, Event, Instance, Outcome};
 
         let file = process::generate::library_file(ORIGIN.module);
-        let built = std::env::current_exe()
-            .ok()
-            .and_then(|test| Some(test.parent()?.parent()?.join("examples").join(&file)))
-            .expect("the test program's folder");
-        assert!(
-            built.is_file(),
-            "no unit library at {}: build the example first, cargo build --example \
-             approval_unit (cargo test builds it)",
-            built.display()
-        );
-        let configuration =
-            std::env::temp_dir().join(format!("xmip-runtime-library-{}", std::process::id()));
+        // Cargo writes an example into the profile's folder, above the test
+        // program: one folder up from `deps/` before Cargo 1.100, and four up
+        // from a unit's own `build/<package>/<hash>/out/` in the build
+        // directory's layout 1.100 brought.
+        let test = std::env::current_exe().expect("the test program");
+        let built = test
+            .ancestors()
+            .map(|folder| folder.join("examples").join(&file))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no unit library in an examples folder above {}: build the example \
+                     first, cargo build --example approval_unit (cargo test builds it)",
+                    test.display()
+                )
+            });
+        let configuration = file::temporary::Folder::new("runtime-library");
         let folder = configuration.join("work-process");
         std::fs::create_dir_all(&folder).expect("the configuration's folder");
         std::fs::copy(&built, folder.join(&file)).expect("the library beside it");
@@ -424,8 +430,5 @@ mod tests {
         );
         drop(flow);
         drop(libraries);
-        // A library still mapped may not be removed on every system; the
-        // folder is the test's own either way.
-        drop(std::fs::remove_dir_all(&configuration));
     }
 }

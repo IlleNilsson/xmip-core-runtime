@@ -68,7 +68,8 @@ fn on_one_device() -> String {
 /// where a second port on the device would have been refused.
 #[test]
 fn two_locations_naming_one_device_on_a_node_share_its_one_port() {
-    let path = written("one-port", &on_one_device());
+    let folder = file::temporary::Folder::new("runtime-running-one-port");
+    let path = written(&folder, &on_one_device());
     let running = started(path_text(&path), || {
         let mut linked = linked(&path);
         linked
@@ -91,5 +92,4 @@ fn two_locations_naming_one_device_on_a_node_share_its_one_port() {
     assert_eq!(bench.written(), b"onetwo");
     assert_eq!(bench.opened(), 1, "one port for both");
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

@@ -391,8 +391,7 @@ mod tests {
 
     #[test]
     fn an_audit_database_named_elsewhere_keeps_the_audit_there_and_none_in_administration() {
-        let directory =
-            std::env::temp_dir().join(format!("xmip-storage-audit-{}", std::process::id()));
+        let directory = file::temporary::Folder::new("runtime-storage-audit");
         let (head, file) = service();
         let text = format!(
             "{head}data = \"state\"\n[store]\nkey_store = \"xmip-core-secret-memory\"\n\
@@ -427,12 +426,11 @@ mod tests {
         assert!(kept.is_some(), "kept");
         assert_eq!(administration.everything(), before.0, "nothing audit there");
         assert_ne!(audit.everything(), before.1, "kept in the audit database");
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
     fn a_node_listing_no_storage_node_is_its_own() {
-        let directory = std::env::temp_dir().join(format!("xmip-storage-{}", std::process::id()));
+        let directory = file::temporary::Folder::new("runtime-storage");
         let (head, file) = service();
         let text =
             format!("{head}data = \"state\"\n[store]\nkey_store = \"xmip-core-secret-memory\"\n");
@@ -471,7 +469,6 @@ mod tests {
                 format!("schema version {version} on memory")
             ))
         );
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -673,7 +670,7 @@ mod tests {
     #[test]
     fn a_node_reaches_the_storage_nodes_listed_and_waits_for_the_primary_gone_to_return() {
         let authority = crate::fixture::Authority::new();
-        let directory = authority.directory.clone();
+        let directory = authority.directory.to_path_buf();
         certified(&authority, 3);
         let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
         let storage = |place: usize| {
@@ -765,7 +762,7 @@ mod tests {
     #[test]
     fn a_primary_hands_its_node_each_standby_it_copies_to_by_name_with_what_it_copied() {
         let authority = crate::fixture::Authority::new();
-        let directory = authority.directory.clone();
+        let directory = authority.directory.to_path_buf();
         certified(&authority, 3);
         let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
         let storage = |place: usize| {

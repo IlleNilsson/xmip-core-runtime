@@ -130,5 +130,4 @@ fn a_telling_that_may_mend_is_audited_once_for_each_reason_and_the_location_goes
     assert!(text.contains("Receive Location 'In'"), "{text}");
     assert!(text.contains("held as a.xml.held"), "{text}");
     assert!(text.contains("the share did not answer"), "{text}");
-    let _ = std::fs::remove_dir_all(&at);
 }

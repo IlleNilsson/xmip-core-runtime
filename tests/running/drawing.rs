@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use file::temporary::Folder;
 use net::fixture::unheld;
 use observe::Relation;
 use observe::topology::link_id;
@@ -21,7 +22,8 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
     let far = TcpTransport::loopback();
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
-    let path = written("moves", &node(&receive, &far_address));
+    let folder = Folder::new("runtime-running-moves");
+    let path = written(&folder, &node(&receive, &far_address));
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
     let (name, _) = first();
     let into = link_id(
@@ -71,7 +73,6 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
         "{moved:?}"
     );
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 /// ADR-0018, amendment 2026-11-11: a node processes where it routes. One
@@ -82,7 +83,8 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
     let receive = unheld().to_string();
     let far = unheld().to_string();
     let configuration = node(&receive, &far).replacen("start = true", "start = false", 1);
-    let path = written("sends-only", &configuration);
+    let folder = Folder::new("runtime-running-sends-only");
+    let path = written(&folder, &configuration);
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
     let snapshot = running.snapshot();
@@ -113,5 +115,4 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
         "{refused}"
     );
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

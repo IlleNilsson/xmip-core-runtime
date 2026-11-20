@@ -183,7 +183,6 @@ fn serve_two(test: &str, tuning: Tuning, (items, length): (usize, u64), most: us
             });
         },
     );
-    let _ = std::fs::remove_dir_all(&at);
     Arc::try_unwrap(counts).unwrap_or_else(|_| panic!("every far end let go"))
 }
 

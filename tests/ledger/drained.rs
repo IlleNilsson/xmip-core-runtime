@@ -157,7 +157,6 @@ fn a_stop_takes_every_connection_already_queued_at_the_listener() {
         .expect("the Location stopped when asked");
         began.elapsed()
     });
-    let _ = std::fs::remove_dir_all(&at);
 
     assert_eq!(
         told.into_inner().expect("lock"),

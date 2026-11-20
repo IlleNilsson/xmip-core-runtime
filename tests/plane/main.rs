@@ -126,7 +126,7 @@ fn a_node_lost_is_told_and_found_again_on_the_recovery_loop() {
     assert!(unanswered.contains("unreachable"), "{unanswered}");
 
     let again = TcpListener::bind(("127.0.0.1", port)).expect("the same port");
-    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&authority.directory)));
+    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&*authority.directory)));
     let _back = Listener::start(
         again,
         &authority.identity("node"),

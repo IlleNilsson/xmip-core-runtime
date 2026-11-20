@@ -2,10 +2,12 @@
 //! act carried, judged again by the owning node, decided once, and asked
 //! of a node that does not run until it does.
 
+use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use audit_file::FileSink;
+use file::temporary::Folder;
 use node::{Capability, NodeRole};
 use observe::{Act, Noun, Order};
 use path::expression::Expression;
@@ -36,17 +38,15 @@ fn storage() -> Arc<dyn XmipStorage> {
     Arc::clone(crate::ledger::in_memory())
 }
 
-fn audit() -> ProgramAudit {
-    let at = std::env::temp_dir().join(format!("xmip-act-watch-audit-{}", std::process::id()));
-    ProgramAudit::new(
-        "xmip-core-runtime act watch tests",
-        Some(FileSink::new(&at)),
-    )
+fn audit(at: &Path) -> ProgramAudit {
+    ProgramAudit::new("xmip-core-runtime act watch tests", Some(FileSink::new(at)))
 }
 
 /// The node at `node` routing by the Subscription `Orders` over `storage`,
-/// its act watch running and listing `operators` as Operators.
+/// its act watch running, auditing in `at`, and listing `operators` as
+/// Operators.
 fn owner(
+    at: &Path,
     storage: &Arc<dyn XmipStorage>,
     node: &str,
     operators: &[&str],
@@ -60,7 +60,7 @@ fn owner(
     let pickup = Pickup::open(node, configured, Arc::clone(storage), None).expect("opened");
     let operators: Vec<String> = operators.iter().map(ToString::to_string).collect();
     let grants = Grants::listed([&[], &operators, &[]]);
-    let watch = ActWatch::new(node, Arc::clone(storage), grants, &audit());
+    let watch = ActWatch::new(node, Arc::clone(storage), grants, &audit(at));
     let watching = watch.start(Duration::from_secs(30)).expect("watching");
     (pickup, watching)
 }
@@ -130,9 +130,10 @@ fn a_node_without_the_operational_role_carries_no_act_and_says_so() {
 
 #[test]
 fn an_act_through_an_operational_door_is_taken_by_its_node_and_says_who_and_through() {
+    let at = Folder::new("runtime-act-watch");
     let storage = storage();
     let node = scope("taken");
-    let (pickup, _watching) = owner(&storage, &node, &["CN=alice"]);
+    let (pickup, _watching) = owner(&at, &storage, &node, &["CN=alice"]);
     let door = operational(&storage, "op-door", Duration::from_secs(5));
     let (outcome, said) = door.ask(&pause(&node), alice());
     assert_eq!(outcome, ActOutcome::Taken, "{said}");
@@ -158,9 +159,10 @@ fn an_act_through_an_operational_door_is_taken_by_its_node_and_says_who_and_thro
 
 #[test]
 fn a_node_takes_acts_on_itself_without_the_operational_role() {
+    let at = Folder::new("runtime-act-watch");
     let storage = storage();
     let node = scope("itself");
-    let (_pickup, _watching) = owner(&storage, &node, &["CN=alice"]);
+    let (_pickup, _watching) = owner(&at, &storage, &node, &["CN=alice"]);
     // A door no operational node keeps, writing through the owning node's
     // Xmip Storage since that node runs here.
     let (outcome, said) = Door::none().ask(&pause(&node), alice());
@@ -169,9 +171,10 @@ fn a_node_takes_acts_on_itself_without_the_operational_role() {
 
 #[test]
 fn the_owning_node_refuses_a_name_its_own_lists_do_not_grant() {
+    let at = Folder::new("runtime-act-watch");
     let storage = storage();
     let node = scope("judged");
-    let (pickup, _watching) = owner(&storage, &node, &["CN=bob"]);
+    let (pickup, _watching) = owner(&at, &storage, &node, &["CN=bob"]);
     let door = operational(&storage, "judging-door", Duration::from_secs(5));
     let (outcome, said) = door.ask(&pause(&node), alice());
     assert_eq!(outcome, ActOutcome::Refused);
@@ -189,9 +192,10 @@ fn the_owning_node_refuses_a_name_its_own_lists_do_not_grant() {
 fn a_certificate_the_owning_node_grants_by_an_alternative_name_is_taken() {
     // The owning node judges by the rule the door admitted by: alice's
     // certificate carries `localhost`, and that is all its lists name.
+    let at = Folder::new("runtime-act-watch");
     let storage = storage();
     let node = scope("alternative");
-    let (pickup, _watching) = owner(&storage, &node, &["localhost"]);
+    let (pickup, _watching) = owner(&at, &storage, &node, &["localhost"]);
     let door = operational(&storage, "alternative-door", Duration::from_secs(5));
     let (outcome, said) = door.ask(&pause(&node), alice());
     assert_eq!(outcome, ActOutcome::Taken, "{said}");
@@ -209,6 +213,7 @@ fn a_certificate_the_owning_node_grants_by_an_alternative_name_is_taken() {
 
 #[test]
 fn an_act_for_a_node_not_running_stays_asked_and_is_taken_as_it_starts() {
+    let at = Folder::new("runtime-act-watch");
     let storage = storage();
     let node = scope("later");
     let door = operational(&storage, "waiting-door", Duration::from_millis(50));
@@ -219,7 +224,7 @@ fn an_act_for_a_node_not_running_stays_asked_and_is_taken_as_it_starts() {
     assert!(asked.is_asked(), "kept asked");
 
     // Its decision waited on, as a door waits on one: told, never looked for.
-    let (pickup, _watching) = owner(&storage, &node, &["CN=alice"]);
+    let (pickup, _watching) = owner(&at, &storage, &node, &["CN=alice"]);
     let decided = [Position {
         watched: Watched::Act(asked.act),
         at: 0,

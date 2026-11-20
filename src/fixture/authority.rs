@@ -4,13 +4,12 @@
 //! operate plane's tests take it, through the C boundary
 //! (xmip-core-operate's `ffi::served`) and around it (`tests/plane`) alike.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use file::temporary::Folder;
 
 /// The authority, and what issues with it.
 pub struct Authority {
     issuer: rcgen::CertifiedIssuer<'static, rcgen::KeyPair>,
-    pub directory: PathBuf,
+    pub directory: Folder,
 }
 
 impl Default for Authority {
@@ -31,16 +30,7 @@ impl Authority {
         ];
         let key = rcgen::KeyPair::generate().expect("a key");
         let issuer = rcgen::CertifiedIssuer::self_signed(params, key).expect("self-signed");
-        // Numbered within the process, never by the clock: two tests made
-        // theirs in the same tick on Windows, and the first to end removed
-        // the folder the other's audit was written in.
-        static MADE: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
-            "xmip-plane-{}-{}",
-            std::process::id(),
-            MADE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&directory).expect("a directory");
+        let directory = Folder::new("runtime-plane");
         Self { issuer, directory }
     }
 
@@ -113,11 +103,5 @@ impl Authority {
         params.serial_number = serial.map(rcgen::SerialNumber::from);
         let leaf = params.signed_by(&key, &self.issuer).expect("issued");
         (leaf.pem(), key.serialize_pem(), self.issuer.pem())
-    }
-}
-
-impl Drop for Authority {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }

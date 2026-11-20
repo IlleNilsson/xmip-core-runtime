@@ -133,8 +133,7 @@ fn reaching(at: &str, authority: &Authority) -> Arc<Failing> {
 
 #[test]
 fn a_message_another_node_published_is_sent_over_the_wire_within_a_millisecond_of_its_own() {
-    let place = std::env::temp_dir().join(format!("xmip-measured-woken-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&place);
+    let place = file::temporary::Folder::new("runtime-measured-woken");
     let authority = Authority::new();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bound");
     let behind: Arc<dyn XmipStorage> = Arc::new(test_storage(&place));
@@ -185,7 +184,7 @@ fn a_message_another_node_published_is_sent_over_the_wire_within_a_millisecond_o
     said(&publishes, "the other node asked", &[Operation::Publish]);
     let beyond = across.saturating_sub(alone);
     server.stop();
-    let _ = std::fs::remove_dir_all(&place);
+    drop(place);
     assert!(
         beyond < Duration::from_millis(1),
         "another node's Publication sent {beyond:?} later than its own {alone:?}, the fastest \

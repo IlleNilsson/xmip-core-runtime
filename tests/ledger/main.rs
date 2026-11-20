@@ -137,6 +137,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use file::temporary::Folder;
 use persist::storage::{Embedded, XmipStorage};
 use rocksdb::RocksDb;
 use secret::{Held, KekName, KeyStore};
@@ -154,11 +155,8 @@ const PLACE: &str = "XMIP_LEDGER_PLACE";
 const STARTED: Duration = Duration::from_secs(60);
 
 /// A directory of a test's own, empty.
-fn directory(test: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("xmip-ledger-{test}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("directory");
-    path
+fn directory(test: &str) -> Folder {
+    Folder::new(&format!("runtime-ledger-{test}"))
 }
 
 /// The platform's key store over `keys` (ADR-0063 clause 4).

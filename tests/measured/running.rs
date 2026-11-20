@@ -19,7 +19,8 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
     let far = TcpTransport::loopback();
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
-    let path = written("carries", &node(&receive, &far_address));
+    let folder = file::temporary::Folder::new("runtime-measured-carries");
+    let path = written(&folder, &node(&receive, &far_address));
 
     count_anew();
     let running = started(path_text(&path), || linked(&path)).expect("the node starts");
@@ -106,5 +107,4 @@ fn a_node_carries_every_message_from_its_receive_location_to_the_far_end() {
          of five"
     );
     worked_beside_a_plain_wake("Xmip's own share per Message", own, idle);
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

@@ -154,14 +154,10 @@ pub fn test_storage(place: &Path) -> persist::storage::Embedded<rocksdb::RocksDb
     .expect("the test Storage node")
 }
 
-/// A directory of its own holding `configuration` and nothing else, and
-/// the configuration's path: `node.xmip` in its configuration folder
-/// (`fixture::configuration_folder`). Emptied first: it is named for the process, and an
-/// earlier process of the same id may have left it.
-pub fn written(test: &str, configuration: &str) -> PathBuf {
-    let base = std::env::temp_dir().join(format!("xmip-running-{test}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let path = xmip_core_runtime::fixture::configuration_folder(&base).join("node.xmip");
+/// `configuration` written in `base`, a test's own folder, and its path:
+/// `node.xmip` in the configuration folder (`fixture::configuration_folder`).
+pub fn written(base: &Path, configuration: &str) -> PathBuf {
+    let path = xmip_core_runtime::fixture::configuration_folder(base).join("node.xmip");
     xmip_core_runtime::fixture::write_signed(&path, configuration);
     path
 }

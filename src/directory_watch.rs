@@ -158,16 +158,12 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    use file::temporary::Folder;
+
     use super::*;
 
-    fn directory(name: &str) -> std::path::PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "xmip-directory-watch-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).expect("a directory");
-        directory
+    fn directory(name: &str) -> Folder {
+        Folder::new(&format!("runtime-directory-watch-{name}"))
     }
 
     #[test]
@@ -191,7 +187,6 @@ mod tests {
         assert!(last >= left, "told of the rename");
 
         drop(watch);
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -211,8 +206,6 @@ mod tests {
         std::fs::rename(&part, &file).expect("renamed over");
         let second = stamp(&file).expect("stamped");
         assert_ne!(second, first, "replaced");
-
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -234,13 +227,12 @@ mod tests {
         std::fs::copy(&source, &part).expect("copied");
         std::fs::rename(&part, &file).expect("renamed over");
         assert_ne!(identity(&file), Some(first), "replaced");
-
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
     fn a_directory_that_is_not_there_is_refused() {
-        let missing = directory("missing").join("not-there");
+        let folder = directory("missing");
+        let missing = folder.join("not-there");
         assert!(DirectoryWatch::spawn(&missing, || {}).is_err());
     }
 }

@@ -22,12 +22,7 @@ fn a_dropped_watch_ends_its_thread_at_once() {
     // is when a Location stops: told of a change first, so what is
     // measured is the drop, never the thread's start on a machine with no
     // processor free for it.
-    let directory = std::env::temp_dir().join(format!(
-        "xmip-directory-watch-dropped-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).expect("a directory");
+    let directory = file::temporary::Folder::new("runtime-directory-watch-dropped");
     let plain = PlainWake::start();
     let (mut ended, mut woke) = (Vec::new(), Vec::new());
     for round in 0..4 * FIVE {
@@ -53,5 +48,4 @@ fn a_dropped_watch_ends_its_thread_at_once() {
         usual,
         WAKES,
     );
-    let _ = std::fs::remove_dir_all(&directory);
 }

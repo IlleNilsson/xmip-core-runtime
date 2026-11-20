@@ -15,7 +15,7 @@ use xmip_core_runtime::plane::{Board, Grants, Listener, Remote};
 /// A node's listener over `board` on a loopback port, each caller holding
 /// the role `grants` grants it, and the file its audit is kept in.
 pub fn node(authority: &Authority, board: &Arc<Board>, grants: Grants) -> (Listener, PathBuf) {
-    let sink = FileSink::new(&authority.directory);
+    let sink = FileSink::new(&*authority.directory);
     let audited = sink.path();
     let audit = ProgramAudit::new("plane-test", Some(sink));
     let listener = TcpListener::bind("127.0.0.1:0").expect("an operate listener");

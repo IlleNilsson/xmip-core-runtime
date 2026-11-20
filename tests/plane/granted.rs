@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use file::temporary::Folder;
 use xmip_core_runtime::fixture::{Authority, absent_node};
 use xmip_core_runtime::plane::local::running_as;
 use xmip_core_runtime::plane::vouched::Relaying;
@@ -68,17 +69,22 @@ fn a_second_certificate_from_the_same_anchors_reads_and_acts_on_nothing() {
 
 #[test]
 fn an_account_on_the_local_endpoint_holds_the_role_its_own_name_is_listed_with() {
+    let audited = [
+        Folder::new("runtime-plane-granted"),
+        Folder::new("runtime-plane-granted"),
+    ];
     let account = running_as().expect("this process's account");
     let board = Arc::new(Board::default());
     let pause = ("subscription", "orders", "pause");
 
-    let (_listed, _, called) = endpoint::node(&board, listed(&[], &[&account]));
+    let (_listed, _, called) = endpoint::node(&board, listed(&[], &[&account]), &audited[0]);
     let (outcome, said) = surface(&called)
         .act(0, &absent_node(), pause)
         .expect("it answers");
     assert_eq!(outcome, Outcome::Refused, "admitted, no such node: {said}");
 
-    let (_unlisted, _, called) = endpoint::node(&board, listed(&[], &["NOBODY\\else"]));
+    let unlisted = listed(&[], &["NOBODY\\else"]);
+    let (_unlisted, _, called) = endpoint::node(&board, unlisted, &audited[1]);
     let (outcome, said) = surface(&called)
         .act(0, &absent_node(), pause)
         .expect("it answers");
@@ -88,13 +94,15 @@ fn an_account_on_the_local_endpoint_holds_the_role_its_own_name_is_listed_with()
 
 #[test]
 fn a_browser_a_relay_vouches_for_acts_by_its_own_listed_role_and_never_the_relays() {
+    let audited = Folder::new("runtime-plane-granted");
     let authority = Authority::new();
     let (_, _, anchors) = authority.pem("anchors");
     let account = running_as().expect("this process's account");
     let board = Arc::new(Board::default());
     // The relay's own account watches, as a web host following the node
     // does; alice is an Operator; bob is listed nowhere.
-    let (operating, _, called) = endpoint::node(&board, listed(&[&account], &["CN=alice"]));
+    let grants = listed(&[&account], &["CN=alice"]);
+    let (operating, _, called) = endpoint::node(&board, grants, &audited);
     operating.relay(Arc::new(
         Relaying::new(
             vec![account.clone()],

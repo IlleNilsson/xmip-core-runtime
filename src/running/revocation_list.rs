@@ -95,8 +95,7 @@ mod tests {
 
     #[test]
     fn a_list_a_day_old_is_made_again_and_a_node_keeping_none_makes_none() {
-        let base = std::env::temp_dir().join(format!("xmip-list-current-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = file::temporary::Folder::new("runtime-list-current");
         let configuration = base.join("node.xmip");
         let place = base.join(crate::signed::AUTHORITY);
         let now = provision::now();
@@ -131,6 +130,5 @@ mod tests {
             kept.keep().expect("asked"),
             "asked again once the hour passed"
         );
-        let _ = std::fs::remove_dir_all(&base);
     }
 }
