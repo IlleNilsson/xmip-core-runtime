@@ -379,16 +379,12 @@ mod tests {
         // program: one folder up from `deps/` before Cargo 1.100, and four up
         // from a unit's own `build/<package>/<hash>/out/` in the build
         // directory's layout 1.100 brought.
-        let test = std::env::current_exe().expect("the test program");
-        let built = test
-            .ancestors()
-            .map(|folder| folder.join("examples").join(&file))
-            .find(|candidate| candidate.is_file())
+        let built = ::file::built::found(std::path::Path::new("examples").join(&file))
             .unwrap_or_else(|| {
                 panic!(
                     "no unit library in an examples folder above {}: build the example \
                      first, cargo build --example approval_unit (cargo test builds it)",
-                    test.display()
+                    std::env::current_exe().expect("the test program").display()
                 )
             });
         let configuration = file::temporary::Folder::new("runtime-library");

@@ -7,9 +7,9 @@
 //! as a surface is.
 //!
 //! The thread waits in the kernel, using no processor, until a file is
-//! created in the directory, renamed into it, closed after it was written
-//! or, on Windows, removed from it or grown, and calls what it was given;
-//! a change during the call is kept and
+//! created in the directory, renamed into it, closed after it was written,
+//! a folder is made in it or, on Windows, a file is removed from it or
+//! grown, and calls what it was given; a change during the call is kept and
 //! tells it again at once, so none is lost. Dropping the watch ends the
 //! wait and joins the thread. Each operating system's own notification:
 //! Windows a change notification (`ffi/directory_watch.rs`, where the
@@ -185,6 +185,26 @@ mod tests {
             last = later;
         }
         assert!(last >= left, "told of the rename");
+
+        drop(watch);
+    }
+
+    #[test]
+    fn a_folder_made_in_the_directory_tells_the_watch() {
+        // A follow whose publication's folder is not made yet waits on the
+        // nearest folder above it (`operate::surface::snapshot_watch`): the
+        // folder made there is what it waits for, on every system.
+        let directory = directory("folder");
+        let (told, tells) = mpsc::channel();
+        let watch = DirectoryWatch::spawn(&directory, move || {
+            let _ = told.send(());
+        })
+        .expect("watched");
+
+        std::fs::create_dir(directory.join("made")).expect("made");
+        tells
+            .recv_timeout(Duration::from_secs(5))
+            .expect("told of the folder made");
 
         drop(watch);
     }
