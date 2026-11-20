@@ -29,6 +29,7 @@ use xmip_core_runtime::fixture::{Answer, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::carry;
 
+use super::directory;
 use super::receive_cycle::{node, on_node};
 use super::sending::{
     PATIENCE, dispatching, in_order, interleaving, journey, memory, onward, order, out, sender,
@@ -52,15 +53,14 @@ pub(super) fn broken_for(refused: u32, fixed: &Arc<AtomicBool>) -> Answer {
 
 #[test]
 fn a_retry_sends_a_failed_message_again_once_its_fault_is_fixed_and_is_audited() {
-    let at = std::env::temp_dir().join(format!("xmip-journey-act-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&at);
+    let at = directory("journey-act");
     let storage = memory();
     let fixed = Arc::new(AtomicBool::new(false));
     let (far, taken) = FarEnd::answering(broken_for(1, &fixed));
     let mut sending = sender(node(), far, out(|_| {}));
     sending.audit = Some(ProgramAudit::new(
         "xmip-runtime journey act tests",
-        Some(FileSink::new(&at)),
+        Some(FileSink::new(&*at)),
     ));
     on_node(
         &storage,
@@ -102,7 +102,6 @@ fn a_retry_sends_a_failed_message_again_once_its_fault_is_fixed_and_is_audited()
     let text = std::fs::read_to_string(at.join(xaudit::audit_store::FILE_NAME)).expect("kept");
     assert!(text.contains("action = \"message.retry\""), "{text}");
     assert!(text.contains("\"by\" = \"ilian\""), "{text}");
-    let _ = std::fs::remove_dir_all(&at);
 }
 
 /// Six orders through a Sequential `Out` that blocks, the third refused

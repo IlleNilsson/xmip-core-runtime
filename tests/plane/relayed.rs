@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use file::temporary::Folder;
 use xmip_core_runtime::fixture::{Authority, absent_node};
 use xmip_core_runtime::plane::local::running_as;
 use xmip_core_runtime::plane::vouched::Relaying;
@@ -26,6 +27,10 @@ fn retry(surface: &Remote, caller: u64) -> (Outcome, String) {
 
 #[test]
 fn a_relayed_act_is_the_browsers_by_its_own_role_proven_by_its_handshake_and_audited() {
+    let audited = [
+        Folder::new("runtime-plane-relayed"),
+        Folder::new("runtime-plane-relayed"),
+    ];
     let authority = Authority::new();
     let (_, _, anchors) = authority.pem("anchors");
     let account = running_as().expect("this process's account");
@@ -35,9 +40,11 @@ fn a_relayed_act_is_the_browsers_by_its_own_role_proven_by_its_handshake_and_aud
         Arc::new(Relaying::new(vec![account.clone()], &anchors, clock).expect("anchors"))
     };
     let board = Arc::new(Board::default());
-    let (operating, audit, called) = node(&board, account_as(Role::Operator, &["CN=alice"]));
+    let operator_role = account_as(Role::Operator, &["CN=alice"]);
+    let (operating, audit, called) = node(&board, operator_role, &audited[0]);
     operating.relay(relaying());
-    let (watching, _, watched) = node(&board, account_as(Role::Observer, &["CN=alice"]));
+    let observer_role = account_as(Role::Observer, &["CN=alice"]);
+    let (watching, _, watched) = node(&board, observer_role, &audited[1]);
     watching.relay(relaying());
     // The surfaces exist before the browser connects: its handshake is
     // bound to a nonce of each of their nodes.
@@ -68,12 +75,17 @@ fn a_relayed_act_is_the_browsers_by_its_own_role_proven_by_its_handshake_and_aud
 
 #[test]
 fn an_account_that_is_no_relay_or_a_listener_the_node_does_not_trust_acts_for_no_one() {
+    let audited = [
+        Folder::new("runtime-plane-relayed"),
+        Folder::new("runtime-plane-relayed"),
+    ];
     let authority = Authority::new();
     let account = running_as().expect("this process's account");
     let board = Arc::new(Board::default());
 
     // The node relays for another account alone: it gives no nonce.
-    let (elsewhere, _, called) = node(&board, account_as(Role::Developer, &["CN=bob"]));
+    let developer = account_as(Role::Developer, &["CN=bob"]);
+    let (elsewhere, _, called) = node(&board, developer, &audited[0]);
     let (_, _, anchors) = authority.pem("anchors");
     let clock = Arc::new(xcore::SystemClock);
     let other = Relaying::new(vec!["NOBODY\\relay".to_string()], &anchors, clock).expect("anchors");
@@ -82,7 +94,8 @@ fn an_account_that_is_no_relay_or_a_listener_the_node_does_not_trust_acts_for_no
     // authority's: the host's listener is none of its own.
     let stranger = Authority::new();
     let (_, _, theirs) = stranger.pem("anchors");
-    let (trusting, _, trusted) = node(&board, account_as(Role::Developer, &["CN=bob"]));
+    let developer = account_as(Role::Developer, &["CN=bob"]);
+    let (trusting, _, trusted) = node(&board, developer, &audited[1]);
     trusting.relay(Arc::new(
         Relaying::new(vec![account], &theirs, Arc::new(xcore::SystemClock)).expect("anchors"),
     ));
@@ -102,13 +115,14 @@ fn an_account_that_is_no_relay_or_a_listener_the_node_does_not_trust_acts_for_no
 
 #[test]
 fn two_browsers_acting_at_once_through_one_surface_each_reach_the_node_as_their_own() {
+    let audited = Folder::new("runtime-plane-relayed");
     let authority = Authority::new();
     let (_, _, anchors) = authority.pem("anchors");
     let account = running_as().expect("this process's account");
     let board = Arc::new(Board::default());
     // An Observer node, so each refusal names whom the node acted for.
     let browsers = ["CN=carol", "CN=dave"];
-    let (watching, _, called) = node(&board, account_as(Role::Observer, &browsers));
+    let (watching, _, called) = node(&board, account_as(Role::Observer, &browsers), &audited);
     watching.relay(Arc::new(
         Relaying::new(vec![account], &anchors, Arc::new(xcore::SystemClock)).expect("anchors"),
     ));

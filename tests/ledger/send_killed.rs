@@ -155,7 +155,6 @@ fn a_node_killed_after_publication_and_before_send_leaves_every_message_to_anoth
         let expected = format!("order {number}");
         assert!(taken.contains(&expected), "{expected} lost");
     }
-    let _ = std::fs::remove_dir_all(&place);
 }
 
 #[test]
@@ -176,5 +175,4 @@ fn a_node_killed_mid_send_sends_again_once_restarted_at_least_once_never_lost() 
         let expected = format!("order {number}");
         assert!(taken.contains(&expected), "{expected} lost");
     }
-    let _ = std::fs::remove_dir_all(&place);
 }

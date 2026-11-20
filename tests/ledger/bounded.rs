@@ -167,5 +167,4 @@ fn carried_in_bounded_memory() {
     drop(read);
     drop(carried);
     drop(node);
-    let _ = std::fs::remove_dir_all(&place);
 }

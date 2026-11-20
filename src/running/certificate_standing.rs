@@ -178,8 +178,7 @@ mod tests {
 
     #[test]
     fn each_certificate_a_node_presents_says_when_its_renewal_is_due() {
-        let base = std::env::temp_dir().join(format!("xmip-standing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = file::temporary::Folder::new("runtime-standing");
         let (document, node, scope) = configured();
         let now = provision::now();
         let authority = base.join("authority");
@@ -212,6 +211,5 @@ mod tests {
         assert_eq!(due[0].1, Health::Stressed);
         assert!(due[0].2.starts_with("renewal due"), "{}", due[0].2);
         assert_eq!(said(now + 91 * 86_400)[0].1, Health::Done);
-        std::fs::remove_dir_all(&base).expect("removes what it wrote");
     }
 }

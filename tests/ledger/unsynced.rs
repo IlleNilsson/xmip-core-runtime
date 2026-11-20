@@ -118,5 +118,4 @@ fn a_receive_killed_between_its_answer_and_its_sync_leaves_exactly_what_was_dura
         "the Message durable before is there"
     );
     drop(node);
-    let _ = std::fs::remove_dir_all(&place);
 }

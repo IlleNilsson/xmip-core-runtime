@@ -289,9 +289,35 @@ mod tests {
     use super::*;
     use crate::fixture::{Failing, Operation};
     use persist::storage::StreamChunk;
+    use std::sync::mpsc::{self, SyncSender};
     use std::time::Duration;
     use xcore::SystemClock;
     use xcore::clock::Stepped;
+
+    /// How long a test waits for what takes microseconds before it calls
+    /// it a defect: so one fails, never hangs. No figure is held by it.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// The share's Clock, stepped by the test, telling it of each reading
+    /// while there is room for one: how it knows the one ahead looked at
+    /// the Clock without a lock of the share's, which one held back keeps
+    /// while it looks again within a reading of the operating system's
+    /// clock.
+    struct Told {
+        stepped: Stepped,
+        tell: SyncSender<()>,
+    }
+
+    impl Clock for Told {
+        fn unix_timestamp_nanos(&self) -> i128 {
+            self.stepped.unix_timestamp_nanos()
+        }
+
+        fn monotonic_nanos(&self) -> i128 {
+            let _ = self.tell.try_send(());
+            self.stepped.monotonic_nanos()
+        }
+    }
 
     /// A Stream of `chunks` chunks of `size` patterned bytes kept in
     /// `storage` as `stream`: its length.
@@ -553,36 +579,54 @@ mod tests {
     #[test]
     fn one_that_stops_taking_holds_the_one_ahead_back_until_its_stall_passed_on_the_clock() {
         let stream = StreamId::new(0x5_0008);
-        let chunks = 24;
-        let clock = Arc::new(Stepped::default());
+        let (tell, told) = mpsc::sync_channel(2);
+        let clock = Arc::new(Told {
+            stepped: Stepped::default(),
+            tell,
+        });
         let handed: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
-        let (share, _, length) = counted(stream, (chunks, 500), handed);
+        let (share, failing, length) = counted(stream, (24, 500), handed);
         let (mut ahead, mut stopped) = (share.reader(stream, length), share.reader(stream, length));
         stopped
             .read_exact(&mut [0u8; 500])
             .expect("its first chunk");
         // The one whose far end stopped takes nothing more. A nanosecond
-        // short of its stall on the share's Clock, the one ahead is held
-        // back for it once it has read all the read keeps; at its stall it
-        // goes on to the end.
+        // short of its stall on the share's Clock, the one ahead takes all
+        // the read keeps and the next, which lets go only of the chunk the
+        // one stopped took; the one after that is held back for it, and at
+        // its stall goes on to the end.
         let short = STREAM_STALL.checked_sub(Duration::from_nanos(1));
-        clock.pass(short.expect("a stall of milliseconds"));
-        std::thread::scope(|scope| {
-            let going = scope.spawn(|| {
-                let (mut piece, mut went) = ([0u8; 500], 0);
-                while ahead.read(&mut piece).expect("ahead") > 0 {
-                    went += 1;
-                }
-                went
-            });
-            while stopped.read.source.locked().window.len() < KEPT_PER_READER {
-                std::thread::yield_now();
-            }
-            assert!(!going.is_finished(), "held back within the stall");
-            clock.pass(Duration::from_nanos(1));
-            let went = going.join().expect("ahead");
-            assert_eq!(went, chunks, "every chunk, once the stall passed");
+        clock.stepped.pass(short.expect("a stall of milliseconds"));
+        let mut taken = vec![0u8; 500 * (KEPT_PER_READER + 1)];
+        ahead
+            .read_exact(&mut taken)
+            .expect("all kept, and the next");
+        let asked = failing.asked_times(Operation::ReadChunk);
+        while told.try_recv().is_ok() {}
+        let (gone, going) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            let read = ahead.read_to_end(&mut rest).map(|_| rest);
+            let _ = gone.send((read, ahead));
         });
+        // Held back, it looks at the Clock and looks again, having asked
+        // Xmip Storage for nothing: one that went on would have asked for
+        // the next chunk before its second look.
+        for _ in 0..2 {
+            told.recv_timeout(BOUND).expect("the one ahead looks");
+        }
+        let held = failing.asked_times(Operation::ReadChunk);
+        assert_eq!(held, asked, "held back within the stall");
+        clock.stepped.pass(Duration::from_nanos(1));
+        let (rest, ahead) = going.recv_timeout(BOUND).expect("the one ahead at the end");
+        taken.extend(rest.expect("ahead"));
+        assert_eq!(
+            taken.len() as u64,
+            length,
+            "every chunk, once the stall passed"
+        );
+        assert!(patterned(&taken), "every byte, in its place");
+        assert!(Arc::ptr_eq(&ahead.read, &stopped.read), "on one read");
         assert_eq!(
             stopped.read.source.locked().readers.len(),
             2,

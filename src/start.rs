@@ -306,7 +306,7 @@ mod tests {
         let (directory, path) = written(&service().0, "start-missing");
         std::fs::remove_file(&path).expect("taken away");
         let snapshot = start(&path);
-        let _ = std::fs::remove_dir_all(&directory);
+        drop(directory);
 
         assert_eq!(snapshot.worst("xmip:///"), Some(Health::Done));
         let evidence = &snapshot.health("xmip:///")[0].evidence;
@@ -322,9 +322,7 @@ mod tests {
 
     #[test]
     fn starting_from_a_valid_file_plans_the_node_and_says_it_is_not_running() {
-        let directory =
-            std::env::temp_dir().join(format!("xmip-operate-start-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
+        let directory = file::temporary::Folder::new("runtime-start");
         let path = crate::fixture::configuration_folder(&directory).join("node.xmip");
         let (head, node) = service();
         crate::fixture::write_signed(
@@ -510,8 +508,8 @@ filter = "true"
     }
 
     /// `text` written as a node's configuration in a directory of its own.
-    fn written(text: &str, what: &str) -> (std::path::PathBuf, String) {
-        let directory = std::env::temp_dir().join(format!("xmip-{what}-{}", std::process::id()));
+    fn written(text: &str, what: &str) -> (file::temporary::Folder, String) {
+        let directory = file::temporary::Folder::new(&format!("runtime-{what}"));
         let node = crate::fixture::configuration_folder(&directory).join("node.xmip");
         crate::fixture::write_signed(&node, text);
         let path = node.to_str().expect("utf-8 path").to_string();
@@ -545,7 +543,7 @@ filter = "true"
     #[test]
     fn starting_a_node_reads_the_applications_it_holds_as_sections() {
         let (text, node) = orders();
-        let (directory, path) = written(&text, "section");
+        let (_directory, path) = written(&text, "section");
 
         let snapshot = start(&path);
         let records = snapshot.health(&format!("xmip:///{node}"));
@@ -574,7 +572,6 @@ filter = "true"
             "{}",
             refused.evidence
         );
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// ADR-0066 clause 1: a filter is compiled as the node starts, and one
@@ -587,7 +584,7 @@ filter = "true"
             "filter = \"MessageType = 'Order' + 1\"",
         );
         assert_ne!(broken, text);
-        let (directory, path) = written(&broken, "filter");
+        let (_directory, path) = written(&broken, "filter");
 
         let snapshot = start(&path);
         let refused = &snapshot.health(&format!("xmip:///{node}"))[0];
@@ -598,7 +595,6 @@ filter = "true"
             "{}",
             refused.evidence
         );
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// ADR-0027, amendment 2026-11-11: a Subscription routes to a Send
@@ -622,7 +618,7 @@ filter = "true"
                 "[[xmip_applications.send_ports]]\nname = \"Billing\"\n\
                  send_locations = [\"Billing\", \"Billing, failover\"]\nfailover = \"next\"\n",
             );
-        let (directory, path) = written(&with_failover, "failover");
+        let (_directory, path) = written(&with_failover, "failover");
 
         let snapshot = start(&path);
         let at = format!("xmip:///{node}");
@@ -637,7 +633,6 @@ filter = "true"
         }
         let astray = format!("{at}/send/Billing, failover");
         assert!(!scopes.contains(&astray), "{scopes:?}");
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

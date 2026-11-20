@@ -102,7 +102,8 @@ fn eight_senders_at_once_are_carried_side_by_side() {
             "receive_port = \"Loopback\"\ncorrelation = \"PerSender\"\n",
         )
     );
-    let path = written("eight", &side_by_side);
+    let folder = file::temporary::Folder::new("runtime-measured-eight");
+    let path = written(&folder, &side_by_side);
     // Its Storage node counted: when each hand-on was answered, durable.
     let counting: Arc<Mutex<Option<Arc<Failing>>>> = Arc::default();
     let running = started(path_text(&path), || {
@@ -247,7 +248,6 @@ fn eight_senders_at_once_are_carried_side_by_side() {
         outcomes.disk_sync
     );
     worked_beside_a_plain_wake("Xmip's own share per send of eight senders", own, idle);
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }
 
 /// What the far end took: the body, when it took it, the Journey its send

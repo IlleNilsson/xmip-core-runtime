@@ -88,7 +88,7 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
 
     let board = Arc::new(Board::default());
     board.post("source = \"back\"\n".to_string());
-    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&authority.directory)));
+    let audit = ProgramAudit::new("plane-test", Some(FileSink::new(&*authority.directory)));
     let _back = Listener::start(
         TcpListener::bind(address).expect("the same port"),
         &authority.identity("node"),
@@ -112,10 +112,11 @@ fn a_read_after_the_node_was_not_there_says_so_at_once_and_the_loop_finds_it() {
 
 #[test]
 fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() {
+    let audited = file::temporary::Folder::new("runtime-measured-plane");
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
     let watching = endpoint::account_as(Role::Observer, &[]);
-    let (_listener, _, called) = endpoint::node(&board, watching);
+    let (_listener, _, called) = endpoint::node(&board, watching, &audited);
     let surface = endpoint::surface(&called);
 
     assert_eq!(
@@ -143,10 +144,11 @@ fn a_surface_on_this_machine_reads_the_publication_and_is_told_as_it_advances() 
 
 #[test]
 fn a_connection_on_this_machine_is_proven_and_answered_within_the_millisecond() {
+    let audited = file::temporary::Folder::new("runtime-measured-plane");
     let board = Arc::new(Board::default());
     board.post("source = \"one\"\n".to_string());
     let watching = endpoint::account_as(Role::Observer, &[]);
-    let (_listener, _, called) = endpoint::node(&board, watching);
+    let (_listener, _, called) = endpoint::node(&board, watching, &audited);
     assert!(
         endpoint::surface(&called).publication().is_ok(),
         "the first answers"

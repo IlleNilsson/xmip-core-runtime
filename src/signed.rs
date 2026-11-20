@@ -129,6 +129,42 @@ pub fn signed_by_kept(
         .map_err(|error| error.to_string())?;
     sign(&authority, cluster, slice)
 }
+
+/// The node `node`'s document sliced from the cluster's file `cluster`,
+/// kept at `path`, and signed: the one slicing and signing every program
+/// and surface asks for a node (`xmip-service --slice`,
+/// `xmip_cluster_signed_slice_v1`). Sliced as the cluster `name` the
+/// environment gives where it gives one (`configure::slice_named`), and as
+/// the file names it otherwise; signed by the cluster's authority kept in
+/// `authority` where it is named ([`signed_by_kept`]), and beside the file
+/// otherwise ([`signed_beside`]), made there named for the cluster where
+/// none is kept.
+///
+/// # Errors
+/// The slicing refuses, or the authority cannot be read or made, or
+/// signing fails; in words.
+pub fn sliced_signed(
+    cluster: &str,
+    path: &Path,
+    node: &str,
+    name: Option<&str>,
+    authority: Option<&Path>,
+) -> Result<String, String> {
+    let (sliced, name) = match name {
+        Some(name) => (
+            configure::slice_named(cluster, node, name)?,
+            name.to_string(),
+        ),
+        None => (
+            configure::slice(cluster, node)?,
+            configure::cluster::cluster_name(cluster)?.unwrap_or_default(),
+        ),
+    };
+    match authority {
+        Some(place) => signed_by_kept(place, &name, cluster, &sliced),
+        None => signed_beside(path, &name, cluster, &sliced),
+    }
+}
 /// `slice`, sliced from the cluster's file `cluster`, signed by `authority`
 /// and written at `path`, with the authority's certificate beside it where
 /// the node checks it ([`anchor`]): a slice placed on its node.

@@ -179,12 +179,11 @@ pub fn standing(directory: &Path) -> Vec<Standing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use file::temporary::Folder;
     use node::Purpose;
 
-    fn scratch(name: &str) -> PathBuf {
-        let directory = env::temp_dir().join("xmip-declared-test").join(name);
-        let _ = fs::remove_dir_all(&directory);
-        directory
+    fn scratch(name: &str) -> Folder {
+        Folder::new(&format!("runtime-declared-{name}"))
     }
 
     #[test]
@@ -242,7 +241,6 @@ mod tests {
     #[test]
     fn a_file_that_is_no_declarations_is_refused_and_left_where_it_is() {
         let directory = scratch("refused");
-        fs::create_dir_all(&directory).expect("made");
 
         for stranger in ["other-4.toml", "xmip-a-1.txt", "xmip"] {
             let file = directory.join(stranger);
@@ -276,7 +274,6 @@ mod tests {
     #[test]
     fn a_file_that_is_no_declaration_and_a_missing_directory_hold_none() {
         let directory = scratch("strangers");
-        fs::create_dir_all(&directory).expect("made");
         fs::write(directory.join("xmip-a-1.toml"), "name = \"x\"\n").expect("no pid");
         fs::write(directory.join("xmip-b-2.toml"), "not toml at all").expect("written");
         let declaration = Declaration::new("xmip", "", Purpose::Runtime).expect("a name");

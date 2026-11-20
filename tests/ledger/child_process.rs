@@ -167,7 +167,7 @@ fn a_child_is_ended_when_its_test_panics_and_when_its_test_program_ends() {
         !ChildProcess::is_live(id),
         "the child {id} was killed and waited for as the panic left its test"
     );
-    let _ = std::fs::remove_dir_all(&place);
+    drop(place);
 
     let place = directory("ended-on-close");
     let mut child = ChildProcess::start("receive", &place);
@@ -179,5 +179,4 @@ fn a_child_is_ended_when_its_test_panics_and_when_its_test_program_ends() {
     );
     assert!(!ChildProcess::is_live(child.id()));
     drop(child);
-    let _ = std::fs::remove_dir_all(&place);
 }

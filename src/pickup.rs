@@ -513,9 +513,8 @@ mod tests {
 
     #[test]
     fn a_remove_or_a_subscription_not_configured_is_refused_and_every_act_is_audited() {
-        let at = std::env::temp_dir().join(format!("xmip-pickup-audit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&at);
-        let audit = ProgramAudit::new("xmip-runtime pickup tests", Some(FileSink::new(&at)));
+        let at = file::temporary::Folder::new("runtime-pickup-audit");
+        let audit = ProgramAudit::new("xmip-runtime pickup tests", Some(FileSink::new(&*at)));
         let configured = vec![ConfiguredSubscription::unfiled(subscription("orders"))];
         let storage = Arc::clone(crate::ledger::in_memory());
         let pickup = Pickup::open(&node(), configured, storage, Some(audit)).expect("opened");
@@ -539,6 +538,5 @@ mod tests {
         assert!(text.contains("action = \"subscription.pause\""), "{text}");
         assert!(text.contains("action = \"subscription.resume\""), "{text}");
         assert!(text.contains("\"by\" = \"ilian\""), "{text}");
-        let _ = std::fs::remove_dir_all(&at);
     }
 }

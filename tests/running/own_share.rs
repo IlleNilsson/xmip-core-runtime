@@ -25,7 +25,8 @@ fn a_message_s_hand_on_is_counted_in_its_own_share() {
     let far = TcpTransport::loopback();
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
-    let path = written("handed-on", &node(&receive, &far_address));
+    let folder = file::temporary::Folder::new("runtime-running-handed-on");
+    let path = written(&folder, &node(&receive, &far_address));
     let failing: Arc<Mutex<Option<Arc<Failing>>>> = Arc::default();
     let running = started(path_text(&path), || {
         let mut linked = linked(&path);
@@ -65,5 +66,4 @@ fn a_message_s_hand_on_is_counted_in_its_own_share() {
     assert_eq!(outcomes.sent, 5, "{outcomes:?}");
     let own = outcomes.own_share.expect("measured");
     assert!(own >= SPIN, "its hand-on counted: {own:?}");
-    let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
 }

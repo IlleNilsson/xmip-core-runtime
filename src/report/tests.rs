@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use audit_file::FileSink;
+use file::temporary::Folder;
 use report::{AtRest, Data, Installation, Report, Reports, answer};
 use serde_json::{Value, json};
 use xaudit::audit_query::AuditQuery;
@@ -10,11 +11,8 @@ use xaudit::program_audit::ProgramAudit;
 use super::{Composed, PROBED, Unanswered, act, carry, configuration};
 
 /// A folder of the test's own under the system's temporary directory.
-fn folder(name: &str) -> PathBuf {
-    let folder = std::env::temp_dir().join(format!("xmip-report-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&folder);
-    std::fs::create_dir_all(&folder).expect("a folder");
-    folder
+fn folder(name: &str) -> Folder {
+    Folder::new(&format!("runtime-report-{name}"))
 }
 
 /// The test cluster's first node, keeping Xmip Storage itself, with a
@@ -86,7 +84,6 @@ fn a_nodes_own_configuration_is_probed_every_location_undeclared_and_so_a_gap() 
         [json!("not-yet-available")],
         "no Location is plain, both are undeclared"
     );
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -120,7 +117,6 @@ fn a_clusters_file_is_sliced_for_the_node_named_and_refused_without_one() {
         answer["requirement"]["state"], "evidence",
         "sealed on its own"
     );
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -153,7 +149,7 @@ fn one_probe_is_one_audit_record_and_the_list_expects_what_it_took() {
     }))
     .expect("opened");
 
-    let file = audit_store::stated(Some(&folder)).expect("a file");
+    let file = audit_store::stated(Some(&*folder)).expect("a file");
     let query = AuditQuery::from_pairs([("action", PROBED)]).expect("a query");
     let page = audit_store::ask(&file, &query).expect("read");
     assert_eq!(page.matched, 1);
@@ -184,7 +180,6 @@ fn one_probe_is_one_audit_record_and_the_list_expects_what_it_took() {
         .expect("listed");
     assert_eq!(regulation["took_ms"], answer["took_ms"]);
     assert_eq!(regulation["probed_at"], json!(record.at));
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -221,7 +216,6 @@ fn a_report_that_cannot_be_opened_is_refused_before_its_configuration_is_read() 
             "{refused}"
         );
     }
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -242,17 +236,16 @@ fn a_table_naming_no_technology_is_refused_and_never_probed_as_evidence() {
         refused.contains("[runtime] storage: 'postgres' is none Xmip Storage keeps"),
         "{refused}"
     );
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
 fn an_audit_that_cannot_be_read_leaves_every_report_listed_and_says_why() {
     let folder = folder("unreadable");
-    let file = audit_store::stated(Some(&folder)).expect("a file");
+    let file = audit_store::stated(Some(&*folder)).expect("a file");
     // A folder where the audit file is: there, and not readable as one.
     std::fs::create_dir_all(&file).expect("a folder in its place");
     let list = listing(&json!({ "directory": folder.display().to_string() })).expect("listed");
-    let _ = std::fs::remove_dir_all(&folder);
+    drop(folder);
     let standard = Reports::standard();
     let every: Vec<&str> = standard.iter().map(Report::name).collect();
     // Xmip's own, in order; a test carrying one of its own may add it after.
@@ -280,7 +273,6 @@ fn one_report_is_listed_by_name_and_a_name_that_is_none_refused() {
         refused.starts_with("REFUSED: no Report is named 'Nowhere'; there are: Audit"),
         "{refused}"
     );
-    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -312,8 +304,7 @@ fn what_cannot_be_opened_is_refused_and_nothing_is_audited() {
             "{refused}"
         );
     }
-    assert!(audit_store::stated(Some(&folder)).is_none_or(|file| !file.exists()));
-    let _ = std::fs::remove_dir_all(&folder);
+    assert!(audit_store::stated(Some(&*folder)).is_none_or(|file| !file.exists()));
 }
 
 /// A Report a module carries.
@@ -338,7 +329,7 @@ fn a_carried_report_is_listed_after_xmips_and_a_second_of_its_name_refused() {
     carry(Box::new(Carried)).expect("carried");
     let folder = folder("carried");
     let list = listing(&json!({ "directory": folder.display().to_string() })).expect("listed");
-    let _ = std::fs::remove_dir_all(&folder);
+    drop(folder);
     let names = names(&list);
     let standard = Reports::standard();
     let own: Vec<&str> = standard.iter().map(Report::name).collect();

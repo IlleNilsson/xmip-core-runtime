@@ -123,11 +123,11 @@ pub(super) fn guarded(folder: &Path, owner: Owner) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use file::temporary::Folder;
 
     /// A folder of its own for `test`, mode `mode`.
-    fn folder(test: &str, mode: u32) -> std::path::PathBuf {
-        let folder = std::env::temp_dir().join(format!("xmip-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).expect("a folder");
+    fn folder(test: &str, mode: u32) -> Folder {
+        let folder = Folder::new(&format!("runtime-local-{test}"));
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).expect("mode");
         folder
     }
@@ -142,7 +142,6 @@ mod tests {
         std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("shut");
         assert_eq!(guarded(&open, Owner::Node), Ok(()));
         assert_eq!(guarded(&open, Owner::NodeOrSuperuser), Ok(()));
-        std::fs::remove_dir(&open).expect("removed");
     }
 
     /// Both levels held as the node binds: a node's folder fit in a folder
@@ -173,7 +172,6 @@ mod tests {
             missing.contains(super::super::DIRECTORY_VARIABLE),
             "{missing}"
         );
-        let _ = std::fs::remove_dir_all(&endpoints);
     }
 
     /// Decided while building, 2026-11-15: a node started under the variable
@@ -189,6 +187,5 @@ mod tests {
         assert_eq!(found.mode() & 0o7777, 0o755);
         let deep = made(&endpoints.join("a").join("b")).expect_err("no folder above");
         assert!(deep.contains(super::super::DIRECTORY_VARIABLE), "{deep}");
-        let _ = std::fs::remove_dir_all(&endpoints);
     }
 }

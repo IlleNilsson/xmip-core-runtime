@@ -65,9 +65,14 @@ fn hosted(nodes: usize) -> (Duration, Vec<Duration>) {
     let (_, _, anchors) = trusted.pem("anchors");
     let account = running_as().expect("this process's account");
     let board = Arc::new(Board::default());
+    // Each node's audit folder, dropped after the nodes kept below.
+    let mut audited = Vec::new();
     let mut kept: Vec<(Listener, Remote)> = Vec::new();
     for _ in 0..nodes {
-        let (listening_node, _, called) = node(&board, account_as(Role::Operator, &["CN=alice"]));
+        let folder = file::temporary::Folder::new("runtime-measured-relayed");
+        let operator = account_as(Role::Operator, &["CN=alice"]);
+        let (listening_node, _, called) = node(&board, operator, &folder);
+        audited.push(folder);
         let clock = Arc::new(xcore::SystemClock);
         let relaying = Relaying::new(vec![account.clone()], &anchors, clock).expect("anchors");
         listening_node.relay(Arc::new(relaying));

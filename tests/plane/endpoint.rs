@@ -3,7 +3,7 @@
 //! tests on this machine and the module's timing program
 //! (`tests/measured`) both stand up.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -37,19 +37,18 @@ pub fn endpoint() -> String {
     format!("xmip-operate-test-{}-{next}", std::process::id())
 }
 
-fn audit() -> (ProgramAudit, PathBuf) {
-    let directory = std::env::temp_dir().join(endpoint());
-    std::fs::create_dir_all(&directory).expect("an audit directory");
-    let sink = FileSink::new(&directory);
+fn audit(directory: &Path) -> (ProgramAudit, PathBuf) {
+    let sink = FileSink::new(directory);
     let audited = sink.path();
     (ProgramAudit::new("plane-local-test", Some(sink)), audited)
 }
 
 /// A node's local endpoint over `board`, each caller holding the role
-/// `grants` grants it, the file its audit is kept in and the endpoint's
-/// name.
-pub fn node(board: &Arc<Board>, grants: Grants) -> (Listener, PathBuf, String) {
-    let (audit, audited) = audit();
+/// `grants` grants it, its audit kept in the folder `audited`: the
+/// listener, the file its audit is kept in and the endpoint's name. The
+/// test makes the folder before the node, so it outlives the listener.
+pub fn node(board: &Arc<Board>, grants: Grants, audited: &Path) -> (Listener, PathBuf, String) {
+    let (audit, audited) = audit(audited);
     let called = endpoint();
     let published = Arc::clone(board) as Arc<dyn Published>;
     let admitting = xmip_core_runtime::plane::local::Admitting::default();

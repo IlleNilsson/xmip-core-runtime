@@ -226,8 +226,8 @@ mod tests {
             )
         };
         let (first, second) = (held("operations"), held("on-call"));
-        let at = std::env::temp_dir().join(format!("xmip-runtime-caller-{}", std::process::id()));
-        let audit = ProgramAudit::new("xmip-core-runtime tests", Some(FileSink::new(&at)));
+        let at = file::temporary::Folder::new("runtime-caller");
+        let audit = ProgramAudit::new("xmip-core-runtime tests", Some(FileSink::new(&*at)));
         let filter = Filter::everything();
 
         for order in [[&first, &second], [&second, &first]] {
@@ -243,7 +243,6 @@ mod tests {
         let alone = Parties::of(std::slice::from_ref(&first), &[]).expect("declared");
         let subscriber = subscriber_as(r"CORP\shared", &alone, &filter, &audit).expect("one");
         assert_eq!(Some(subscriber.party()), first.id);
-        let _ = std::fs::remove_dir_all(&at);
     }
 
     #[test]

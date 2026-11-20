@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use configure::signed::{Pin, active_at, pin_at};
+use file::temporary::Folder;
 use net::fixture::unheld;
 use observe::Health;
 use persist::{Engine, PersistError};
@@ -57,7 +58,8 @@ fn a_correctly_signed_candidate_the_node_cannot_start_leaves_its_active_configur
     let far = TcpTransport::loopback();
     let (listener, far_address) = far.bind().expect("the far end binds");
     let receive = unheld().to_string();
-    let path = written("candidate", &node(&receive, &far_address));
+    let folder = Folder::new("runtime-running-candidate");
+    let path = written(&folder, &node(&receive, &far_address));
     started(path_text(&path), || linked(&path))
         .expect("the node starts")
         .stop();
@@ -98,15 +100,12 @@ fn a_correctly_signed_candidate_the_node_cannot_start_leaves_its_active_configur
     );
     let pin = Pin::read(&kept(&pin_at(&path))).expect("pinned");
     assert_eq!(pin.serial, serial(&path), "the candidate is pinned as seen");
-    let _ = std::fs::remove_dir_all(path.parent().and_then(Path::parent).expect("its own"));
 }
 
 #[test]
 fn starting_alone_writes_nothing_and_only_activation_replaces_the_active_configuration() {
-    let path = written(
-        "activate",
-        &node(&unheld().to_string(), &unheld().to_string()),
-    );
+    let folder = Folder::new("runtime-running-activate");
+    let path = written(&folder, &node(&unheld().to_string(), &unheld().to_string()));
     let file = kept(&path);
     let admitted = signed::admitted(&path).expect("trusted");
     let slice = admitted.candidate.expect("admitted").expect("a candidate");
@@ -133,16 +132,16 @@ fn starting_alone_writes_nothing_and_only_activation_replaces_the_active_configu
     );
     assert_eq!(standing(&running).0, Health::Fine);
     running.stop();
-    let _ = std::fs::remove_dir_all(path.parent().and_then(Path::parent).expect("its own"));
 }
 
 #[test]
 fn a_candidate_refused_at_accept_work_lets_go_so_the_active_one_starts_over_its_storage_node() {
+    let folder = Folder::new("runtime-running-let-go");
     let stored = format!(
         "roles = \"executing, storage\"\n{}",
         node(&unheld().to_string(), &unheld().to_string())
     );
-    let path = written("let-go", &stored);
+    let path = written(&folder, &stored);
     started(path_text(&path), || embedded(&path))
         .expect("the node starts")
         .stop();
@@ -178,36 +177,13 @@ fn a_candidate_refused_at_accept_work_lets_go_so_the_active_one_starts_over_its_
     );
     running.stop();
     assert_eq!(kept(&active_at(&path)), active);
-    let _ = std::fs::remove_dir_all(path.parent().and_then(Path::parent).expect("its own"));
-}
-
-/// A test's own folder, the one `written` made around a configuration,
-/// removed as the test ends, passing or failing.
-struct Made(PathBuf);
-
-impl Made {
-    /// The folder around the configuration at `path`.
-    fn around(path: &Path) -> Self {
-        Self(
-            path.parent()
-                .and_then(Path::parent)
-                .expect("its own")
-                .into(),
-        )
-    }
-}
-
-impl Drop for Made {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 /// A node that ran its slice once and stopped, its folder, and what it
 /// keeps: the active configuration and the pin.
-fn ran_once(test: &str) -> (PathBuf, Made, String, Pin) {
-    let path = written(test, &node(&unheld().to_string(), &unheld().to_string()));
-    let made = Made::around(&path);
+fn ran_once(test: &str) -> (PathBuf, Folder, String, Pin) {
+    let made = Folder::new(&format!("runtime-running-{test}"));
+    let path = written(&made, &node(&unheld().to_string(), &unheld().to_string()));
     started(path_text(&path), || linked(&path))
         .expect("the node starts")
         .stop();
@@ -261,8 +237,8 @@ fn valid_active_plus_unreadable_candidate_likewise() {
 
 #[test]
 fn no_active_plus_missing_candidate_is_refused_at_read_configuration() {
-    let path = written("none", &node(&unheld().to_string(), &unheld().to_string()));
-    let _made = Made::around(&path);
+    let made = Folder::new("runtime-running-none");
+    let path = written(&made, &node(&unheld().to_string(), &unheld().to_string()));
     std::fs::remove_file(&path).expect("the candidate taken away");
     let refused = started(path_text(&path), || linked(&path))
         .err()

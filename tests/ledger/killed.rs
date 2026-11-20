@@ -82,7 +82,6 @@ fn a_message_acknowledged_before_the_kill_is_in_the_ledger_after_it() {
         }
     }
     drop(node);
-    let _ = std::fs::remove_dir_all(&place);
 }
 
 #[test]
@@ -116,5 +115,4 @@ fn a_receive_killed_after_its_chunks_and_before_publication_leaves_no_message() 
         "no Message was published, so none is kept"
     );
     drop(node);
-    let _ = std::fs::remove_dir_all(&place);
 }

@@ -93,7 +93,7 @@ fn fan_out(
         node: node(),
         audit: None,
     };
-    let measured_and_read = on_node(
+    on_node(
         &storage,
         (CHUNK, &to_all()),
         sending,
@@ -130,9 +130,7 @@ fn fan_out(
             }
             (most, read)
         },
-    );
-    let _ = std::fs::remove_dir_all(&place);
-    measured_and_read
+    )
 }
 
 #[test]

@@ -84,7 +84,8 @@ fn a_carry_that_panics_settles_as_failed_and_the_location_stops() {
     // On a thread of its own, so a Location left waiting fails the test
     // rather than hanging it.
     std::thread::spawn(move || {
-        let storage = test_node(&directory("panicked"));
+        let place = directory("panicked");
+        let storage = test_node(&place);
         let served = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
             let location = Receiving {
                 configured: configure::ConfiguredLocation {

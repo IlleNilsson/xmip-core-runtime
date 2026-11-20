@@ -7,6 +7,7 @@
 //! first receive, on its own thread after the start, and such a caller
 //! could be refused (open problem 71).
 
+use file::temporary::Folder;
 use net::fixture::unheld;
 use tcp::TcpTransport;
 use transport::Transport;
@@ -28,11 +29,12 @@ fn receiving_over(scheme: &str, receive: &str, far: &str) -> String {
 #[test]
 fn a_caller_that_connects_the_moment_a_node_starts_is_taken_on_its_first_connect() {
     for scheme in LISTENING {
+        let folder = Folder::new(&format!("runtime-running-listening-{scheme}"));
         let far = TcpTransport::loopback();
         let (listener, far_address) = far.bind().expect("the far end binds");
         let receive = unheld().to_string();
         let configuration = receiving_over(scheme, &receive, &far_address);
-        let path = written(&format!("listening-{scheme}"), &configuration);
+        let path = written(&folder, &configuration);
         let running = started(path_text(&path), || linked(&path)).expect("the node starts");
 
         // The moment the start returns: one send, its one connect never
@@ -53,18 +55,18 @@ fn a_caller_that_connects_the_moment_a_node_starts_is_taken_on_its_first_connect
         assert_eq!(arrived.bytes, b"at once", "{scheme}");
 
         running.stop();
-        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 }
 
 #[test]
 fn a_port_that_is_taken_refuses_the_start_at_phase_nine_naming_it() {
     for scheme in LISTENING {
+        let folder = Folder::new(&format!("runtime-running-taken-{scheme}"));
         let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("another holds a port");
         let taken = holder.local_addr().expect("its address").to_string();
         let port = taken.rsplit_once(':').expect("a port").1.to_string();
         let configuration = receiving_over(scheme, &taken, &unheld().to_string());
-        let path = written(&format!("taken-{scheme}"), &configuration);
+        let path = written(&folder, &configuration);
 
         let refused = started(path_text(&path), || linked(&path))
             .err()
@@ -81,6 +83,5 @@ fn a_port_that_is_taken_refuses_the_start_at_phase_nine_naming_it() {
             refused.problems
         );
         drop(holder);
-        let _ = std::fs::remove_dir_all(path.parent().expect("its directory"));
     }
 }

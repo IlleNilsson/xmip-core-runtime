@@ -98,5 +98,4 @@ fn a_node_killed_holding_a_key_passes_it_on_under_a_larger_fence_and_order_is_ke
         "taken over under fence {} after {old_fence}",
         fences[0]
     );
-    let _ = std::fs::remove_dir_all(&place);
 }

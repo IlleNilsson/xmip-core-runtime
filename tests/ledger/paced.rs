@@ -111,7 +111,7 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
         stopping: Arc::clone(&stopping),
         first: Mutex::new(Some(first)),
     };
-    let served = on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
+    on_runtime(&storage, CHUNK, |runtime, pickup, gate| {
         let location = Receiving {
             configured: configure::ConfiguredLocation {
                 name: "In".to_string(),
@@ -155,9 +155,7 @@ fn serve(test: &str, waiting: Waiting, fails: bool, pace: Pace, stop_at_last: bo
             asked: asked.load(Ordering::Acquire),
             took,
         }
-    });
-    let _ = std::fs::remove_dir_all(&at);
-    served
+    })
 }
 
 #[test]
