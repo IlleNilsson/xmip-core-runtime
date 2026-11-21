@@ -8,10 +8,12 @@ use super::{ServiceDefinition, quoted};
 /// The `sc.exe create` arguments for this definition.
 ///
 /// Returned as arguments rather than as a command line, so a caller passes them
-/// to the process API without quoting anything. `binPath=` is the one place
-/// Windows requires the executable and its arguments to be one string, and the
-/// space after each `=` is required by `sc.exe` — omitting it is the classic
-/// way this fails with an unhelpful usage message.
+/// to the process API without quoting anything. Each option is two arguments,
+/// its name with the `=` and then its value, as `sc.exe` reads its own: typed
+/// `start= auto` is two of them, and `"start= auto"` handed over as one is
+/// refused, "Invalid start= field" (2026-11-21, the first node installed on a
+/// fresh Windows Server). `binPath=` is the one place Windows requires the
+/// executable and its arguments to be one value.
 #[must_use]
 pub fn windows_service_arguments(definition: &ServiceDefinition) -> Vec<String> {
     let mut binary = quoted(&definition.executable);
@@ -24,13 +26,17 @@ pub fn windows_service_arguments(definition: &ServiceDefinition) -> Vec<String> 
     let mut arguments = vec![
         String::from("create"),
         definition.name.clone(),
-        format!("binPath= {binary}"),
-        format!("DisplayName= {}", definition.display_name),
-        String::from("start= auto"),
+        String::from("binPath="),
+        binary,
+        String::from("DisplayName="),
+        definition.display_name.clone(),
+        String::from("start="),
+        String::from("auto"),
     ];
 
     if let Some(user) = &definition.service_identity {
-        arguments.push(format!("obj= {user}"));
+        arguments.push(String::from("obj="));
+        arguments.push(user.clone());
     }
 
     arguments

@@ -519,31 +519,37 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_arguments_keep_the_space_sc_requires() {
-        // `binPath=C:\...` fails with a usage message that says nothing about
-        // the missing space. Every sc.exe argument is `key= value`.
+    fn every_windows_option_is_its_name_then_its_value() {
+        // sc.exe reads `start= auto` as two arguments; one argument
+        // "start= auto" is refused, "Invalid start= field".
         let arguments = windows_service_arguments(&node_service());
 
-        for argument in &arguments {
-            if let Some(equals) = argument.find('=') {
-                let after = argument[equals + 1..].chars().next();
-
-                assert_eq!(
-                    after,
-                    Some(' '),
-                    "sc.exe needs a space after '=' in {argument}"
+        for (at, argument) in arguments.iter().enumerate() {
+            if argument.ends_with('=') {
+                let value = arguments.get(at + 1).expect("a value follows");
+                assert!(!value.ends_with('='), "{argument} is given {value}");
+            } else if at >= 2 {
+                assert!(
+                    arguments[at - 1].ends_with('='),
+                    "{argument} follows an option"
                 );
             }
         }
+        let start = arguments
+            .iter()
+            .position(|a| a == "start=")
+            .expect("start=");
+        assert_eq!(arguments[start + 1], "auto");
     }
 
     #[test]
     fn the_windows_arguments_pass_the_executable_and_its_arguments_as_one() {
         let arguments = windows_service_arguments(&node_service());
-        let bin = arguments
+        let at = arguments
             .iter()
-            .find(|a| a.starts_with("binPath="))
-            .expect("binPath");
+            .position(|a| a == "binPath=")
+            .expect("binPath=");
+        let bin = &arguments[at + 1];
 
         assert!(bin.contains("/opt/xmip/bin/xmip-service"));
         assert!(bin.contains("--configuration /opt/xmip/config/node.xmip"));
@@ -559,8 +565,8 @@ mod tests {
         );
 
         assert_eq!(
-            windows_service_arguments(&definition)[2],
-            r#"binPath= "C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\node.xmip"#
+            windows_service_arguments(&definition)[3],
+            r#""C:\Program Files\Xmip\bin\xmip-service.exe" --configuration C:\ProgramData\Xmip\config\node.xmip"#
         );
         assert!(unit(&definition).contains(r#"ExecStart="C:\Program Files\"#));
     }
