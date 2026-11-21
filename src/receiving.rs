@@ -188,7 +188,13 @@ impl Receiving {
                     self.carry_all(&pool, runtime, pickup, carried, &tell);
                     Ended::Found
                 }
-                Err(failure) if failure.retryable => Ended::Mendable,
+                // One that may mend, as a secret not set yet, is said once
+                // and asked again at its next turn.
+                Err(failure) if failure.retryable => {
+                    let what = "could not receive, and asks again";
+                    self.heard_once(&mut carrying, &failure.message, what);
+                    Ended::Mendable
+                }
                 Err(failure) => {
                     ended = Err(self.stopped(&failure.message));
                     break;
@@ -249,6 +255,16 @@ impl Receiving {
     /// A telling that may mend, audited the first time its reason is heard
     /// on this Location's serve.
     fn not_told(&self, carrying: &mut Carrying<'_>, why: &str) {
+        self.heard_once(
+            carrying,
+            why,
+            "could not tell its far end, which sends it again",
+        );
+    }
+
+    /// `why`, a failure that may mend, audited once for each reason it is
+    /// heard for, `what` saying what the Location met and does.
+    fn heard_once(&self, carrying: &mut Carrying<'_>, why: &str, what: &str) {
         if !carrying.heard.insert(why.to_string()) {
             return;
         }
@@ -256,8 +272,7 @@ impl Receiving {
             let _ = audit.failed(
                 "receive",
                 &format!(
-                    "{}: the Receive Location '{}' could not tell its far end, which sends it \
-                     again: {why}",
+                    "{}: the Receive Location '{}' {what}: {why}",
                     carrying.node, self.configured.name
                 ),
             );
