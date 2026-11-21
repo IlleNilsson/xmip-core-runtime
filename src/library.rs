@@ -206,12 +206,36 @@ impl Drop for Libraries {
 /// read against `base`, the folder the node's configuration is in, as every
 /// other path a node's configuration names is — never against the working
 /// directory the service happens to run in; a path written absolute as
-/// written.
+/// written. A path whose last part names the module, not a file, is the
+/// library this platform names for it: naming is the platform's
+/// convention, and the host applies it rather than the module author
+/// (`xmip_module.h` section 1), so one configuration names a module's
+/// library on every system.
 ///
 /// # Errors
 /// As [`library`].
 pub fn located(module: &ModuleConfiguration, base: &Path) -> Result<PathBuf, String> {
-    library(module).map(|path| base.join(path))
+    library(module).map(|path| base.join(platform_named(Path::new(path))))
+}
+
+/// `path` with its last part named as this platform names a module's
+/// library, where that part names a module: one written with a library's
+/// suffix, `.dll`, `.so` (a versioned `.so.` too) or `.dylib`, is a file,
+/// as written.
+fn platform_named(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    let lower = name.to_ascii_lowercase();
+    let file = [".dll", ".so", ".dylib"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+        || lower.contains(".so.");
+    if file {
+        path.to_path_buf()
+    } else {
+        path.with_file_name(abi::boundaries::library_file_name(name))
+    }
 }
 
 /// The library a started Module's manifest names, as written.
@@ -312,9 +336,28 @@ mod tests {
     fn a_library_is_read_against_the_configurations_folder_an_absolute_one_as_written() {
         let [module] =
             <[ModuleConfiguration; 1]>::try_from(modules(&generated().module)).expect("one module");
+        // The generated entry names the module, and the host names its
+        // library as this platform does (`xmip_module.h` section 1).
+        let name = process::generate::library_name(ORIGIN.module);
+        assert_eq!(library(&module), Ok(name.as_str()));
         let file = process::generate::library_file(ORIGIN.module);
         let base = Path::new("configuration");
         assert_eq!(located(&module, base), Ok(base.join(&file)));
+        let mut below = module.clone();
+        below.manifest.entrypoint.library_path = Some(format!("work-process/{name}"));
+        assert_eq!(
+            located(&below, base),
+            Ok(base.join("work-process").join(&file))
+        );
+        // A library written as a file is that file, on every system.
+        for written in ["unit.dll", "libunit.so", "libunit.so.1", "libunit.dylib"] {
+            let mut as_file = module.clone();
+            as_file.manifest.entrypoint.library_path = Some(format!("work-process/{written}"));
+            assert_eq!(
+                located(&as_file, base),
+                Ok(base.join("work-process").join(written))
+            );
+        }
         let folder = file::temporary::Folder::new("runtime-library-absolute");
         let absolute = folder.join(&file);
         let mut elsewhere = module.clone();
@@ -391,10 +434,12 @@ mod tests {
         let folder = configuration.join("work-process");
         std::fs::create_dir_all(&folder).expect("the configuration's folder");
         std::fs::copy(&built, folder.join(&file)).expect("the library beside it");
+        let name = process::generate::library_name(ORIGIN.module);
         let entry = generated().module.replace(
-            &format!("library_path = \"{file}\""),
-            &format!("library_path = \"work-process/{file}\""),
+            &format!("library_path = \"{name}\""),
+            &format!("library_path = \"work-process/{name}\""),
         );
+        assert_ne!(entry, generated().module, "the entry names its library");
         let modules = modules(&entry);
 
         let elsewhere = Libraries::open(&modules, Path::new("elsewhere"))
