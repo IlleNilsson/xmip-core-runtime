@@ -130,6 +130,11 @@ codec ={ package = "xmip-core-library-codec", git = "https://github.com/IlleNils
 # `net::pipe`'s (ADR-0014, amendment 2026-10-21).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"], optional = true }
+# A program under the Windows Service Control Manager
+# (`registration::control_manager`): the dispatcher, the control handler a
+# Stop or a Shutdown arrives on, and the status it reports, for every program
+# the estate runs as a service.
+windows-service = { version = "0.8", optional = true }
 
 # On Unix a Unix domain socket: the connecting user by the kernel's word,
 # its name, and the group a shared socket belongs to. Only the node's side
@@ -232,6 +237,7 @@ node = [
     "dep:xaudit",
     "dep:provision",
     "dep:windows-sys",
+    "dep:windows-service",
     "dep:serde",
     "dep:context",
     "dep:journey",

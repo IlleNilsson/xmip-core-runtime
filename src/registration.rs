@@ -18,12 +18,15 @@
 //! is where the mistakes are — a unit file with the wrong `Type=` restarts
 //! forever, and nobody finds out until a node reboots at three in the morning.
 //!
-//! **Applying it is deliberately not here.** Registration needs elevation on
+//! **Applying it is apart, in [`apply`].** Registration needs elevation on
 //! every platform that has it — administrator for the Windows SCM, root to
 //! write a unit and reload — and ADR-0018 records that as an open question
 //! rather than a settled one. Generating is safe, testable on any machine, and
-//! reviewable; performing it is a privileged act that belongs with the
-//! installer and its own decision.
+//! reviewable; performing it is a privileged act, asked only by an installer:
+//! `xmip-service --install` and `--uninstall` and the Essentials' far ends,
+//! each with its own definition, through the one [`apply`]. What runs a
+//! registered program under the Windows Service Control Manager is
+//! [`control_manager`]'s, on Windows, for every program run as a service.
 //!
 //! ## The device case is not here either
 //!
@@ -36,6 +39,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::plane::local::{LINUX_FOLDER, LINUX_SOCKET_PATH, own_folder};
 
+pub mod apply;
+#[cfg(windows)]
+pub mod control_manager;
 mod launchd;
 mod windows_scm;
 
