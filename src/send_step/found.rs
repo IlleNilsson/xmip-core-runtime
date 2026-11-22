@@ -32,7 +32,7 @@ pub enum Found {
 
 /// The Journey `journey` read back from the Ledger, its Message and its
 /// Message's Stream with it, and the identity it arrived with from `body`,
-/// what its queue keeps beside it (`context::facts_record`). A mechanism is
+/// what its queue keeps beside it (`crate::sequence::Kept`). A mechanism is
 /// never built from a record (`xcore::Mechanism`): the one a kept identity
 /// names is the one this node's authenticators declare under that name.
 ///
@@ -114,7 +114,11 @@ pub(super) fn found(
     if work.journey.state == JourneyState::Failed {
         return Ok(Found::Failed(Box::new(work)));
     }
-    match IdentityFacts::from_record(body, |name| carried(runtime, name)) {
+    let kept = match crate::sequence::Kept::read(body) {
+        Ok(kept) => kept,
+        Err(why) => return Ok(Found::Unreadable(why)),
+    };
+    match IdentityFacts::from_record(kept.identity, |name| carried(runtime, name)) {
         Ok(facts) => Ok(Found::Waiting(Box::new((work, facts)))),
         Err(why) => Ok(Found::Unreadable(why.to_string())),
     }

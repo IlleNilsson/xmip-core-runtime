@@ -23,8 +23,9 @@
 
 use xcore::JourneyId;
 
-use super::reading::Went;
+use super::quantum::Quantum;
 use super::{State, WorkStep};
+use crate::sequence::Queued;
 
 /// What an admission answered.
 pub(super) enum Admitted<'a> {
@@ -49,9 +50,17 @@ pub(super) struct Owning<'a> {
     since: u64,
     /// Set once its turn returned: whether it was written.
     ended: Option<bool>,
+    /// What was taken up: taken up again where its turn unwinds.
+    queued: Option<Queued>,
 }
 
 impl Owning<'_> {
+    /// The guard of a turn of `queued`.
+    pub(super) fn of(mut self, queued: Queued) -> Self {
+        self.queued = Some(queued);
+        self
+    }
+
     /// The turn ended by its own word, `done` where it was written.
     pub(super) fn ended(mut self, done: bool) {
         self.ended = Some(done);
@@ -70,7 +79,8 @@ impl Drop for Owning<'_> {
             (self.ended == Some(true), self.since),
         );
         if self.ended.is_none() {
-            self.step.unwinding(self.journey, self.at);
+            self.step
+                .unwinding(self.journey, self.at, self.queued.take());
         }
     }
 }
@@ -95,6 +105,7 @@ impl WorkStep {
             at,
             since: state.written,
             ended: None,
+            queued: None,
         })
     }
 
@@ -110,47 +121,41 @@ impl WorkStep {
         if done {
             state.written += 1;
         }
-        // After a written turn the next of its queue may go on now. One
-        // that waits is read again only where another turn was written
-        // while it was held — what it waited for may have moved on, and the
-        // read that turn asked passed over it while held here (found
-        // 2026-11-12, once a scan no longer came every second); else the
-        // next written turn's read finds it: never a loop of reads.
-        if done || state.written != since {
-            state.readings[at].asked(None);
+        // After a written turn who heads its sequences now is handed over
+        // (`super::quantum`), and what it published wakes the step's watch.
+        // One that waits is taken up again only where another turn was
+        // written while it was held — what it waited for may have moved on,
+        // and what that turn moved was told while it was held here (found
+        // 2026-11-12, once a scan no longer came every second): never a loop
+        // of turns.
+        if !done && state.written != since {
+            state.readings[at].again_now(journey);
         }
         state.freed();
         drop(state);
         self.wake.notify_all();
     }
 
-    /// How the round of the Work Process at `at`, within `share`, went, kept
-    /// for its next: its pass as `went`, its head as `headed`. One that found
-    /// no place waits for one only while none is free, as the lock its turns
-    /// give their places back under says: every turn its round admitted may
-    /// have ended before the round was kept, and then none is left to free
-    /// one (found 2026-11-15: a pass behind a page another node held stood
-    /// waiting for good).
-    pub(super) fn round_went(
-        &self,
-        (at, share): (usize, usize),
-        (went, headed): (Option<Went>, Option<Went>),
-    ) {
+    /// How the quantum of the Work Process at `at`, within `share`, went,
+    /// `went`, kept for its next. One that found no place waits for one only
+    /// while none is free, as the lock its turns give their places back
+    /// under says: every turn its round admitted may have ended before the
+    /// round was kept, and then none is left to free one (found 2026-11-15: a
+    /// pass behind a page another node held stood waiting for good).
+    pub(super) fn round_went(&self, (at, share): (usize, usize), went: Quantum) {
         let mut state = self.lock();
         let full = state.owned.len() >= self.limits.most.max(1);
         let room = !full && state.readings[at].held < share;
         let reading = &mut state.readings[at];
-        if let Some(went) = went {
-            reading.went(went);
+        reading.went(went.went, (went.fresh, went.refill));
+        for queued in went.ready {
+            reading.ready(queued);
         }
-        match headed {
-            Some(Went::Unanswered) => reading.went(Went::Unanswered),
-            Some(Went::Starved(_)) => {
-                reading.headed();
-                reading.starve();
-            }
-            Some(Went::On(_)) => reading.headed(),
-            None => {}
+        for queued in went.loose {
+            reading.park(queued);
+        }
+        if went.starved {
+            reading.starve();
         }
         if room {
             reading.freed();
@@ -159,9 +164,17 @@ impl WorkStep {
 
     /// The turn of `journey`, of the Work Process at `at`, unwound past its
     /// own catch: counted and audited at the stage `process`, its claim, if
-    /// one was taken, left to lapse.
-    fn unwinding(&self, journey: JourneyId, at: usize) {
-        self.lock().unwound += 1;
+    /// one was taken, left to lapse, and what was taken up, `queued`, taken
+    /// up again in the next round.
+    fn unwinding(&self, journey: JourneyId, at: usize, queued: Option<Queued>) {
+        {
+            let mut state = self.lock();
+            state.unwound += 1;
+            if let Some(queued) = queued {
+                state.readings[at].ready(queued);
+            }
+        }
+        self.wake.notify_all();
         let name = self
             .running
             .get(at)
@@ -198,9 +211,17 @@ mod tests {
     use persist::storage::{Embedded, XmipStorage};
     use secret::{Held, KekName};
 
-    use super::super::reading::Reading;
+    use super::super::reading::{Reading, Went};
     use super::*;
     use crate::pool::Limits;
+
+    /// A quantum whose read found no place at the entry at its third place.
+    fn starved() -> Quantum {
+        Quantum {
+            went: Some(Went::Starved((0, 2))),
+            ..Quantum::default()
+        }
+    }
 
     #[test]
     fn the_pool_is_shared_among_the_work_processes_with_work() {
@@ -263,7 +284,7 @@ mod tests {
         // Both turns end before the round that admitted them is kept.
         first.ended(false);
         second.ended(false);
-        step.round_went((0, 2), (Some(Went::Starved((0, 2))), None));
+        step.round_went((0, 2), starved());
         assert!(
             reads_on(&step),
             "a place is free, and no turn left to free one"
@@ -273,7 +294,7 @@ mod tests {
         let _ = step.lock().readings[0].reads();
         let first = turn(step.admit(ids[0], 0, 2));
         let second = turn(step.admit(ids[1], 0, 2));
-        step.round_went((0, 2), (Some(Went::Starved((0, 2))), None));
+        step.round_went((0, 2), starved());
         assert!(!reads_on(&step), "every place held: it waits for one");
         first.ended(false);
         assert!(reads_on(&step), "a turn ended: it reads on");

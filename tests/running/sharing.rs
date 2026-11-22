@@ -22,18 +22,21 @@ thread_local! {
     /// The device every serial Location this test's thread builds is on:
     /// startup runs on the thread that calls it.
     static BENCH: Bench = Bench::default();
-    /// Each serial Location built, and the sharing its node handed it.
-    static BUILT: RefCell<Vec<(SerialTransport, usize)>> = const { RefCell::new(Vec::new()) };
+    /// Each serial Location built, the sharing its node handed it, and the
+    /// start of the node it was built on.
+    static BUILT: RefCell<Vec<(SerialTransport, usize, u128)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// A serial Location built on the bench's port, given the rest by its node
-/// as every Location is, and kept with the sharing it was handed.
+/// as every Location is, and kept with the sharing and the start it was
+/// handed.
 fn benched(address: &str, side: Applies, given: &[(String, Given)], on: OnNode<'_>) -> Opened {
     let bench = BENCH.with(Bench::clone);
     let line = SerialTransport::open(address, side, given)?.opened_by(Arc::new(bench));
-    let sharing = Arc::as_ptr(on.3).cast::<()>().addr();
+    let (sharing, start) = (Arc::as_ptr(on.3).cast::<()>().addr(), on.0.start());
     let line = built_on(line, side, on)?;
-    BUILT.with(|built| built.borrow_mut().push((line.clone(), sharing)));
+    BUILT.with(|built| built.borrow_mut().push((line.clone(), sharing, start)));
     Ok(Box::new(line))
 }
 
@@ -65,26 +68,35 @@ fn on_one_device() -> String {
 
 /// Both serial Send Ports are handed the node's one sharing, so both go
 /// through the device's one port, opened once: each writes what it is sent,
-/// where a second port on the device would have been refused.
+/// where a second port on the device would have been refused. Both are
+/// built on the node's one start too, and the node started again builds
+/// them on another (ADR-0024, amendment 2026-11-22).
 #[test]
 fn two_locations_naming_one_device_on_a_node_share_its_one_port() {
     let folder = file::temporary::Folder::new("runtime-running-one-port");
     let path = written(&folder, &on_one_device());
-    let running = started(path_text(&path), || {
-        let mut linked = linked(&path);
-        linked
-            .transports
-            .push(LinkedTransport::opened_by::<SerialTransport>(benched));
-        linked
-    })
-    .expect("the node starts");
+    let start = || {
+        started(path_text(&path), || {
+            let mut linked = linked(&path);
+            linked
+                .transports
+                .push(LinkedTransport::opened_by::<SerialTransport>(benched));
+            linked
+        })
+        .expect("the node starts")
+    };
+    let running = start();
     let built = BUILT.with(RefCell::take);
     assert_eq!(built.len(), 2, "both serial Send Ports");
     assert_eq!(
         built[0].1, built[1].1,
         "the node's one sharing, handed to both"
     );
-    for ((line, _), payload) in built.iter().zip([b"one", b"two"]) {
+    assert_eq!(
+        built[0].2, built[1].2,
+        "the node's one start, handed to both"
+    );
+    for ((line, ..), payload) in built.iter().zip([b"one", b"two"]) {
         line.send("COM9", payload)
             .expect("written through the one port");
     }
@@ -92,4 +104,13 @@ fn two_locations_naming_one_device_on_a_node_share_its_one_port() {
     assert_eq!(bench.written(), b"onetwo");
     assert_eq!(bench.opened(), 1, "one port for both");
     running.stop();
+    let first = built[0].2;
+    drop(built);
+
+    let again = start();
+    let rebuilt = BUILT.with(RefCell::take);
+    assert_eq!(rebuilt.len(), 2, "both serial Send Ports again");
+    assert_eq!(rebuilt[0].2, rebuilt[1].2);
+    assert_ne!(rebuilt[0].2, first, "another start");
+    again.stop();
 }

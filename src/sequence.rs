@@ -38,16 +38,24 @@
 mod configured;
 mod group;
 mod head;
+mod heads;
+mod kept;
 mod late;
 mod let_go;
+mod queued;
 
 pub use configure::OnFailure;
 pub use configured::{destinations, names, point, received_at};
 pub use group::{delivered, group_heads, group_placed, grouped, waits_for_group};
-pub use head::{Stands, behind, heads, held_by, may_go, stands, stream_heads, waits_on};
+pub use head::{
+    HeadRead, Stands, behind, heads, held_by, may_go, read_head, stands, stream_heads, waits_on,
+};
+pub use heads::{Heads, Met, Positions, TakenUp};
 use journey::{Journey, Received, Sequenced};
+pub use kept::{Kept, streamed};
 pub use late::{Placing, heading, take_late, waits_for_places};
 pub use let_go::{let_go, lets_go};
+pub use queued::Queued;
 
 use crate::ledger::Opened;
 use message::Message;

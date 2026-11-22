@@ -112,6 +112,11 @@ pub struct Running {
     pickup: Arc<Pickup>,
     send: Arc<SendStep>,
     data: PathBuf,
+    /// Which start of the node this is: the process its membership row is
+    /// keyed by, drawn as it starts (`crate::membership::process`), and the
+    /// start every Location's transport was built on (ADR-0024, amendment
+    /// 2026-11-22).
+    process: u128,
     /// The slice it runs and how it came to, and, once activated, what its
     /// record at `<node>/configuration` says (`activation`).
     attempt: activation::Attempt,

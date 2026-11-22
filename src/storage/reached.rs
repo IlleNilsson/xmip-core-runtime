@@ -222,22 +222,24 @@ fn stands(finding: bool, bootstrap: Bootstrap) -> Health {
     }
 }
 
-/// What the client last came to with each Storage node it lists: Fine
-/// where one answered as the primary on its last ask, Done where every one
-/// asked failed — *Storage is not here is a flat-out error* (the owner,
+/// What the client last came to with each Storage node it lists, and of
+/// each standby what its primary's list says ([`standing`]): Fine where one
+/// answered as the primary on its last ask, Done where every one asked
+/// failed — *Storage is not here is a flat-out error* (the owner,
 /// 2026-10-06).
 fn reached(client: &StorageClient) -> (Health, String) {
     let each = client.reached();
+    let following = client.following();
     let answered = each
         .iter()
         .any(|(_, last)| last.as_ref().is_some_and(|last| last.answered));
     let asked = each.iter().any(|(_, last)| last.is_some());
     let said: Vec<String> = each
         .iter()
-        .map(|(address, last)| match last {
-            None => format!("{address} not asked yet"),
-            Some(last) if last.answered => format!("{address} answered"),
-            Some(last) => format!("{address} {}", last.said),
+        .enumerate()
+        .map(|(place, (address, last))| {
+            let follows = following.as_ref().and_then(|each| each.get(place).copied());
+            format!("{address} {}", standing(last.as_ref(), follows))
         })
         .collect();
     let health = if answered || !asked {
@@ -254,6 +256,28 @@ fn reached(client: &StorageClient) -> (Health, String) {
         said.join("; ")
     );
     (health, what)
+}
+
+/// What a node says of one Storage node it lists, `last` what its last ask
+/// of it came to and `follows` whether its primary's list holds it: answered
+/// where it answered as the primary; otherwise, where a primary said who
+/// follows it, a standby following the primary, or not following it with
+/// why its last ask failed where that was no standby's word; and where none
+/// said, what its last ask came to. What a standby said of itself is never
+/// shown once a primary's list says it: a standby is not asked again once
+/// known, so its words stay as they were when it went (open problem 95;
+/// ADR-0056, amendment 2026-11-22).
+fn standing(last: Option<&persist::storage::Reached>, follows: Option<bool>) -> String {
+    match (last, follows) {
+        (Some(last), _) if last.answered => "answered".to_string(),
+        (_, Some(true)) => "a standby following the primary".to_string(),
+        (Some(last), Some(false)) if !last.standby => {
+            format!("not following the primary; {}", last.said)
+        }
+        (_, Some(false)) => "not following the primary".to_string(),
+        (None, None) => "not asked yet".to_string(),
+        (Some(last), None) => last.said.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +300,45 @@ mod tests {
         ] {
             assert_eq!(stands(false, bootstrap), health, "{bootstrap:?}");
             assert_eq!(stands(true, bootstrap), Health::Done, "finding its primary");
+        }
+    }
+
+    /// A standby is said as its primary's list says it, never by its own
+    /// words from when it was last asked (open problem 95).
+    #[test]
+    fn a_storage_node_listed_is_said_from_its_primary_s_list_where_one_said_it() {
+        let last = |answered, standby, said: &str| persist::storage::Reached {
+            address: "127.0.0.1:7443".to_string(),
+            answered,
+            standby,
+            said: said.to_string(),
+            at: 0,
+        };
+        let primary = last(true, false, "answered");
+        let standby = last(false, true, "a standby Storage node, epoch 6, ready");
+        let refused = last(false, false, "connection refused");
+        for (last, follows, said) in [
+            (Some(&primary), Some(false), "answered"),
+            (
+                Some(&standby),
+                Some(true),
+                "a standby following the primary",
+            ),
+            (Some(&standby), Some(false), "not following the primary"),
+            (
+                Some(&refused),
+                Some(false),
+                "not following the primary; connection refused",
+            ),
+            (None, Some(true), "a standby following the primary"),
+            (None, None, "not asked yet"),
+            (
+                Some(&standby),
+                None,
+                "a standby Storage node, epoch 6, ready",
+            ),
+        ] {
+            assert_eq!(standing(last, follows), said, "{last:?}, {follows:?}");
         }
     }
 }

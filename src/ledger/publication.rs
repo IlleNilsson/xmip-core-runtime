@@ -177,7 +177,9 @@ pub fn publish(
     let (holding, mut lined, mut waiting, dead) = if opened.is_empty() {
         let now = publisher.clock.unix_timestamp_nanos();
         let at = (pickup.node(), location, now);
-        let entry = dead_message::entry(at, held, routing, unmatched, body());
+        // A Replay opens its Journeys holding no place of the Stream's.
+        let kept = crate::sequence::Kept::write(None, &body());
+        let entry = dead_message::entry(at, held, routing, unmatched, kept);
         (
             Holding::default(),
             LinedUp::default(),
@@ -185,7 +187,9 @@ pub fn publish(
             Some(entry),
         )
     } else {
-        let kept = body();
+        // Beside each, the Stream's places: what a step reads its queue by
+        // (`crate::sequence::Kept`).
+        let kept = crate::sequence::Kept::write(Some(&received), &body());
         let holding = pickup.holding(&opened, || kept.clone());
         let departing = holding.departing(&opened);
         let lined = (publisher.send).line_up(publisher.sends, &departing, publisher.ids);

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use authenticate::Authenticator;
 use configure::ConfiguredLocation;
 use route::{CONTEXT, Gathering, Source, split};
-use transport::{Guard, NodeLocation, Pinned, Secured};
+use transport::{Guard, NodeLocation, NodeStart, Pinned, Secured};
 use xcore::Secrets;
 use xcore::settings::Applies;
 
@@ -261,13 +261,14 @@ pub(crate) type Handed<'a> = (
 );
 
 /// Startup phase 9's first half: each started Location's transport built
-/// once, from its address and settings, given the node's location (the
-/// owner's *Option A*, 2026-10-03: the runtime gives every transport its
-/// node's identity once, as it builds it) and the guard its receives
-/// terminate TLS with where the node has one, the most one caller's turn
-/// on its receives takes (`[tuning] receive_turn`), and the secret it
-/// names, read from `secrets` as it connects (ADR-0019, amendment
-/// 2026-10-29), and held to the direction it serves; each Receive
+/// once, from its address and settings, given the node's location and this
+/// start of it, `start`, every Location the same (the owner's *Option A*,
+/// 2026-10-03: the runtime gives every transport its node's identity once,
+/// as it builds it; ADR-0024, amendment 2026-11-22), and the guard its
+/// receives terminate TLS with where the node has one, the most one
+/// caller's turn on its receives takes (`[tuning] receive_turn`), and the
+/// secret it names, read from `secrets` as it connects (ADR-0019,
+/// amendment 2026-10-29), and held to the direction it serves; each Receive
 /// Location listening once built (`crate::linked::built_on`; the owner,
 /// 2026-11-16, *Bind at open*), a port that is taken refusing the start
 /// here, naming the Location, the address and the port; the Send Ports
@@ -276,12 +277,10 @@ pub(crate) fn open(
     tree: &ExecutionTree,
     linked: &Linked,
     (gates, guard, pins, sharing, secrets, clock): Handed<'_>,
-    guards: SendGuards,
+    (guards, start): (SendGuards, u128),
 ) -> Result<(Vec<Receiving>, Sends), Vec<String>> {
-    let node = NodeLocation::new(location(
-        &tree.service.cluster_name,
-        &tree.service.node_name,
-    ));
+    let at = location(&tree.service.cluster_name, &tree.service.node_name);
+    let node = NodeStart::new(NodeLocation::new(at), start);
     let mut problems = Vec::new();
     let mut built = |location: &ConfiguredLocation, side: Applies| {
         let technology = linked.transport(location)?;

@@ -19,20 +19,20 @@
 //! before the sending node's Storage node holds its syncs: what is held is
 //! the claim's sync alone.
 
-use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use xcore::lock::Locked;
 
 use persist::fixture::{Hooked, Hooks, Memory};
-use persist::storage::{Embedded, StorageClient, StorageServer, XmipStorage, client};
+use persist::storage::{Embedded, XmipStorage};
 use secret::{Held, KekName};
 use xcore::JourneyId;
-use xmip_core_runtime::fixture::{Authority, Failing, FarEnd, Operation};
+use xmip_core_runtime::fixture::{Failing, FarEnd, Operation};
 use xmip_core_runtime::ledger::CHUNK;
 use xmip_core_runtime::message_path::{ReceiveCycle, carry};
 
+use super::loopback::over_the_wire;
 use super::receive_cycle::{Sender, on_node, on_runtime};
 use super::sending::{dispatching, journey, onward, order, out, sender, taking, took, until};
 
@@ -48,22 +48,6 @@ pub fn hooked() -> (Arc<dyn XmipStorage>, Arc<Hooks>) {
     let runtime = Hooked::new(Memory::default(), &hooks);
     let node = Embedded::open(runtime, Memory::default(), Memory::default(), &keys, &kek);
     (Arc::new(node.expect("opened")), hooks)
-}
-
-/// `beneath` served on loopback, and a node's Xmip Storage reaching it over
-/// the wire, each read bounded by `timeout`.
-fn over_the_wire(
-    beneath: &Arc<dyn XmipStorage>,
-    timeout: Duration,
-) -> (StorageServer, Arc<dyn XmipStorage>) {
-    let authority = Authority::new();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bound");
-    let identity = authority.identity("storage");
-    let server = StorageServer::start(Arc::clone(beneath), listener, &identity).expect("served");
-    let at = [server.address().to_string()];
-    let identity = authority.identity("node");
-    let reached = StorageClient::new(&at, &identity, timeout, client::PASS_OVER);
-    (server, Arc::new(reached.expect("a client")))
 }
 
 /// `order 1` published, durable, by a node that sends nothing: what the

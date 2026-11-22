@@ -30,10 +30,7 @@ pub enum Stands {
 /// Journey — in the order work there goes on in.
 pub fn held_by(journey: &Journey) -> impl Iterator<Item = (u128, u128)> + '_ {
     let member = journey.journey_id().value();
-    let stream = journey.received().into_iter().flat_map(|received| {
-        let origin = received.origin;
-        received.sequences.iter().map(move |queue| (*queue, origin))
-    });
+    let stream = super::kept::streamed(journey.received());
     let group = journey
         .group
         .as_ref()
@@ -102,29 +99,69 @@ pub fn stands(storage: &dyn XmipStorage, queue: u128, member: u128) -> Result<St
     if headed().contains(&(queue, member)) {
         return Ok(Stands::Heads(None));
     }
+    Ok(read_head(storage, queue)?.stands(queue, member))
+}
+
+/// The head of a sequence as read: who holds its first place, whether it
+/// holds any, where its head stands, and when the write that moved it is
+/// durable, where it is not yet.
+#[derive(Clone, Debug)]
+pub struct HeadRead {
+    first: Option<u128>,
+    holds: bool,
+    at: Position,
+    moving: Option<Durable>,
+}
+
+/// The head of the sequence `queue`, read from the Ledger.
+///
+/// # Errors
+/// Xmip Storage did not answer, in words.
+pub fn read_head(storage: &dyn XmipStorage, queue: u128) -> Result<HeadRead, String> {
     let read = storage.read_head(queue, 1).map_err(|why| why.to_string())?;
     let page = &read.held;
-    let head = Position {
-        watched: Watched::Head(queue),
-        at: page.next.saturating_sub(page.count),
-    };
-    // A page that reads nothing while the queue still holds places is no
-    // head: only an empty queue is (corrected 2026-10-27; an empty page
-    // read mid-write let a Message overtake under load).
-    // Only a place seen at the head is remembered, and only once the write
-    // that let it head is durable: an empty queue says nothing of a place
-    // taken later, and a head a crash could still move back is no head this
-    // process knows (2026-11-15).
-    match page.held.first() {
-        Some(first) if first.hold.journey.value() == member => {
-            if read.moving.is_none() {
-                headed().remember((queue, member));
+    Ok(HeadRead {
+        first: page.held.first().map(|first| first.hold.journey.value()),
+        holds: page.count != 0,
+        at: Position {
+            watched: Watched::Head(queue),
+            at: page.next.saturating_sub(page.count),
+        },
+        moving: read.moving,
+    })
+}
+
+impl HeadRead {
+    /// Where its head stood as read: how many places were ever let go of
+    /// there, which only one let go of moves.
+    #[must_use]
+    pub const fn at(&self) -> u64 {
+        self.at.at
+    }
+
+    /// Where `member` stands in the sequence `queue`, as this read found
+    /// its head.
+    ///
+    /// A page that reads nothing while the queue still holds places is no
+    /// head: only an empty queue is (corrected 2026-10-27; an empty page read
+    /// mid-write let a Message overtake under load). Only a place seen at
+    /// the head is remembered, and only once the write that let it head is
+    /// durable: an empty queue says nothing of a place taken later, and a
+    /// head a crash could still move back is no head this process knows
+    /// (2026-11-15).
+    #[must_use]
+    pub fn stands(&self, queue: u128, member: u128) -> Stands {
+        match self.first {
+            Some(first) if first == member => {
+                if self.moving.is_none() {
+                    headed().remember((queue, member));
+                }
+                Stands::Heads(self.moving.clone())
             }
-            Ok(Stands::Heads(read.moving))
+            Some(_) => Stands::Behind(self.at),
+            None if self.holds => Stands::Behind(self.at),
+            None => Stands::Heads(self.moving.clone()),
         }
-        Some(_) => Ok(Stands::Behind(head)),
-        None if page.count != 0 => Ok(Stands::Behind(head)),
-        None => Ok(Stands::Heads(read.moving)),
     }
 }
 

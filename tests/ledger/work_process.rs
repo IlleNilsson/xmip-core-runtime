@@ -83,7 +83,9 @@ fn two_clients_carried_at_once_never_see_one_of_their_messages_overtake_another(
             });
             let until = Instant::now() + Duration::from_secs(10);
             while published(&storage).len() < 2 && Instant::now() < until {
-                runtime.work.ask_every();
+                for running in runtime.work.running() {
+                    runtime.work.ask(running.queue);
+                }
                 std::thread::yield_now();
             }
             runtime.work.close();

@@ -381,6 +381,7 @@ mod tests {
             entries: 300,
             bytes: 2 * 1024 * 1024 + 7,
             behind: 3,
+            place: Some(1),
         }
     }
 

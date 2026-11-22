@@ -93,13 +93,13 @@ impl Running {
         self.gather();
     }
 
-    /// Its membership of the cluster begun: its process drawn and its start
-    /// numbered and kept (`membership::numbering`), then its row written to
-    /// Xmip Storage once it is reached, and the members followed
-    /// (`crate::membership`). A start that cannot be numbered, or a thread
-    /// that does not start, leaves it no member, said as the node's
-    /// failure; a start is never numbered later, which could rank it above
-    /// a start after it.
+    /// Its membership of the cluster begun: its process, drawn as it
+    /// started, and its start numbered and kept (`membership::numbering`),
+    /// then its row written to Xmip Storage once it is reached, and the
+    /// members followed (`crate::membership`). A start that cannot be
+    /// numbered, or a thread that does not start, leaves it no member,
+    /// said as the node's failure; a start is never numbered later, which
+    /// could rank it above a start after it.
     fn join(&mut self) {
         let start = match membership::numbering::numbered(&self.configuration, &*self.clock) {
             Ok(start) => start,
@@ -111,7 +111,7 @@ impl Running {
         let declared = node::Capability::of(&self.roles).with_online(self.online);
         let runs = self.attempt.slice.which();
         let row = MemberRecord {
-            process: membership::process(),
+            process: self.process,
             start,
             node: self.location(),
             roles: declared.words(),

@@ -25,7 +25,7 @@ use persist::storage::XmipStorage;
 use persist::{Engine, PersistError};
 use route::Source;
 use secret::KeyStore;
-use transport::{Configured, Guard, NodeLocation, Pinned, Secured, Sharing, Transport};
+use transport::{Configured, Guard, NodeStart, Pinned, Secured, Sharing, Transport};
 
 use crate::receiving::ReceiveGate;
 use xaudit::program_audit::ProgramAudit;
@@ -35,16 +35,16 @@ use xcore::settings::{Applies, Given, Settings};
 /// sends go through.
 pub type Opened = transport::Result<Box<dyn Transport + Send + Sync>>;
 
-/// The node a Location's transport is built on: its location, the guard
-/// its receives terminate TLS with, where its configuration gives one
-/// (`crate::receive_certificate`), the keys its far ends are held to,
-/// pinned on first contact under its data directory (`PINNED`), the
-/// secret the Location names, read from the node's Xmip Storage as it
-/// connects (ADR-0019, amendment 2026-10-29), the most one caller's turn
-/// on its receives takes, `[tuning] receive_turn` (ADR-0018, amendment
-/// 2026-11-14), and the node's Clock its spans count on (ADR-0068).
+/// The node a Location's transport is built on: its location and this start of it, the same
+/// for every Location of the start (ADR-0024, amendment 2026-11-22), the guard its receives
+/// terminate TLS with, where its configuration gives one (`crate::receive_certificate`), the
+/// keys its far ends are held to, pinned on first contact under its data directory (`PINNED`),
+/// the secret the Location names, read from the node's Xmip Storage as it connects (ADR-0019,
+/// amendment 2026-10-29), the most one caller's turn on its receives takes, `[tuning]
+/// receive_turn` (ADR-0018, amendment 2026-11-14), and the node's Clock its spans count on
+/// (ADR-0068).
 pub type OnNode<'a> = (
-    &'a NodeLocation,
+    &'a NodeStart,
     Option<&'a Guard>,
     &'a Arc<Pinned>,
     &'a Arc<dyn Sharing>,

@@ -106,7 +106,11 @@ impl Running {
         // The node's one Clock: what its message path, its Locations, its
         // pickup and its steps tell time by (ADR-0068, amendment 2026-11-15).
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let handed = (gates, guards, guard, data.as_path());
+        // Which start of the node this is: the process its membership row
+        // is keyed by, drawn once, so the row and every Location's
+        // transport carry the one (ADR-0024, amendment 2026-11-22).
+        let process = crate::membership::process();
+        let handed = (gates, (guards, process), guard, data.as_path());
         let (receiving, sends) = opened(&tree, &linked, handed, &storage, &clock)?;
         let scope = publication::location(&tree.service.cluster_name, &tree.service.node_name);
         let routes = routes(&receiving, &tree);
@@ -166,6 +170,7 @@ impl Running {
             pickup,
             send,
             data,
+            process,
             attempt,
             standing: None,
             provision,
@@ -250,15 +255,16 @@ fn validated(
     })
 }
 
-/// Phase 9's Locations: each Location's transport built once, its handshake
-/// read under its own bound, `[tuning] receive_handshake`, apart from each
-/// Location's own wait; the keys its far ends presented first kept across
+/// Phase 9's Locations: each Location's transport built once, on the start
+/// `guards` carries with the Send Ports' guards, its handshake read under
+/// its own bound, `[tuning] receive_handshake`, apart from each Location's
+/// own wait; the keys its far ends presented first kept across
 /// restarts under `data` (ADR-0019, amendment 2026-10-28); a secret read
 /// from `storage` as a Location connects; its spans counted on `clock`.
 fn opened(
     tree: &ExecutionTree,
     linked: &Linked,
-    (gates, guards, guard, data): (Vec<ReceiveGate>, SendGuards, Option<Guard>, &Path),
+    (gates, guards, guard, data): (Vec<ReceiveGate>, (SendGuards, u128), Option<Guard>, &Path),
     storage: &Reached,
     clock: &Arc<dyn Clock>,
 ) -> Result<(Vec<Receiving>, Sends), Refusal> {

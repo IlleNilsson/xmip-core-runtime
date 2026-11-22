@@ -33,6 +33,9 @@
 //! - `directory_watch.rs`: a dropped watch ends its thread at once;
 //! - `sequenced_cost.rs` and `work_turn.rs`: what a hop's sequence check
 //!   and a Work Process's turn cost, each under the millisecond;
+//! - `work_drain.rs`: a backlog of 2,000 drained through a Work Process over
+//!   Xmip Storage on loopback, each its own sequence or behind four, under a
+//!   millisecond a Message and a sequence's next;
 //! - `woken.rs`: a Message another node published is sent over the wire,
 //!   through one Storage node on `RocksDB`, within a millisecond of one the
 //!   sending node published itself, each Storage call of the sending node
@@ -40,8 +43,8 @@
 //!
 //! What it stands up is the other test programs' own, shared, not copied:
 //! `tests/running/node.rs`, `tests/plane/certified.rs`, `endpoint.rs` and
-//! `browsing.rs`, and `tests/ledger/receive_cycle.rs`, `sending.rs`,
-//! `work_design.rs` and `said.rs`. Each is written for every test of its
+//! `browsing.rs`, and `tests/ledger/loopback.rs`, `receive_cycle.rs`, `sending.rs`,
+//! `work_design.rs`, `work_turning.rs` and `said.rs`. Each is written for every test of its
 //! own program, so what this program does not use of it is allowed here as
 //! dead.
 //!
@@ -62,6 +65,9 @@ mod certified;
 #[path = "../plane/endpoint.rs"]
 mod endpoint;
 #[allow(dead_code)]
+#[path = "../ledger/loopback.rs"]
+mod loopback;
+#[allow(dead_code)]
 #[path = "../running/node.rs"]
 mod node;
 #[allow(dead_code)]
@@ -76,6 +82,9 @@ mod sending;
 #[allow(dead_code)]
 #[path = "../ledger/work_design.rs"]
 mod work_design;
+#[allow(dead_code)]
+#[path = "../ledger/work_turning.rs"]
+mod work_turning;
 
 mod acted;
 mod clustered;
@@ -90,6 +99,7 @@ mod running;
 mod sequenced_cost;
 mod side_by_side;
 mod woken;
+mod work_drain;
 mod work_turn;
 
 use said::say;

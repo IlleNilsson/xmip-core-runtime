@@ -39,7 +39,7 @@ use super::work_design::{ABSORB, CALLS, carried_to, compiled, routes_to, running
 use super::work_turning::{Gated, HOUR, Hooked, counted_node, turning};
 
 /// A page of a queue: as many as a wake brings, and as a read takes.
-const PAGE: usize = 64;
+pub(super) const PAGE: usize = 64;
 
 /// Whether the Journey `id` is Completed in the Ledger now.
 fn completed(storage: &dyn XmipStorage, id: JourneyId) -> bool {

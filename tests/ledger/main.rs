@@ -65,6 +65,9 @@
 //! Process's Instances correlated, batched and finished after a kill;
 //! `work_design.rs` that Work Process's design and the node it runs on, and
 //! the designs and routes the other Work Process tests run;
+//! `work_backlog.rs` a backlog over a few of its Receive Location's
+//! sequences drained claiming, reading and turning each Message once, each
+//! in its sequence's order;
 //! `work_turning.rs` the flows and units they record, hold or panic with,
 //! the node whose Work pool they count, and its step dispatching;
 //! `work_debatch.rs` its Debatch through the one splitting implementation;
@@ -83,9 +86,11 @@
 //! not take waits on; `claim_ahead.rs` a Message taken from its queue sent
 //! under a claim answered once readable, its far end seeing it only once
 //! the claim is durable, in process and over the wire, and a send whose
-//! claim never is abandoned unseen, counting no try;
-//! `said.rs` a line said at once. `receive_cycle.rs`, `sending.rs`,
-//! `work_design.rs` and `said.rs` are the timing program's too
+//! claim never is abandoned unseen, counting no try; `loopback.rs` Xmip
+//! Storage reached over loopback;
+//! `said.rs` a line said at once. `loopback.rs`, `receive_cycle.rs`,
+//! `sending.rs`, `work_design.rs`, `work_turning.rs` and `said.rs` are the
+//! timing program's too
 //! (`tests/measured`), where what a hop's sequence check and a Work
 //! Process's turn cost is measured.
 
@@ -100,6 +105,7 @@ mod group_correlation;
 mod halts_at_publication;
 mod held;
 mod killed;
+mod loopback;
 mod message_act;
 mod paced;
 mod panicked;
@@ -125,6 +131,7 @@ mod unsynced;
 mod untold;
 mod woken;
 mod woken_behind;
+mod work_backlog;
 mod work_bounded;
 mod work_debatch;
 mod work_design;

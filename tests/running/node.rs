@@ -39,7 +39,7 @@ fn counted<T: Configured + Send + Sync + 'static>(
     given: &[(String, Given)],
     on: OnNode<'_>,
 ) -> Opened {
-    GIVEN.with(|nodes| nodes.borrow_mut().push(on.0.to_string()));
+    GIVEN.with(|nodes| nodes.borrow_mut().push(on.0.location().to_string()));
     xmip_core_runtime::linked::open::<T>(address, side, given, on)
 }
 

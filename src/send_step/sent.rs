@@ -88,6 +88,11 @@ fn passed<'env>(
         || departure.work.journey.group.is_some()
         || !crate::sequence::points_of(runtime.sends, &departure.to).is_empty();
     let closed = sequenced && matches!(ended, Ended::Completed(_) | Ended::Failed { .. });
+    let places: Vec<(u128, u128)> = if closed {
+        crate::sequence::streamed(departure.work.journey.received()).collect()
+    } else {
+        Vec::new()
+    };
     let next = sending
         .departure
         .take()
@@ -96,7 +101,7 @@ fn passed<'env>(
     // behind it in either step may go on now (`crate::sequence`).
     if closed {
         runtime.send.rescan();
-        runtime.work.ask_every();
+        runtime.work.moved(&places);
     }
     next
 }

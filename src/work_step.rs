@@ -5,11 +5,14 @@
 //!
 //! ```text
 //! Publication   the Message waits in its Work Process's queue in the Ledger
-//! -> admit      a page a round from where its pass stands, oldest first,
-//!               each Work Process a share of the Work pool's threads, the
-//!               rest left in the Ledger (`admission`, `reading`); one whose
-//!               key is behind an earlier one of the same key waits, so a
-//!               key's Messages never overtake
+//! -> admit      a page a round from where its reads have gone, oldest
+//!               first, each Work Process a share of the Work pool's threads,
+//!               the rest left in the Ledger (`admission`, `reading`); one
+//!               behind its sequence's head kept by the head, unclaimed and
+//!               unread, and handed over once the head moves
+//!               (`crate::sequence::Heads`, `quantum`); one whose key is
+//!               behind an earlier one of the same key waits, so a key's
+//!               Messages never overtake
 //! -> claim      through Xmip Storage
 //! -> turn       its Instance read from the Ledger, found by its key in a
 //!               Correlation, or a new one; the unit advanced, its acts
@@ -49,6 +52,7 @@ mod dispatch;
 mod keys;
 #[cfg(feature = "dynamic-loading")]
 mod opened;
+mod quantum;
 mod reading;
 mod running;
 mod turning;
@@ -58,13 +62,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use xcore::lock::Locked;
 
-use persist::storage::XmipStorage;
+use persist::storage::{Watched, XmipStorage};
 use xaudit::program_audit::ProgramAudit;
 use xcore::wake::Wake;
 use xcore::{Clock, JourneyId, SystemClock};
 
 use crate::pool::Limits;
 use crate::queue_watch::{QueueWatch, Woken};
+use crate::sequence::Heads;
 use reading::Reading;
 
 pub use dispatch::{dispatch, turn_due};
@@ -102,6 +107,10 @@ pub struct WorkStep {
     audit: Option<ProgramAudit>,
     running: Vec<Running>,
     state: Mutex<State>,
+    /// What it knows of the sequences each Work Process's queue waits in,
+    /// by its place in `running`: locked apart from `state`, never while it
+    /// is held, since a hand-over reads the heads (`crate::sequence::Heads`).
+    heads: Vec<Mutex<Heads>>,
     wake: Wake,
     /// Its watch on its queues, and on what a turn it gave back waits on,
     /// stopped as it closes (`crate::queue_watch`).
@@ -159,6 +168,7 @@ impl WorkStep {
             scan,
             limits,
             audit,
+            heads: running.iter().map(|_| Mutex::default()).collect(),
             running,
             state: Mutex::new(state),
             wake: Wake::new(),
@@ -192,11 +202,67 @@ impl WorkStep {
         self.asked(queue, None);
     }
 
-    /// Read `queue` now from what `woken` brought of it: a write on any
-    /// node put a Message in it, or moved what a turn it gave back waits on
+    /// `queue` as `woken` says: a write on any node put a Message in it, read
+    /// on from what the wake brought; or moved a head it keeps Messages
+    /// behind, who heads it now handed over; or moved what a turn it took up
+    /// waits on, an Instance or a key, that turn taken up again
     /// (`crate::queue_watch`).
     pub(crate) fn woken(&self, queue: u128, woken: Woken) {
-        self.asked(queue, woken.due);
+        let Some(at) = self
+            .running
+            .iter()
+            .position(|running| running.queue == queue)
+        else {
+            return;
+        };
+        match woken.moved.map(|moved| (moved.watched, moved.at)) {
+            None => self.asked(queue, woken.due),
+            Some((Watched::Head(sequence), stands))
+                if self.heads[at].locked().moved_to(sequence, stands) =>
+            {
+                self.lock().readings[at].hand();
+                self.wake.notify_all();
+            }
+            Some(_) => {
+                self.lock().readings[at].loosen();
+                self.wake.notify_all();
+            }
+        }
+    }
+
+    /// The Stream holding `places` ended a Journey, here or on another step:
+    /// each of those heads may have moved, and who heads it now is handed
+    /// over in every queue that keeps Messages behind one.
+    pub fn moved(&self, places: &[(u128, u128)]) {
+        self.moved_beside(None, places);
+    }
+
+    /// As [`WorkStep::moved`], but for the Work Process at `own`, whose turn
+    /// ended it and told its own heads already.
+    fn moved_beside(&self, own: Option<usize>, places: &[(u128, u128)]) {
+        let mut handing = Vec::new();
+        for (at, heads) in self.heads.iter().enumerate() {
+            if own == Some(at) {
+                continue;
+            }
+            let mut heads = heads.locked();
+            let mut moved = false;
+            for (sequence, _) in places {
+                moved |= heads.moved(*sequence);
+            }
+            if moved {
+                handing.push(at);
+            }
+        }
+        if handing.is_empty() {
+            return;
+        }
+        let mut state = self.lock();
+        for at in handing {
+            state.readings[at].hand();
+        }
+        drop(state);
+        self.wake.notify_all();
     }
 
     /// `queue`'s reading asked, from `first` where a wake brought it.
@@ -210,16 +276,6 @@ impl WorkStep {
             return;
         };
         reading.asked(first);
-        drop(state);
-        self.wake.notify_all();
-    }
-
-    /// Read every queue it runs now: a Stream ahead in a sequence has ended.
-    pub fn ask_every(&self) {
-        let mut state = self.lock();
-        for reading in &mut state.readings {
-            reading.asked(None);
-        }
         drop(state);
         self.wake.notify_all();
     }

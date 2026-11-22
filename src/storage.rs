@@ -821,6 +821,70 @@ mod tests {
         first.stop();
     }
 
+    /// Open problem 95 (ADR-0056, amendment 2026-11-22): a node reaching
+    /// the Storage nodes shows each standby from its primary's list of who
+    /// follows it, told through the wait its membership always has under
+    /// way: a standby stopped is said not following as soon as its primary
+    /// knows. Until that day it stayed *a standby Storage node, epoch 6,
+    /// ready*, what it said when last asked.
+    #[test]
+    fn a_node_reaching_storage_says_a_standby_stopped_is_not_following() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let authority = crate::fixture::Authority::new();
+        let directory = authority.directory.to_path_buf();
+        certified(&authority, 3);
+        let listed = [net::fixture::unheld(), net::fixture::unheld()].map(|a| a.to_string());
+        let storage = |place: usize| {
+            let at = Some(listed[place].as_str());
+            let (document, path) = reaching_node(&directory, (place, "storage"), &listed, at);
+            opened(&document, &path)
+        };
+        let (first, second) = together(storage);
+        let (document, path) = reaching_node(&directory, (2, "receiving"), &listed, None);
+        let reaching = opened(&document, &path);
+        let waiting = Arc::new(AtomicBool::new(true));
+        let thread = {
+            let (storage, waiting) = (Arc::clone(reaching.storage()), Arc::clone(&waiting));
+            std::thread::spawn(move || {
+                let waiter = Arc::new(persist::storage::Waiter::new());
+                let seen = [persist::storage::Position::queue(9, 0)];
+                while waiting.load(Ordering::SeqCst) {
+                    let bound = (std::time::Duration::from_millis(200), 0);
+                    let _ = storage.wait_queues(&seen, bound, &waiter);
+                }
+            })
+        };
+        let node = configure::fixture::test_cluster().node_scope(2);
+        let says = |words: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let said = reaching.published(&node)[0].2.clone();
+                if said.contains(words) {
+                    break said;
+                }
+                assert!(std::time::Instant::now() < deadline, "{said}");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        // Its primary knows it follows, then knows it went.
+        let primary_says = |count: usize| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while first.followers().len() != count {
+                assert!(std::time::Instant::now() < deadline, "{}", first.said());
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        primary_says(1);
+        second.stop();
+        primary_says(0);
+        let said = says(&format!("{} not following the primary", listed[1]));
+        assert!(said.contains(&format!("{} answered", listed[0])), "{said}");
+        assert!(!said.contains("ready"), "never its own words: {said}");
+        waiting.store(false, Ordering::SeqCst);
+        thread.join().expect("the waiting thread");
+        first.stop();
+    }
+
     #[test]
     fn a_node_listing_storage_nodes_with_nothing_to_present_is_refused_in_words() {
         let (head, file) = service();

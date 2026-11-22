@@ -151,17 +151,28 @@ pub(super) fn routes_to(names: &[&str]) -> Vec<Subscription> {
 /// through `gate`, its Streams side by side with every other's: its
 /// Journey.
 pub(super) fn carried_to(
-    (runtime, pickup): (&Runtime<'_>, &Pickup),
+    on: (&Runtime<'_>, &Pickup),
     gate: &ReceiveGate,
     name: &str,
     who: &str,
 ) -> JourneyId {
     let mut open = gate.clone();
     open.points.clear();
-    let text = format!("{who} for {name}");
+    carried_through(on, &open, name, (who, &format!("{who} for {name}")))
+}
+
+/// A Message from the client `who` saying `text`, carried into the Work
+/// Process `name` through `gate`, its Stream holding a place in each
+/// sequence the gate's points name: its Journey.
+pub(super) fn carried_through(
+    (runtime, pickup): (&Runtime<'_>, &Pickup),
+    gate: &ReceiveGate,
+    name: &str,
+    (who, text): (&str, &str),
+) -> JourneyId {
     let received =
-        from_client(who, &text).with_header("http", "x-route", ScalarValue::Text(name.to_string()));
-    let carried = carry(runtime, pickup, &open, received);
+        from_client(who, text).with_header("http", "x-route", ScalarValue::Text(name.to_string()));
+    let carried = carry(runtime, pickup, gate, received);
     assert_eq!(
         carried.cycle(),
         ReceiveCycle::Completed,
@@ -191,7 +202,7 @@ fn routes() -> Vec<Subscription> {
 
 /// The Receive Location opened up by client: each client's Streams one at
 /// a time, clients side by side.
-fn opened(gate: &ReceiveGate) -> ReceiveGate {
+pub(super) fn opened(gate: &ReceiveGate) -> ReceiveGate {
     let mut gate = gate.clone();
     gate.points = vec![Point {
         kind: PointKind::ReceiveLocation,

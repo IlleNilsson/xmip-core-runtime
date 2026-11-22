@@ -143,7 +143,9 @@ const UNWRITTEN: &str = "its membership row still says it runs: Xmip Storage did
 const PANICKED: &str = "its membership row still says it runs: its membership's thread panicked";
 
 /// A random 128-bit number, never zero, drawn from the operating system's
-/// random source: the process a node's row is keyed by, new each start.
+/// random source: the process a node's row is keyed by, new each start,
+/// and which start of the node its Locations' claims name
+/// (`transport::NodeStart`; ADR-0024, amendment 2026-11-22).
 #[must_use]
 pub fn process() -> u128 {
     loop {

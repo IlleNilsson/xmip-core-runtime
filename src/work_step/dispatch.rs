@@ -1,42 +1,44 @@
 //! The Work Process step's dispatching: each queue of a Work Process this
-//! node runs read a page a round from where its pass stands, oldest first,
-//! what is due — a Message bound for it, or one whose timer has come — and
-//! each that may go on now admitted for a turn on the Work pool under a
-//! place, each Work Process within its share (ADR-0066, amendment
-//! 2026-11-12; `super::admission`, `super::reading`).
+//! node runs read a page a round from where its reads have gone, oldest
+//! first, what is due — a Message bound for it, or one whose timer has come
+//! — and each that may go on now admitted for a turn on the Work pool under
+//! a place, each Work Process within its share (ADR-0066, amendments
+//! 2026-11-12 and 2026-11-22; `super::admission`, `super::reading`,
+//! `super::quantum`).
 //!
-//! **A round is one quantum per Work Process with something to read**, in
-//! rotation, the first of each round moved on by one: at most its head
-//! page, where it was asked while its pass was under way, and one page of
-//! its pass, and no more turns than its share. So a backlog in one Work
-//! Process holds back no turn of another, and the dispatching reads a page
-//! before its first turn however long a backlog is.
+//! **A round is one quantum per Work Process with something to do**, in
+//! rotation, the first of each round moved on by one: who heads a sequence
+//! whose head moved handed over, at most a page of a sequence it cut and a
+//! page of its read, and no more turns than its share. So a backlog in one
+//! Work Process holds back no turn of another, the dispatching reads a page
+//! before its first turn however long a backlog is, and a Message behind a
+//! head waits there, kept, unread, until the head moves.
 //!
 //! **A scan and a timer come due on the step's Clock** (ADR-0068,
 //! amendment 2026-11-15): kept as its readings, waited for in real time,
-//! and judged on a reading taken after the wait.
+//! and judged on a reading taken after the wait. The scan reads each head
+//! it keeps Messages behind and what arrived, never its queue again.
 
-use std::collections::HashSet;
-use std::panic::{self, AssertUnwindSafe};
 use std::thread::Scope;
 use std::time::Duration;
 
-use persist::storage::Held;
 use xcore::clock::{between, nanos};
 
-use super::admission::{Admitted, Owning, share};
-use super::reading::{self, PageFrom, Went};
+use super::WorkStep;
+use super::admission::share;
+use super::quantum::quantum;
+use super::reading;
 use super::turning::{Turned, turn};
-use super::{Running, WorkStep};
 use crate::message_path::Runtime;
 use crate::pickup::Pickup;
 use crate::pool::Pool;
 
 /// The Work Process step of `runtime` dispatching on its Work pool in
-/// `scope` until it is closed: every queue read as it starts and at each
+/// `scope` until it is closed: every queue read as it starts and on at each
 /// `[tuning] work_scan`, one read when asked — another node put a Message
 /// in it among them, read from what is due in it as the wake brought it —
-/// and when its earliest timer is due; a page of each a round.
+/// a head it keeps Messages behind handed over once it moves, and a queue
+/// read when its earliest timer is due; a page of each a round.
 pub fn dispatch<'scope, 'env>(
     scope: &'scope Scope<'scope, 'env>,
     runtime: &'env Runtime<'env>,
@@ -179,122 +181,6 @@ impl super::State {
     }
 }
 
-/// How the entries of one page were offered: each, or up to the one at
-/// this place, which found no place.
-enum Offered {
-    Each,
-    Full((u64, u64)),
-}
-
-/// The Work Process `running`, at `at`, read for one round within `share`
-/// of the Work pool: one page of its pass and its head, where it was asked
-/// while its pass was under way; each entry that may go on now admitted and
-/// taken a turn of. Where no place is left its pass stops on that entry and
-/// waits for one, and a head that finds none is left to the pass from the
-/// start its ask began.
-///
-/// On the pool the pass goes first, the head taking what places are left,
-/// so the pass moves on every round a place is free: a head read first,
-/// whose page began with turns that only wait, took every place as each
-/// freed and starved the pass behind it for good (found 2026-11-12 by
-/// `tests/ledger/work_bounded.rs`). A Work Process whose turns are taken on
-/// this thread reads its head first, in its queue's order: each of its turns
-/// gives its place back before the next is offered.
-fn quantum<'env>(
-    pool: &Pool<'_, 'env>,
-    on: (&'env Runtime<'env>, &'env Pickup),
-    (running, at): (&'env Running, usize),
-    share: usize,
-) {
-    let step = on.0.work;
-    let read = step.lock().readings[at].reads();
-    // A Work Process naming a Correlation takes its turns here, in its
-    // queue's order, so the place each takes once its Stream heads follows
-    // the Ledger's order (`crate::sequence::heading`).
-    let to = route::Subscriber::WorkProcess(running.name.clone());
-    let sequenced = !crate::sequence::points_of(on.0.sends, &to).is_empty();
-    let mut offering = Offering {
-        pool,
-        on,
-        running: (running, at),
-        share,
-        sequenced,
-        seen: HashSet::new(),
-    };
-    let (went, headed) = if sequenced {
-        let headed = read.head.map(|first| offering.read(((0, 0), first)));
-        (offering.after(headed, read.pass), headed)
-    } else {
-        let went = read.pass.map(|from| offering.read(from));
-        (
-            went,
-            offering.after(went, read.head.map(|first| ((0, 0), first))),
-        )
-    };
-    step.round_went((at, share), (went, headed));
-}
-
-/// What one quantum offers its entries to: the pool, the Work Process
-/// and its share, and what it offered already.
-struct Offering<'p, 'scope, 'env> {
-    pool: &'p Pool<'scope, 'env>,
-    on: (&'env Runtime<'env>, &'env Pickup),
-    running: (&'env Running, usize),
-    share: usize,
-    sequenced: bool,
-    seen: HashSet<xcore::JourneyId>,
-}
-
-impl Offering<'_, '_, '_> {
-    /// The page `then` read and offered where the one read before it,
-    /// `first`, was offered whole or none was read: how it went.
-    fn after(&mut self, first: Option<Went>, then: Option<PageFrom>) -> Option<Went> {
-        match first {
-            None | Some(Went::On(_)) => then.map(|from| self.read(from)),
-            Some(_) => None,
-        }
-    }
-
-    /// One page of its queue read `from` where it stands — with the page a
-    /// wake brought, where it did — and offered: how it went.
-    fn read(&mut self, from: PageFrom) -> Went {
-        let (running, _) = self.running;
-        match reading::page(self.on.0.work, running.queue, from) {
-            Ok((held, next)) => match self.offer(held) {
-                Offered::Each => Went::On(next),
-                Offered::Full(stays) => Went::Starved(stays),
-            },
-            Err(_) => Went::Unanswered,
-        }
-    }
-
-    /// Each of `page` offered in queue order: one that failed, was offered
-    /// already or is in a turn here moved past, each other admitted and
-    /// taken a turn of, until one finds no place.
-    fn offer(&mut self, page: Vec<Held>) -> Offered {
-        let ((runtime, pickup), (running, at)) = (self.on, self.running);
-        for held in page {
-            if held.failed || !self.seen.insert(held.hold.journey) {
-                continue;
-            }
-            let owning = match runtime.work.admit(held.hold.journey, at, self.share) {
-                Admitted::Turn(owning) => owning,
-                Admitted::Held => continue,
-                Admitted::Full => return Offered::Full((held.due_at(), held.sequence)),
-            };
-            if self.sequenced {
-                // Its turn on this thread, which outlives a panic in it as
-                // the pool's threads do: the guard gives its place back.
-                let turned = || settled((runtime, pickup), running, (&held, owning));
-                let _ = panic::catch_unwind(AssertUnwindSafe(turned));
-            } else {
-                take(self.pool, (runtime, pickup), running, (held, owning));
-            }
-        }
-        Offered::Each
-    }
-}
-
 /// Every Message due in each queue of `runtime`'s work step taken a turn
 /// of, oldest first, on this thread: each queue read wholly, with no pool
 /// and no admission; how each turn ended. A test's, its queue its own.
@@ -310,44 +196,6 @@ pub fn turn_due(runtime: &Runtime<'_>, pickup: &Pickup) -> Vec<Turned> {
         }
     }
     turned
-}
-
-fn take<'env>(
-    pool: &Pool<'_, 'env>,
-    on: (&'env Runtime<'env>, &'env Pickup),
-    running: &'env Running,
-    (held, owning): (Held, Owning<'env>),
-) {
-    pool.run(Box::new(move || {
-        settled(on, running, (&held, owning));
-    }));
-}
-
-/// A turn of the Message `held` names taken under the place `owning`
-/// holds, what it ended as told, and the place given back.
-fn settled(
-    (runtime, pickup): (&Runtime<'_>, &Pickup),
-    running: &Running,
-    (held, owning): (&Held, Owning<'_>),
-) {
-    let step = runtime.work;
-    let turned = turn(runtime, pickup, running, held);
-    match &turned {
-        Turned::Failed(why) => step.failed(&format!("{}: {why}", running.name)),
-        Turned::Unwritten(why) => step.failed(why),
-        // What it waits on, waited on: its queue read the moment any node
-        // moves one (open problem 46, 2026-11-12).
-        Turned::Waits { on, .. } if !on.is_empty() => step.watch.wait_on(on, running.queue),
-        _ => {}
-    }
-    let done = matches!(turned, Turned::Done);
-    owning.ended(done);
-    // A turn may have ended what a Stream held a sequence for: what waits
-    // behind it in either step may go on now.
-    if done {
-        runtime.send.rescan();
-        step.ask_every();
-    }
 }
 
 #[cfg(test)]
