@@ -112,7 +112,7 @@ impl Gathered {
     /// caller's own — and each member's `<node>/reached` stated at `now`;
     /// and what each drew of itself, by its name, for the caller to merge
     /// into its drawing of the cluster (`Topology::merge`). What the
-    /// Essentials' roll states each round (ADR-0028, amendment 2026-11-13).
+    /// System Tests' roll states each round (ADR-0028, amendment 2026-11-13).
     #[must_use]
     pub fn merged(&self, view: &mut Snapshot, now: i64) -> Vec<(String, Topology)> {
         stated(&self.root, &self.heard, view, now)

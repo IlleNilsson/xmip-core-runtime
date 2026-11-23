@@ -2,7 +2,7 @@
 //! service manager and started, or stopped and removed. One
 //! implementation for every program the estate runs as a service —
 //! `xmip-service --install` and `--uninstall` (ADR-0015, amendment
-//! 2026-10-13), and the Essentials' far ends — each asking it with its own
+//! 2026-10-13), and the System Tests' far ends — each asking it with its own
 //! definition. Both need the elevation registering needs (ADR-0018, Open),
 //! and a caller without it is refused in the service manager's words.
 

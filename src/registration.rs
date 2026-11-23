@@ -23,7 +23,7 @@
 //! write a unit and reload — and ADR-0018 records that as an open question
 //! rather than a settled one. Generating is safe, testable on any machine, and
 //! reviewable; performing it is a privileged act, asked only by an installer:
-//! `xmip-service --install` and `--uninstall` and the Essentials' far ends,
+//! `xmip-service --install` and `--uninstall` and the System Tests' far ends,
 //! each with its own definition, through the one [`apply`]. What runs a
 //! registered program under the Windows Service Control Manager is
 //! [`control_manager`]'s, on Windows, for every program run as a service.

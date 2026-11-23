@@ -3,7 +3,7 @@
 //! arrive on, and the states it reports — start pending while it starts,
 //! running once it says so, stop pending while it drains, stopped with its
 //! exit code. One implementation for every program the estate runs as a
-//! service, `xmip-service` and the Essentials' far ends among them; each
+//! service, `xmip-service` and the System Tests' far ends among them; each
 //! gives it what it does when a stop arrives and what it runs, and the
 //! service is registered under the name `registration` gives it.
 //!

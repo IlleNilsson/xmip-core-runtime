@@ -4,7 +4,7 @@
 //! than the claim, read before another pass's hand-on landed. Its place,
 //! its Journey, its Message and its Stream's record are one request
 //! (`XmipStorage::read_claimed`; open problem 46, 2026-11-12: until then
-//! four, one after another, 0.9 ms in the Essentials).
+//! four, one after another, 0.9 ms in the System Tests).
 
 use context::IdentityFacts;
 use xcore::JourneyId;

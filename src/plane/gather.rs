@@ -2,7 +2,7 @@
 //! operate listener as a surface follows a node (ADR-0027 decision 8; the
 //! design of 2026-11-12 the owner approved, section 3.3; ADR-0052,
 //! amendment 2026-11-13). Who the members are is the cluster's seam,
-//! `xcluster::Membership`: the run's roster on the Essentials' roll, which
+//! `xcluster::Membership`: the run's roster on the System Tests' roll, which
 //! reads every node it does not simulate through this; membership through
 //! Xmip Storage on a node, the design's next piece. How this process reaches
 //! each — the surface, the identity it presents, and where it says it

@@ -4,7 +4,7 @@
 //! assembles and which a caller merging what was heard into a view of its
 //! own states through it (`Gathered::merged`). A cluster's drawing reads it
 //! for each relation's mood (`observe::topology::relate`). Until
-//! 2026-11-13 the Essentials' roll held it (ADR-0028 and ADR-0052,
+//! 2026-11-13 the System Tests' roll held it (ADR-0028 and ADR-0052,
 //! amendments 2026-11-13).
 
 use codec::civil::CivilTime;

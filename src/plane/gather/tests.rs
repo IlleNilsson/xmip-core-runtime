@@ -20,7 +20,7 @@ use observe::{
 
 use super::{Gathered, Heard, Said, reached};
 
-/// Where the members are reached, as the Essentials' roll says it.
+/// Where the members are reached, as the System Tests' roll says it.
 const AT: &str = "real, at the local endpoint";
 
 /// 2026-11-13 at midnight, in unix nanoseconds.
@@ -148,7 +148,7 @@ fn reached_says_where_a_member_answered_why_it_did_not_and_when_it_stopped() {
     );
 }
 
-/// What the Essentials' roll states each round into a view of its own: each
+/// What the System Tests' roll states each round into a view of its own: each
 /// member's snapshot and `<node>/reached`, in order, nothing of its own
 /// replaced, no rollup, and what each drew of itself by its name.
 #[test]

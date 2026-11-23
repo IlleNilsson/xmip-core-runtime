@@ -193,7 +193,7 @@ mod tests {
         // reads anything out of it (ADR-0053).
         let cluster = configure::fixture::test_cluster();
         let name = format!(
-            "xmip-essentials-{}-node-{}",
+            "xmip-system-test-{}-node-{}",
             cluster.name,
             cluster.node(0).name
         );
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn what_a_process_declared_is_read_back_whole() {
         let directory = scratch("whole");
-        let declaration = Declaration::new("xmip-essentials-node", "a \"b\"\\c", Purpose::Test)
+        let declaration = Declaration::new("xmip-system-test-node", "a \"b\"\\c", Purpose::Test)
             .and_then(|declaration| declaration.with("online", "true"))
             .expect("a bare key");
         let declared = declare_in(&declaration, &directory).expect("declared");

@@ -92,7 +92,7 @@ pub fn local_of(account: &str, parties: &Parties) -> Result<AuthenticatedIdentit
 /// account the operating system says the process runs as, as
 /// [`subscriber_as`] takes it. The one rule for every program subscribing
 /// in a node's process — the operate library's (`ffi::event`, through the
-/// Parties of the nodes serving here) and the Essentials' nodes'.
+/// Parties of the nodes serving here) and the System Tests' nodes'.
 ///
 /// # Errors
 /// The operating system named no account, or as [`subscriber_as`]; each
