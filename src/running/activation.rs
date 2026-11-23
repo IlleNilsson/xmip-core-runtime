@@ -20,7 +20,9 @@
 //! stays where it was given, and is tried again at the next start. Once a
 //! node accepts work under a configuration nothing later demotes it. What
 //! the node runs, and what was refused, is its record at
-//! `<node>/configuration` ([`Standing`]).
+//! `<node>/configuration` ([`Standing`]); whether it runs it and its Xmip
+//! Storage stands Fine is whether it is ready ([`readiness`]), what a
+//! deployment asks before it restarts the next node.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -34,8 +36,11 @@ use crate::membership::{self, Floor, Joined};
 use crate::service::StartupPhase;
 use crate::signed::{self, Admitted, Refused, Slice, Which};
 
+mod published;
+mod readiness;
 mod standing;
 
+pub use readiness::readiness;
 pub use standing::{CONFIGURATION, Standing, activation};
 
 /// What a slice is tried as.

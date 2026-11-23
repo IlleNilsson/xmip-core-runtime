@@ -7,11 +7,9 @@
 //! reads the snapshot, and `xmip-service --activation` reads them back
 //! ([`activation`]).
 
-use std::path::Path;
+use observe::Health;
 
-use observe::{Health, Publication};
-
-use super::super::publication::{SNAPSHOT, location};
+use super::published::{Published, published};
 use crate::signed::Which;
 
 /// The leaf beneath a node its configuration standing is published at.
@@ -115,38 +113,21 @@ impl Standing {
 /// It does not, or it cannot be told; in the node's own words where it
 /// published any.
 pub fn activation(path: &str) -> Result<String, String> {
-    let file =
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {path}: {error}"))?;
-    let signature = configure::signed::split(&file)
-        .map_err(|why| format!("{path}: {why}"))?
-        .1
-        .ok_or_else(|| format!("{path} is not signed, and a node runs only a signed slice"))?;
-    let which = Which {
-        serial: signature.serial,
-        save: signature.cluster,
-    };
+    activated(path, &published(path)?)
+}
+
+/// Whether `published`, the node's configured at `path`, says it runs the
+/// slice its file holds: [`activation`]'s rule, which `readiness` holds to
+/// first.
+///
+/// # Errors
+/// As [`activation`].
+pub(crate) fn activated(path: &str, published: &Published) -> Result<String, String> {
+    let which = &published.which;
     let not = |why: String| format!("{path}, {which}, is not what the node runs: {why}");
-    let (document, _, _) = crate::start::read(path).map_err(|unread| not(unread.reason))?;
-    let service = &document.service;
-    let snapshot = service.data_directory(Path::new(path)).join(SNAPSHOT);
-    let scope = format!(
-        "{}/{CONFIGURATION}",
-        location(&service.cluster_name, &service.node_name)
-    );
-    let text = std::fs::read_to_string(&snapshot).map_err(|error| {
-        not(format!(
-            "it has published nothing at {}: {error}",
-            snapshot.display()
-        ))
-    })?;
-    let publication = Publication::read(&text)
-        .map_err(|why| not(format!("{} does not read: {why}", snapshot.display())))?;
-    let record = publication
-        .records
-        .iter()
-        .find(|record| record.scope == scope)
-        .ok_or_else(|| not(format!("{} says nothing at {scope}", snapshot.display())))?;
-    if record.health == Health::Fine && Standing::runs(&record.evidence, &which) {
+    let last = published.last.as_ref().map_err(|why| not(why.clone()))?;
+    let record = last.record(CONFIGURATION).map_err(not)?;
+    if record.health == Health::Fine && Standing::runs(&record.evidence, which) {
         Ok(record.evidence.clone())
     } else {
         Err(not(record.evidence.clone()))

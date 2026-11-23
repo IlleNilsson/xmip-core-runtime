@@ -140,7 +140,8 @@ impl Reached {
             ),
             Behind::Alone(said, _) => (Health::Fine, said.clone()),
             Behind::Several(node) => {
-                let health = stands(node.is_finding(), node.bootstrap());
+                let handed = node.is_primary() || node.is_following();
+                let health = stands(node.is_finding(), handed, node.bootstrap());
                 (health, format!("its own Storage node, {}", node.said()))
             }
             Behind::Reaching(client) => reached(client),
@@ -208,14 +209,18 @@ impl Drop for Reached {
 /// `<node>/storage`: Done while it finds its primary, Working while it is a
 /// standby copied whole and not ready yet — copying, or catching up, never
 /// promoted meanwhile (ADR-0056, amendments 2026-11-12 and 2026-11-13) —
-/// and Fine otherwise. A standby not ready is drawn so by its own record,
-/// not by its primary's link to it: only the standby knows how far its
-/// bootstrap is, kept durable across its restarts, while its primary knows
-/// only what it handed it.
-fn stands(finding: bool, bootstrap: Bootstrap) -> Health {
+/// or one its primary has `handed` nothing yet on its connection, and Fine
+/// otherwise: the primary, or a standby ready and following, which its
+/// primary's stop in order hands over to (amendment 2026-11-23), what a
+/// deployment waits for before it restarts the next
+/// (`running::activation::readiness`). A standby not ready is drawn so by
+/// its own record, not by its primary's link to it: only the standby knows
+/// how far its bootstrap is, kept durable across its restarts, while its
+/// primary knows only what it handed it.
+fn stands(finding: bool, handed: bool, bootstrap: Bootstrap) -> Health {
     if finding {
         Health::Done
-    } else if bootstrap.is_ready() {
+    } else if bootstrap.is_ready() && handed {
         Health::Fine
     } else {
         Health::Working
@@ -286,9 +291,10 @@ mod tests {
 
     /// A standby copied whole is drawn as it stands by its own record, which
     /// its node's drawing takes as its mood (`observe::topology::draw`):
-    /// Working while copying or catching up, Fine once ready.
+    /// Working while copying or catching up, or handed nothing yet, Fine
+    /// once ready and handed writes (ADR-0056, amendment 2026-11-23).
     #[test]
-    fn a_standby_copying_or_catching_up_stands_working_and_one_ready_fine() {
+    fn a_standby_copying_catching_up_or_handed_nothing_stands_working_and_one_ready_fine() {
         let catching_up = Bootstrap::CatchingUp {
             epoch: 2,
             through: [9, 1, 1],
@@ -298,8 +304,17 @@ mod tests {
             (catching_up, Health::Working),
             (Bootstrap::Ready, Health::Fine),
         ] {
-            assert_eq!(stands(false, bootstrap), health, "{bootstrap:?}");
-            assert_eq!(stands(true, bootstrap), Health::Done, "finding its primary");
+            assert_eq!(stands(false, true, bootstrap), health, "{bootstrap:?}");
+            assert_eq!(
+                stands(true, true, bootstrap),
+                Health::Done,
+                "finding its primary"
+            );
+            assert_eq!(
+                stands(false, false, bootstrap),
+                Health::Working,
+                "handed nothing yet: {bootstrap:?}"
+            );
         }
     }
 

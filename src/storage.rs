@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_reaches_the_storage_nodes_listed_and_waits_for_the_primary_gone_to_return() {
+    fn a_node_reaches_the_storage_nodes_listed_and_reads_on_as_the_primary_stops_in_order() {
         let authority = crate::fixture::Authority::new();
         let directory = authority.directory.to_path_buf();
         certified(&authority, 3);
@@ -717,29 +717,29 @@ mod tests {
         assert_eq!(moved.expect("answered"), []);
         assert!(held.elapsed() < long / 3, "held {:?}", held.elapsed());
 
-        // No witness: the primary gone is waited for, never replaced
-        // (ADR-0056, amendment 2026-11-08).
+        // Stopped in order, the primary hands over: its standby succeeds it
+        // at once (ADR-0056, amendment 2026-11-23). One that vanishes is
+        // waited for, never replaced (amendment 2026-11-08): persist's
+        // standby tests hold it.
         first.stop();
         drop(first);
-        std::thread::sleep(std::time::Duration::from_millis(900));
-        assert!(
-            !second.said().contains("the primary Storage node"),
-            "{}",
-            second.said()
-        );
-        assert!(
-            reaching.storage().read_journey(journey.journey).is_err(),
-            "no primary answers"
-        );
+        let says = |node: &Reached, words: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !node.said().contains(words) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(node.said().contains(words), "{}", node.said());
+        };
+        says(&second, "the primary Storage node");
+        let read = reaching
+            .storage()
+            .read_journey(journey.journey)
+            .expect("read through the standby succeeding");
+        assert_eq!(read.map(|r| r.body), Some(b"over the wire".to_vec()));
 
-        // Back over what it kept: every one listed answers, and they settle.
+        // Back over what it kept, it follows its successor on.
         let again = storage(0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !second.said().contains("the primary Storage node")
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        says(&again, "a standby Storage node of the primary");
         let read = reaching
             .storage()
             .read_journey(journey.journey)
