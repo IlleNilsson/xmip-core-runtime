@@ -144,8 +144,8 @@ impl Libraries {
             let loaded = LoadedModule::open(&path, &expectation()).and_then(|loaded| {
                 {
                     let contract = LoadedContract::of(&loaded)?;
-                    contract.configure("")?;
-                    contract.start()?;
+                    contract.lifecycle().configure("")?;
+                    contract.lifecycle().start()?;
                 }
                 Ok(loaded)
             });
@@ -196,7 +196,7 @@ impl Drop for Libraries {
             if let Ok(contract) = crate::ffi::loaded_contract::LoadedContract::of(loaded) {
                 // A module that refuses to stop is let go all the same: the
                 // node is stopping, and nothing is left to call it.
-                drop(contract.stop());
+                drop(contract.lifecycle().stop());
             }
         }
     }

@@ -9,7 +9,7 @@
 
 use observe::Health;
 
-use super::published::{Published, published};
+use super::published::{Node, Published, published};
 use crate::signed::Which;
 
 /// The leaf beneath a node its configuration standing is published at.
@@ -113,7 +113,7 @@ impl Standing {
 /// It does not, or it cannot be told; in the node's own words where it
 /// published any.
 pub fn activation(path: &str) -> Result<String, String> {
-    activated(path, &published(path)?)
+    activated(path, &published(&Node::read(path)?))
 }
 
 /// Whether `published`, the node's configured at `path`, says it runs the

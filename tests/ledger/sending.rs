@@ -152,6 +152,7 @@ pub fn port(name: &str, shaped: impl FnOnce(&mut DesignedSendPort)) -> DesignedS
         promote: None,
         demote: None,
         debatch: None,
+        requires: Vec::new(),
     };
     shaped(&mut port);
     port

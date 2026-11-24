@@ -255,9 +255,10 @@ impl Running {
 
     /// The roles the node's configuration gives it — receiving where a
     /// Receive Location starts, processing where it routes, sending where a
-    /// Send Port starts, executing where all three do — and whether its
-    /// configuration says it is online (ADR-0045; ADR-0056, amendment
-    /// 2026-10-01).
+    /// Send Port starts, executing where all three do — and the Node
+    /// capabilities its configuration declares, `online` among them where it
+    /// may reach the internet (ADR-0045; ADR-0056, amendments 2026-10-01 and
+    /// 2026-11-24).
     fn declared(&self) -> Capability {
         let serves = |stage: Stage| self.locations.iter().any(|(at, ..)| *at == stage);
         let stages: Vec<Stage> = [
@@ -268,7 +269,7 @@ impl Running {
         .into_iter()
         .filter_map(|(stage, served)| served.then_some(stage))
         .collect();
-        Capability::serving(&stages).with_online(self.online)
+        self.declaring(Capability::serving(&stages))
     }
 
     /// What [`counts`] says the node counted, recorded at `now`.

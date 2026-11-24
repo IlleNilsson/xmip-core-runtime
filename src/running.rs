@@ -85,8 +85,10 @@ impl fmt::Display for Refusal {
 pub struct Running {
     cluster: String,
     node: String,
-    /// Whether its configuration says it may reach the internet (ADR-0045).
-    online: bool,
+    /// Its Node capabilities, as its configuration declares them and its
+    /// start read them: `online` among them where it may reach the internet
+    /// (ADR-0045; ADR-0056, amendment 2026-11-24).
+    node_capabilities: Vec<String>,
     capabilities: CapabilityRegistry,
     host_services: Vec<HostService>,
     /// Each Location it started: its stage, where it is published beneath
@@ -117,6 +119,10 @@ pub struct Running {
     /// start every Location's transport was built on (ADR-0024, amendment
     /// 2026-11-22).
     process: u128,
+    /// Which start of the node this is, numbered as its process's first act
+    /// (`activation::started`), until it joins; none where it was started
+    /// otherwise, and numbered as it joins (ADR-0056, amendment 2026-11-24).
+    numbered: Option<Result<u64, String>>,
     /// The slice it runs and how it came to, and, once activated, what its
     /// record at `<node>/configuration` says (`activation`).
     attempt: activation::Attempt,
@@ -173,6 +179,16 @@ impl Running {
     #[must_use]
     pub const fn capabilities(&self) -> &CapabilityRegistry {
         &self.capabilities
+    }
+
+    /// `declared` with the node's Node capabilities, which its start read
+    /// as words (`node::Capability::node_capabilities`), so none is refused
+    /// here.
+    fn declaring(&self, declared: node::Capability) -> node::Capability {
+        declared
+            .clone()
+            .with_declared(&self.node_capabilities)
+            .unwrap_or(declared)
     }
 
     /// The Host Services the node's Modules needed, as started.

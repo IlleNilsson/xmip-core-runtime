@@ -59,6 +59,17 @@ pub fn floored(configuration: &Path, latest: u64) -> Result<(), String> {
     kept(&at, Start { start: latest }.written().as_bytes(), WHAT)
 }
 
+/// The number of the latest start of the node configured at
+/// `configuration`, as its start file keeps it: what a publication of that
+/// start was observed after (`running::activation::readiness`); none where
+/// it keeps none.
+///
+/// # Errors
+/// Where the start file cannot be read, in words.
+pub fn latest(configuration: &Path) -> Result<Option<u64>, String> {
+    last_at(&start_at(configuration))
+}
+
 /// The number the start file at `at` keeps: none where it is absent or does
 /// not read.
 fn last_at(at: &Path) -> Result<Option<u64>, String> {

@@ -32,7 +32,7 @@ impl Membership for Followed {
 
 /// `row` as a member: its node, where its sync and operate listeners
 /// answer, what it declares — read back from its evidence by the one
-/// reading, roles and online capability both — its place among the Storage
+/// reading, roles and Node capabilities both — its place among the Storage
 /// nodes, and when it stopped in order.
 fn member(row: &MemberRecord) -> Result<Member, ClusterError> {
     let capability = Capability::from_evidence(&row.evidence)

@@ -22,6 +22,7 @@ mod drawing;
 mod listening;
 mod node;
 mod own_share;
+mod ready;
 mod sharing;
 
 use std::time::{Duration, Instant};

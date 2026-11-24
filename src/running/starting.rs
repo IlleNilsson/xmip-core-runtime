@@ -75,6 +75,10 @@ impl Running {
         // role: by then this is the node's declaration.
         let roles =
             node::NodeRole::declared(document.roles.as_deref().unwrap_or("")).unwrap_or_default();
+        // Its Node capabilities, read as words once (ADR-0056, amendment
+        // 2026-11-24): a slice naming one that is none is refused here.
+        let node_capabilities = node::Capability::node_capabilities(&document.capabilities)
+            .map_err(|refused| Refusal::at(StartupPhase::ReadConfiguration, vec![refused]))?;
         let reaching = crate::storage::plan(&document, path, &linked)?;
         let guard = crate::receive_certificate::guard(&document, Path::new(path))
             .map_err(|problems| Refusal::at(StartupPhase::ValidateStartup, problems))?;
@@ -153,7 +157,7 @@ impl Running {
         };
 
         Ok(Self {
-            online: tree.service.online,
+            node_capabilities,
             cluster: tree.service.cluster_name,
             node: tree.service.node_name,
             bound,
@@ -171,6 +175,7 @@ impl Running {
             send,
             data,
             process,
+            numbered: None,
             attempt,
             standing: None,
             provision,

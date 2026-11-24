@@ -28,6 +28,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use persist::storage::MemberRecord;
+use xcore::SystemClock;
 
 use super::serving::serve;
 use super::{Refusal, Running};
@@ -40,7 +41,7 @@ mod published;
 mod readiness;
 mod standing;
 
-pub use readiness::readiness;
+pub use readiness::{awaited, readiness};
 pub use standing::{CONFIGURATION, Standing, activation};
 
 /// What a slice is tried as.
@@ -99,21 +100,26 @@ impl Running {
     }
 
     /// Its membership of the cluster begun: its process, drawn as it
-    /// started, and its start numbered and kept (`membership::numbering`),
-    /// then its row written to Xmip Storage once it is reached, and the
-    /// members followed (`crate::membership`). A start that cannot be
-    /// numbered, or a thread that does not start, leaves it no member,
-    /// said as the node's failure; a start is never numbered later, which
-    /// could rank it above a start after it.
+    /// started, and its start, numbered and kept as its process's first act
+    /// ([`started`]) or here where it was started otherwise
+    /// (`membership::numbering`), then its row written to Xmip Storage once
+    /// it is reached, and the members followed (`crate::membership`). A
+    /// start that cannot be numbered, or a thread that does not start,
+    /// leaves it no member, said as the node's failure; a start is never
+    /// numbered later, which could rank it above a start after it.
     fn join(&mut self) {
-        let start = match membership::numbering::numbered(&self.configuration, &*self.clock) {
+        let numbered = self
+            .numbered
+            .take()
+            .unwrap_or_else(|| membership::numbering::numbered(&self.configuration, &*self.clock));
+        let start = match numbered {
             Ok(start) => start,
             Err(problem) => {
                 self.tally.fail(&self.node, problem);
                 return;
             }
         };
-        let declared = node::Capability::of(&self.roles).with_online(self.online);
+        let declared = self.declaring(node::Capability::of(&self.roles));
         let runs = self.attempt.slice.which();
         let row = MemberRecord {
             process: self.process,
@@ -169,6 +175,14 @@ impl Running {
 /// nothing reads it before, so one absent or unreadable is a candidate
 /// refused, and the active configuration runs.
 ///
+/// **Its start is numbered first**, before anything can refuse it
+/// (`membership::numbering`), one number for both attempts: from that
+/// moment a publication an earlier process of the node left says nothing of
+/// whether it is ready, nor what it runs (`readiness`; open problem 137;
+/// ADR-0056, amendment 2026-11-24). Until that day it was numbered as the
+/// node began serving, and a start refused before then left its node's last
+/// publication standing for it.
+///
 /// # Errors
 /// Nothing to run: the candidate's refusal, at its phase, and why the
 /// active configuration did not run either. A pin or an anchor the node
@@ -178,8 +192,10 @@ pub fn started<T>(
     mut linked: impl FnMut() -> Linked,
     mut program: impl FnMut(&Running) -> Result<T, Refusal>,
 ) -> Result<(Running, T), Refusal> {
+    let numbered = membership::numbering::numbered(Path::new(path), &SystemClock);
     let mut attempted = |slice: Slice, tried: Tried| -> Result<(Running, T), Refusal> {
         let mut running = Running::start(path, Attempt { slice, tried }, linked())?;
+        running.numbered = Some(numbered.clone());
         let made = program(&running)?;
         running.activate();
         Ok((running, made))

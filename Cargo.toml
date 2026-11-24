@@ -277,7 +277,8 @@ remote = ["dep:codec", "dep:authorize", "dep:context"]
 # xmip-core-operate exports as `xmip_module_probe_v1` (ADR-0012, amendment
 # 2026-11-17): a surface's library probes and runs no module.
 loader = ["dep:abi", "dep:libloading"]
-# ffi/loaded_contract.rs, ffi/loaded_work_process.rs and what library.rs
+# ffi/loaded_contract.rs, ffi/loaded_work_process.rs, ffi/loaded_promotion.rs,
+# the table lifecycle they share (ffi/lifecycle.rs) and what library.rs
 # opens with them are guarded on this: a node that opens what its
 # configuration starts. Declared so the cfg is a real switch rather than a
 # condition that is silently always false.

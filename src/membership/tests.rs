@@ -32,7 +32,9 @@ fn storage() -> Arc<dyn XmipStorage> {
 /// The node at `place`, receiving, its row keyed by `process` and running
 /// `save`: a later process a later start.
 fn row(process: u128, place: usize, save: &str) -> MemberRecord {
-    let declared = node::Capability::of(&[NodeRole::Receiving]).with_online(true);
+    let declared = node::Capability::of(&[NodeRole::Receiving])
+        .with_declared(&[node::ONLINE.to_string()])
+        .expect("a Node capability");
     MemberRecord {
         process,
         start: u64::try_from(process).expect("a start"),
@@ -111,7 +113,11 @@ fn a_node_s_row_is_written_and_the_members_followed_as_another_writes_its_own() 
         .find(|m| m.node == scope(0))
         .expect("this node");
     assert_eq!(one.capability.roles(), [NodeRole::Receiving]);
-    assert!(one.capability.is_online(), "read back from its evidence");
+    assert_eq!(
+        one.capability.declared(),
+        [node::ONLINE],
+        "its Node capabilities read back from its evidence"
+    );
     assert_eq!((one.storage_place, one.stopped), (Some(1), None));
     assert_eq!(one.operate.as_deref(), Some("127.0.0.1:7443"));
     assert_eq!(one.address, None, "no sync listener starts yet");

@@ -95,6 +95,18 @@ impl Reached {
         }
     }
 
+    /// `told` called each time what its own Storage node of several is
+    /// changes (`StorageNode::telling`): what its program publishes by at
+    /// once, so a deployment waiting for the node to be ready is told
+    /// (`running::activation::awaited`; open problem 140). Nothing where it
+    /// keeps no Storage node of several: what it says of Xmip Storage then
+    /// changes with what its requests come to.
+    pub fn telling(&self, told: impl Fn() + Send + Sync + 'static) {
+        if let Behind::Several(node) = &self.behind {
+            node.telling(told);
+        }
+    }
+
     /// Whether the Xmip Storage it reaches answers, by what it already
     /// knows and by the rule `<node>/storage` stands by — never by a try
     /// that could wait out a Storage node's timeout: what a node stopping

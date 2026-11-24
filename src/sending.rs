@@ -308,6 +308,7 @@ mod tests {
             promote: None,
             demote: None,
             debatch: None,
+            requires: Vec::new(),
         }
     }
 

@@ -19,6 +19,7 @@ use abi::ffi::{ContractVtable, Diagnostic, Reader, Str, status};
 use abi::{Expectation, ModuleDescriptor};
 use codec::cursor::Cursor;
 
+use crate::ffi::lifecycle::Lifecycle;
 use crate::ffi::loaded_module::{LoadedModule, read_str};
 
 /// The trait this file drives, as `descriptor.module` spells it (ADR-0011).
@@ -30,10 +31,6 @@ pub const CONTRACT: &str = "contract";
 pub fn expectation() -> Expectation {
     Expectation::new(CONTRACT, 1, 0)
 }
-
-/// `configure`, `start` and `stop` differ only in what they are called; the
-/// first also takes the artifact's TOML fragment.
-type LifecycleFn = unsafe extern "C" fn(*mut c_void) -> i32;
 
 /// What a contract said about one stream, copied out of the module.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,67 +107,11 @@ impl<'a> LoadedContract<'a> {
         self.module.descriptor()
     }
 
-    /// Header section 8: `configure` runs once, before `start`, with the
-    /// artifact's TOML fragment.
-    ///
-    /// # Errors
-    ///
-    /// A table with no `configure`, or the module's own status.
-    pub fn configure(&self, toml: &str) -> Result<(), String> {
-        let Some(call) = self.table.header.configure else {
-            return Err(format!("{} carries no configure", self.descriptor()));
-        };
-        let fragment = Str {
-            ptr: toml.as_ptr(),
-            len: toml.len(),
-        };
-
-        // SAFETY: `toml` outlives the call, which is all the header lends it
-        // for — a module that keeps the fragment copies it. `state` is this
-        // instance's own and no other call is in flight.
-        let answer = unsafe { call(self.module.state(), fragment) };
-
-        self.judge("configure", answer)
-    }
-
-    /// # Errors
-    ///
-    /// A table with no `start`, or the module's own status.
-    pub fn start(&self) -> Result<(), String> {
-        self.lifecycle("start", self.table.header.start)
-    }
-
-    /// # Errors
-    ///
-    /// A table with no `stop`, or the module's own status. Conformance rule 7
-    /// makes this legal even where `start` never ran.
-    pub fn stop(&self) -> Result<(), String> {
-        self.lifecycle("stop", self.table.header.stop)
-    }
-
-    fn lifecycle(&self, what: &str, call: Option<LifecycleFn>) -> Result<(), String> {
-        let Some(call) = call else {
-            return Err(format!("{} carries no {what}", self.descriptor()));
-        };
-
-        // SAFETY: `state` is this instance's own, handed back untouched, and
-        // no other call on it is in flight — the host serializes calls on one
-        // instance (specification section 5).
-        let answer = unsafe { call(self.module.state()) };
-
-        self.judge(what, answer)
-    }
-
-    fn judge(&self, what: &str, answer: i32) -> Result<(), String> {
-        if answer == status::OK {
-            return Ok(());
-        }
-
-        Err(format!(
-            "{} answered status {answer} to {what}: {}",
-            self.descriptor(),
-            self.module.last_error()
-        ))
+    /// Header section 8: `configure` once, before `start`, then `start`
+    /// and `stop`.
+    #[must_use]
+    pub const fn lifecycle(&self) -> Lifecycle<'a> {
+        Lifecycle::of(self.module, &self.table.header)
     }
 
     /// Bind a contract descriptor — a schema document, a profile URL, a
@@ -211,7 +152,8 @@ impl<'a> LoadedContract<'a> {
 /// The host's side of header section 5, reading the content through the
 /// estate's one byte cursor (`codec::cursor`). Returns bytes written, 0 at
 /// end of stream, or a negative status; a short read is not end of stream.
-unsafe extern "C" fn read_source(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
+/// Every table the host hands content to reads it through here.
+pub(crate) unsafe extern "C" fn read_source(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
     // SAFETY: the module's contract is this callback's, passed on whole.
     abi::guarded(i64::from(status::PANIC), || unsafe {
         source_read(ctx, buf, len)
@@ -224,8 +166,9 @@ unsafe fn source_read(ctx: *mut c_void, buf: *mut u8, len: usize) -> i64 {
         return i64::from(status::INVALID);
     }
 
-    // SAFETY: `ctx` is the `Cursor` that `validate` below keeps on its own
-    // stack across the one call it passes this reader to; the module may not
+    // SAFETY: `ctx` is the `Cursor` that its caller — `validate` below, or a
+    // Promote step's `promote` — keeps on its own stack across the one call
+    // it passes this reader to; the module may not
     // keep the reader past that call, so nothing else can be behind this
     // pointer. `buf` is the module's, writable for `len` bytes for this call.
     let source = unsafe { &mut *ctx.cast::<Cursor<'_>>() };
@@ -445,10 +388,11 @@ mod tests {
         let module = open();
         let contract = LoadedContract::of(&module).expect("the contract table");
 
-        contract
+        let lifecycle = contract.lifecycle();
+        lifecycle
             .configure("unrecognized-key = true")
             .expect("configure");
-        contract.start().expect("start");
+        lifecycle.start().expect("start");
 
         let bound = contract.bind("any").expect("a descriptor binds");
         let verdict = bound.validate(b"xmip round-trip").expect("validate");
@@ -461,7 +405,7 @@ mod tests {
         assert_eq!(bound.implies("nothing-it-determines"), None);
 
         drop(bound);
-        contract.stop().expect("stop");
+        lifecycle.stop().expect("stop");
         assert_eq!(module.last_error(), "");
     }
 
@@ -470,7 +414,7 @@ mod tests {
         let module = open();
         let contract = LoadedContract::of(&module).expect("the contract table");
 
-        contract.start().expect("start");
+        contract.lifecycle().start().expect("start");
 
         let bound = contract.bind("any").expect("a descriptor binds");
 
