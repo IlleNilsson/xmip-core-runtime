@@ -10,7 +10,7 @@
 //! directory beside the configuration folder ([`admission`]). Signing is
 //! here; trusting is [`admission`]'s.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use configure::signed::{self, Signature};
@@ -99,7 +99,8 @@ fn signed_as(
 /// `slice`, sliced from the cluster's file `cluster`, signed by the
 /// cluster's authority kept beside the configuration at `configuration`
 /// ([`AUTHORITY`]), made there named `name` where none is kept yet: a
-/// one-node install's, and the program slicing for a node.
+/// one-node install's, whose configuration is the machine's own, never a
+/// cluster's file sliced for its nodes ([`sliced_signed`]).
 ///
 /// # Errors
 /// The authority cannot be read or made, or signing fails; in words.
@@ -131,26 +132,28 @@ pub fn signed_by_kept(
     sign(&authority, cluster, slice)
 }
 
-/// The node `node`'s document sliced from the cluster's file `cluster`,
-/// kept at `path`, and signed: the one slicing and signing every program
-/// and surface asks for a node (`xmip-service --slice`,
-/// `xmip_cluster_signed_slice_v1`). Sliced as the cluster `name` the
-/// environment gives where it gives one (`configure::slice_named`), and as
-/// the file names it otherwise; signed by the cluster's authority kept in
-/// `authority` where it is named ([`signed_by_kept`]), and beside the file
-/// otherwise ([`signed_beside`]), made there named for the cluster where
-/// none is kept.
+/// The node `node`'s document sliced from the cluster's file `cluster` and
+/// signed, and the folder the authority that signed it is kept in: the one
+/// slicing and signing every program and surface asks for a node
+/// (`xmip-service --slice`, `xmip_cluster_signed_slice_v1`). Sliced as the
+/// cluster `name` the environment gives where it gives one
+/// (`configure::slice_named`), and as the file names it otherwise; signed by
+/// the cluster's authority kept in `authority` where it is named, and in
+/// this account's own folder on this machine otherwise ([`own_authority`]),
+/// made there named for the cluster where none is kept ([`signed_by_kept`]).
+/// Never beside the cluster's file, which may be in a repository: a slice
+/// made a private key in one on 2026-11-24 (ADR-0031, amendment
+/// 2026-11-25).
 ///
 /// # Errors
-/// The slicing refuses, or the authority cannot be read or made, or
-/// signing fails; in words.
+/// The slicing refuses, the cluster has no name and no folder is named, or
+/// the authority cannot be read or made, or signing fails; in words.
 pub fn sliced_signed(
     cluster: &str,
-    path: &Path,
     node: &str,
     name: Option<&str>,
     authority: Option<&Path>,
-) -> Result<String, String> {
+) -> Result<(String, PathBuf), String> {
     let (sliced, name) = match name {
         Some(name) => (
             configure::slice_named(cluster, node, name)?,
@@ -161,10 +164,66 @@ pub fn sliced_signed(
             configure::cluster::cluster_name(cluster)?.unwrap_or_default(),
         ),
     };
-    match authority {
-        Some(place) => signed_by_kept(place, &name, cluster, &sliced),
-        None => signed_beside(path, &name, cluster, &sliced),
+    let place = match authority {
+        Some(place) => place.to_path_buf(),
+        None => own_authority(&name)?,
+    };
+    let signed = signed_by_kept(&place, &name, cluster, &sliced)?;
+    Ok((signed, place))
+}
+
+/// Where the cluster `name`'s authority is kept on this machine where no
+/// folder is named for it: `authority/<name>` in this account's own Xmip
+/// folder ([`own_folder`]), a private directory the authority makes, so a
+/// machine signs every slice of a cluster with its own (ADR-0031,
+/// amendments 2026-11-06 and 2026-11-25).
+///
+/// # Errors
+/// The cluster has no name, or one that is no folder's, or this account
+/// has no folder of its own; in words.
+pub fn own_authority(name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() {
+        return Err(
+            "the cluster's file names no cluster and none was given, so no \
+                    authority of it is kept on this machine: give the cluster's name, \
+                    or the folder its authority is kept in"
+                .to_string(),
+        );
     }
+    let mut parts = Path::new(name).components();
+    if !matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err(format!(
+            "the cluster's name {name:?} is no folder's, so no authority of it is kept \
+             on this machine: give the folder its authority is kept in"
+        ));
+    }
+    Ok(own_folder()?.join(AUTHORITY).join(name))
+}
+
+/// This account's own Xmip folder on this machine: `Xmip` in
+/// `%LOCALAPPDATA%` on Windows; elsewhere `xmip` in `$XDG_STATE_HOME`, or
+/// in `~/.local/state`, where the machine deploying an environment keeps
+/// its private state too (`Get-XmipDeployStateFolder`).
+fn own_folder() -> Result<PathBuf, String> {
+    let named = |variable: &str| {
+        std::env::var_os(variable)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    if cfg!(windows) {
+        return named("LOCALAPPDATA")
+            .map(|base| base.join("Xmip"))
+            .ok_or_else(|| "LOCALAPPDATA names no folder of this account's".to_string());
+    }
+    named("XDG_STATE_HOME")
+        .or_else(|| named("HOME").map(|home| home.join(".local").join("state")))
+        .map(|base| base.join("xmip"))
+        .ok_or_else(|| {
+            "neither XDG_STATE_HOME nor HOME names a folder of this account's".to_string()
+        })
 }
 /// `slice`, sliced from the cluster's file `cluster`, signed by `authority`
 /// and written at `path`, with the authority's certificate beside it where

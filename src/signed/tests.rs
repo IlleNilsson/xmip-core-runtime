@@ -357,8 +357,9 @@ fn a_slice_signed_by_a_kept_authority_is_named_for_the_environments_cluster() {
     let node = &test.node(0).name;
     let cluster = format!("[service]\nname = \"n\"\n\n[nodes.{node}]\n");
     let kept = path.parent().expect("a folder").join(AUTHORITY);
-    let signed =
-        sliced_signed(&cluster, &file, node, Some(&test.name), Some(&kept)).expect("signed");
+    let (signed, place) =
+        sliced_signed(&cluster, node, Some(&test.name), Some(&kept)).expect("signed");
+    assert_eq!(place, kept, "signed by the authority in the folder named");
     std::fs::write(&*path, signed).expect("placed");
     let text = checked(&path).expect("admitted");
     let named = format!("cluster_name = \"{}\"", test.name);
@@ -367,6 +368,35 @@ fn a_slice_signed_by_a_kept_authority_is_named_for_the_environments_cluster() {
         !base.join(AUTHORITY).exists(),
         "no authority made beside the file"
     );
+    assert!(
+        !file.exists(),
+        "nothing written where the cluster's file is"
+    );
+}
+
+#[test]
+fn a_cluster_with_no_folder_named_keeps_its_authority_in_this_accounts_own() {
+    // Open problem 181: a slice with no folder named made a private key
+    // beside the cluster's file, a repository's tracked folder.
+    let own = own_authority("CL1").expect("this account's own");
+    assert!(
+        own.ends_with(Path::new(AUTHORITY).join("CL1")),
+        "{}",
+        own.display()
+    );
+
+    let nameless = own_authority("").expect_err("no name");
+    assert!(nameless.contains("names no cluster"), "{nameless}");
+    for name in ["../CL1", "a/b", ".."] {
+        let refused = own_authority(name).expect_err("no folder's name");
+        assert!(refused.contains("is no folder's"), "{name}: {refused}");
+    }
+
+    let test = configure::fixture::test_cluster();
+    let node = &test.node(0).name;
+    let cluster = format!("[service]\nname = \"n\"\n\n[nodes.{node}]\n");
+    let refused = sliced_signed(&cluster, node, None, None).expect_err("no name, no folder");
+    assert!(refused.contains("names no cluster"), "{refused}");
 }
 
 #[test]
