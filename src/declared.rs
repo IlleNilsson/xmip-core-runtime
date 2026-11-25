@@ -43,14 +43,13 @@ pub fn declare(declaration: &Declaration) -> io::Result<Declared> {
     declare_in(declaration, &directory())
 }
 
-/// Declare this process, as `declaration` says it, in `directory`.
+/// Declare this process, as `declaration` says it, in `directory`, made
+/// where it is not there yet.
 ///
 /// # Errors
 ///
 /// The directory could not be made or the file could not be written.
 pub fn declare_in(declaration: &Declaration, directory: &Path) -> io::Result<Declared> {
-    fs::create_dir_all(directory)?;
-
     let pid = std::process::id();
     let file = directory.join(format!("{}-{pid}.toml", declaration.name));
     // The file counts whole seconds; the clock is the estate's one.
@@ -58,8 +57,20 @@ pub fn declare_in(declaration: &Declaration, directory: &Path) -> io::Result<Dec
     let path = env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    let text = declaration.to_toml(pid, started, &path);
 
-    fs::write(&file, declaration.to_toml(pid, started, &path))?;
+    // Written where the directory stands, as it does for every process but
+    // its first, and the directory made only where the write found none:
+    // one call to the file system, not two. Until 2026-11-25 it was made
+    // first every time, a millisecond of a System Tests far end's start on
+    // Windows, and many under a loaded disk.
+    match fs::write(&file, &text) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(directory)?;
+            fs::write(&file, &text)?;
+        }
+        written => written?,
+    }
     Ok(Declared { file })
 }
 
@@ -222,6 +233,22 @@ mod tests {
 
         drop(declared);
         assert!(!file.exists(), "taken away where the process ends");
+    }
+
+    /// The first process to declare itself where nothing stands yet makes
+    /// the directory, and the next writes beside it.
+    #[test]
+    fn a_declaration_where_no_directory_stands_makes_it() {
+        let scratch = scratch("made");
+        let directory = scratch.join("not-yet").join("process");
+        let declaration = Declaration::new("xmip", "xmip:///", Purpose::Runtime).expect("a name");
+
+        let first = declare_in(&declaration, &directory).expect("declared");
+        let other = Declaration::new("xmip-other", "xmip:///", Purpose::Runtime).expect("a name");
+        let second = declare_in(&other, &directory).expect("declared beside it");
+
+        assert!(first.file().exists() && second.file().exists());
+        assert_eq!(standing(&directory).len(), 2);
     }
 
     #[test]
