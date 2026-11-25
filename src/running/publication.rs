@@ -10,7 +10,7 @@
 //! ```text
 //! <node>                     running: what it loaded and started
 //! <node>/system-process      alive, and the process it runs in (ADR-0053)
-//! <node>/capability          the stages it declares (ADR-0056)
+//! <node>/capability          the roles its slice declares (ADR-0056)
 //! <node>/module/<module>     each capability loaded, and how
 //! <node>/storage             its Storage: Fine, Working while a standby is
 //!                            not ready yet, or Done where none answers
@@ -71,7 +71,7 @@
 //! publisher keeps (`observe::topology::window`; ADR-0018, amendment
 //! 2026-11-10); a stopped node is drawn still.
 
-use node::{Capability, Stage};
+use node::Stage;
 use observe::topology::draw;
 use observe::topology::window::Window;
 use observe::{
@@ -247,29 +247,11 @@ impl Running {
             copied: &copied,
             transports: &transports,
             roles: &self.roles,
+            standing: self.storage.elected(),
         };
         let mut topology = drawn(&self.cluster, &self.node, &snapshot, seen);
         window.state(&mut topology, &snapshot);
         Publication::whole(source, &self.location(), &snapshot).with_topology(Some(topology))
-    }
-
-    /// The roles the node's configuration gives it — receiving where a
-    /// Receive Location starts, processing where it routes, sending where a
-    /// Send Port starts, executing where all three do — and the Node
-    /// capabilities its configuration declares, `online` among them where it
-    /// may reach the internet (ADR-0045; ADR-0056, amendments 2026-10-01 and
-    /// 2026-11-24).
-    fn declared(&self) -> Capability {
-        let serves = |stage: Stage| self.locations.iter().any(|(at, ..)| *at == stage);
-        let stages: Vec<Stage> = [
-            (Stage::Receive, serves(Stage::Receive)),
-            (Stage::Process, self.routes),
-            (Stage::Send, serves(Stage::Send)),
-        ]
-        .into_iter()
-        .filter_map(|(stage, served)| served.then_some(stage))
-        .collect();
-        self.declaring(Capability::serving(&stages))
     }
 
     /// What [`counts`] says the node counted, recorded at `now`.

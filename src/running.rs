@@ -101,9 +101,6 @@ pub struct Running {
     served: Option<serving::Served>,
     serving: Option<JoinHandle<()>>,
     tally: Arc<Tally>,
-    /// Whether it routes, and so processes: a Receive Location starts or a
-    /// Work Process runs (`starting::routes`).
-    routes: bool,
     /// The nodes the cluster's bindings place a Location on: the only ones
     /// its Storage node draws traffic from and to (`starting::bound_nodes`).
     bound: Vec<String>,
@@ -181,14 +178,19 @@ impl Running {
         &self.capabilities
     }
 
-    /// `declared` with the node's Node capabilities, which its start read
-    /// as words (`node::Capability::node_capabilities`), so none is refused
-    /// here.
-    fn declaring(&self, declared: node::Capability) -> node::Capability {
-        declared
+    /// What the node declares: the roles its slice declares, `[nodes.<name>]
+    /// roles`, and its Node capabilities, which its start read as words
+    /// (`node::Capability::node_capabilities`), so none is refused here. The
+    /// one declaration its capability record and its membership row both
+    /// say, whatever stages it serves: a Storage node declares storage, an
+    /// operational node operational (ADR-0056; ADR-0018, amendment
+    /// 2026-11-25).
+    fn declared(&self) -> node::Capability {
+        let roles = node::Capability::of(&self.roles);
+        roles
             .clone()
             .with_declared(&self.node_capabilities)
-            .unwrap_or(declared)
+            .unwrap_or(roles)
     }
 
     /// The Host Services the node's Modules needed, as started.

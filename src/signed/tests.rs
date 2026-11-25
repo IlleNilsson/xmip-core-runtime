@@ -365,33 +365,22 @@ fn a_slice_signed_by_a_kept_authority_is_named_for_the_environments_cluster() {
     let named = format!("cluster_name = \"{}\"", test.name);
     assert!(text.contains(&named), "{text}");
     assert!(
-        !base.join(AUTHORITY).exists(),
-        "no authority made beside the file"
-    );
-    assert!(
-        !file.exists(),
-        "nothing written where the cluster's file is"
+        !base.join(AUTHORITY).exists() && !file.exists(),
+        "nothing made beside the cluster's file"
     );
 }
 
 #[test]
 fn a_cluster_with_no_folder_named_keeps_its_authority_in_this_accounts_own() {
-    // Open problem 181: a slice with no folder named made a private key
-    // beside the cluster's file, a repository's tracked folder.
+    // Open problem 181: none is made beside the cluster's file any more.
     let own = own_authority("CL1").expect("this account's own");
-    assert!(
-        own.ends_with(Path::new(AUTHORITY).join("CL1")),
-        "{}",
-        own.display()
-    );
-
+    assert!(own.ends_with(Path::new(AUTHORITY).join("CL1")));
     let nameless = own_authority("").expect_err("no name");
     assert!(nameless.contains("names no cluster"), "{nameless}");
     for name in ["../CL1", "a/b", ".."] {
         let refused = own_authority(name).expect_err("no folder's name");
         assert!(refused.contains("is no folder's"), "{name}: {refused}");
     }
-
     let test = configure::fixture::test_cluster();
     let node = &test.node(0).name;
     let cluster = format!("[service]\nname = \"n\"\n\n[nodes.{node}]\n");

@@ -76,6 +76,7 @@ fn published(place: usize, role: NodeRole, (storage, wrote): (usize, u64)) -> Sa
             evidence: "its own".to_string(),
             roles: String::new(),
             place: None,
+            standing: None,
         }],
         links: vec![TopologyLink {
             id: link_id(&from, &to, Relation::WritesInto),

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use node::{NodeRole, Stage};
 use observe::topology::draw::node_id;
 use observe::topology::relate::Member;
-use observe::topology::{XMIP_STORAGE, draw, link_id, party};
+use observe::topology::{StorageStanding, XMIP_STORAGE, draw, link_id, party};
 use observe::{
     Counted, Health, Origin, Pattern, Relation, Snapshot, Topology, TopologyLink, now_unix_nanos,
 };
@@ -41,8 +41,9 @@ pub(super) type Peered = (String, u64, u64);
 /// crossed the Storage node it serves, the nodes the cluster's bindings
 /// name, each standby that Storage node hands its writes to while it is
 /// the primary (`storage::Reached::followers`), the transport each of its
-/// Locations is reached over, by the endpoint it is drawn as, and the roles
-/// its configuration declares.
+/// Locations is reached over, by the endpoint it is drawn as, the roles
+/// its configuration declares, and where its own Storage node of several
+/// stands among them (`storage::Reached::elected`).
 #[derive(Clone, Copy, Default)]
 pub(super) struct Seen<'a> {
     pub(super) placed: Option<&'a Placed>,
@@ -51,10 +52,12 @@ pub(super) struct Seen<'a> {
     pub(super) copied: &'a [Follower],
     pub(super) transports: &'a [(String, String)],
     pub(super) roles: &'a [NodeRole],
+    pub(super) standing: Option<StorageStanding>,
 }
 
 /// The node `node` of `cluster` drawn from `snapshot`: its cluster, itself
-/// saying the roles it declares, its stages and their endpoints, each
+/// saying the roles it declares and, a Storage node of several, where it
+/// stands among them as it runs, its stages and their endpoints, each
 /// Receive Location linked to the Subscriptions it routed by as `seen`
 /// counted, the traffic between nodes its Storage node measured and what it
 /// copies to each standby, and the Party facing it on each side a stage
@@ -69,6 +72,10 @@ pub(super) fn drawn(cluster: &str, node: &str, snapshot: &Snapshot, seen: Seen<'
         nodes: draw::members(snapshot, &root, &itself),
         links: Vec::new(),
     };
+    let here = node_id(node);
+    if let Some(itself) = topology.nodes.iter_mut().find(|one| one.id == here) {
+        itself.standing = seen.standing;
+    }
     if let Some((_, routed)) = seen.placed {
         topology.links.extend(routes(&topology, node, routed));
     }

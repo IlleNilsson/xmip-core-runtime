@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use xcore::lock::Locked;
 
 use observe::Health;
+use observe::topology::StorageStanding;
 use persist::storage::schema::DatabaseVersion;
 use persist::storage::standby::{Bootstrap, Follower};
 use persist::storage::{StorageClient, StorageNode, StorageServer, XmipStorage};
@@ -78,6 +79,22 @@ impl Reached {
         match &self.behind {
             Behind::Several(node) => node.followers(),
             Behind::Given | Behind::Alone(..) | Behind::Reaching(_) => Vec::new(),
+        }
+    }
+
+    /// Where its own Storage node of several stands among them now, as their
+    /// election holds it — the primary, a standby, or finding its primary —
+    /// and never by its name or its place in a list: what its drawn node
+    /// says beneath its label, and what stands it on the map's path or
+    /// below it (ADR-0052, amendment 2026-11-25). None where it keeps no
+    /// Storage node of several.
+    #[must_use]
+    pub fn elected(&self) -> Option<StorageStanding> {
+        match &self.behind {
+            Behind::Several(node) if node.is_primary() => Some(StorageStanding::Primary),
+            Behind::Several(node) if node.is_finding() => Some(StorageStanding::Finding),
+            Behind::Several(_) => Some(StorageStanding::Standby),
+            Behind::Given | Behind::Alone(..) | Behind::Reaching(_) => None,
         }
     }
 

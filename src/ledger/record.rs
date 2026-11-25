@@ -148,7 +148,6 @@ pub(crate) fn audit_entry<P: Properties>(record: AuditRecord<P>) -> AuditEntry {
             host: origin.host,
             process: origin.process,
             location: origin.location,
-            hidden: origin.hidden,
             execution: scope.map(|scope| scope.execution_id.value()),
             journey: scope.map(|scope| scope.journey_id.value()),
             message: scope.map(|scope| scope.message_id.value()),

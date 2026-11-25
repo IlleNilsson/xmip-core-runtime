@@ -62,6 +62,7 @@ fn thing(id: String, parent: String, kind: NodeKind, scope: String) -> TopologyN
         evidence: String::new(),
         roles: String::new(),
         place: None,
+        standing: None,
     }
 }
 

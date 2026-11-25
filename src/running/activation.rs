@@ -119,7 +119,7 @@ impl Running {
                 return;
             }
         };
-        let declared = self.declaring(node::Capability::of(&self.roles));
+        let declared = self.declared();
         let runs = self.attempt.slice.which();
         let row = MemberRecord {
             process: self.process,

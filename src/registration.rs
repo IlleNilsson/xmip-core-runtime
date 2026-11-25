@@ -43,6 +43,7 @@ pub mod apply;
 #[cfg(windows)]
 pub mod control_manager;
 mod launchd;
+pub mod readiness;
 mod windows_scm;
 
 pub use launchd::{launchd_plist, launchd_run_directory};

@@ -1,15 +1,18 @@
 //! What a running node received moving its published drawing over its
-//! publisher's window (ADR-0052 and ADR-0018, amendments 2026-11-10).
+//! publisher's window (ADR-0052 and ADR-0018, amendments 2026-11-10), and
+//! what it publishes it declares (amendment 2026-11-25).
 
 use std::time::{Duration, Instant};
 
 use file::temporary::Folder;
 use net::fixture::unheld;
+use node::{Capability, NodeRole};
 use observe::Relation;
 use observe::topology::link_id;
 use observe::topology::window::Window;
 use tcp::TcpTransport;
 use xmip_core_runtime::fixture::started;
+use xmip_core_runtime::running::Running;
 
 use crate::node::{deliver, first, linked, node, path_text, written};
 
@@ -75,20 +78,10 @@ fn what_a_running_node_received_moves_its_published_drawing_through_its_publishe
     running.stop();
 }
 
-/// ADR-0018, amendment 2026-11-11: a node processes where it routes. One
-/// that starts no Receive Location and runs no Work Process declares no
-/// processing and publishes no Subscription, though its slice carries one.
-#[test]
-fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_no_subscription() {
-    let receive = unheld().to_string();
-    let far = unheld().to_string();
-    let configuration = node(&receive, &far).replacen("start = true", "start = false", 1);
-    let folder = Folder::new("runtime-running-sends-only");
-    let path = written(&folder, &configuration);
-    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
-
+/// What `running` says it declares at `<node>/capability`, read back as
+/// every surface reads it, and the evidence it said it in.
+fn published(running: &Running) -> (Capability, String) {
     let snapshot = running.snapshot();
-    assert_eq!(snapshot.subscriptions().count(), 0, "none published");
     let scope = observe::capability::scope(&running.location());
     let evidence = snapshot
         .health(&scope)
@@ -97,9 +90,33 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
         .expect("it declares")
         .evidence;
     let (_, declared) = observe::capability::declared(&scope, &evidence).expect("a capability");
-    let declared = declared.expect("read");
+    (declared.expect("read"), evidence)
+}
+
+/// ADR-0018, amendment 2026-11-11: a node processes where it routes. One
+/// that starts no Receive Location and runs no Work Process publishes no
+/// Subscription, though its slice carries one; and it declares what its
+/// slice declares, sending, never what it serves (amendment 2026-11-25).
+#[test]
+fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_no_subscription() {
+    let receive = unheld().to_string();
+    let far = unheld().to_string();
+    let configuration = format!(
+        "roles = \"sending\"\n{}",
+        node(&receive, &far).replacen("start = true", "start = false", 1)
+    );
+    let folder = Folder::new("runtime-running-sends-only");
+    let path = written(&folder, &configuration);
+    let running = started(path_text(&path), || linked(&path)).expect("the node starts");
+
+    assert_eq!(
+        running.snapshot().subscriptions().count(),
+        0,
+        "none published"
+    );
+    let (declared, evidence) = published(&running);
+    assert_eq!(declared, Capability::of(&[NodeRole::Sending]), "{evidence}");
     assert!(!declared.can(node::Stage::Process), "{evidence}");
-    assert!(declared.can(node::Stage::Send), "{evidence}");
 
     // Its pickup routes by none (`Pickup::routing_none`), which section 14
     // lists as none and refuses an act on in words (the operate library's
@@ -115,4 +132,30 @@ fn a_node_that_starts_no_receive_location_declares_no_processing_and_publishes_n
         "{refused}"
     );
     running.stop();
+}
+
+/// ADR-0018, amendment 2026-11-25 (the owner: "Also the DS2 standby node is
+/// not shown"): a node's capability record says the roles its slice
+/// declares, as its membership row does, and never the stages it serves.
+/// A node keeping Xmip Storage says storage, though storage serves no
+/// stage; one whose slice declares no role says none, though it receives,
+/// routes and sends. Until then the record said the stages served, so every
+/// Storage node and every operational node published *declares no role*.
+#[test]
+fn a_nodes_capability_record_says_the_roles_its_slice_declares_never_the_stages_it_serves() {
+    let configuration = node(&unheld().to_string(), &unheld().to_string());
+    for (roles, declares) in [
+        (
+            "roles = \"executing, storage\"\n",
+            vec![NodeRole::Executing, NodeRole::Storage],
+        ),
+        ("", Vec::new()),
+    ] {
+        let folder = Folder::new("runtime-running-declares");
+        let path = written(&folder, &format!("{roles}{configuration}"));
+        let running = started(path_text(&path), || linked(&path)).expect("the node starts");
+        let (declared, evidence) = published(&running);
+        assert_eq!(declared, Capability::of(&declares), "{roles}: {evidence}");
+        running.stop();
+    }
 }

@@ -367,7 +367,6 @@ mod tests {
             host: "edge-01".to_string(),
             process: 42,
             location: Some(here()),
-            hidden: false,
         };
         let section = MessageSection {
             section_id: SectionId::new(6),

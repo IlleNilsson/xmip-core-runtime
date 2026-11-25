@@ -170,7 +170,6 @@ impl Running {
             served: Some(served),
             serving: None,
             tally,
-            routes,
             pickup,
             send,
             data,
