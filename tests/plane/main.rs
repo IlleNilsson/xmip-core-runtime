@@ -30,7 +30,7 @@ use certified::{node, remote};
 use endpoint::listing;
 use xaudit::program_audit::ProgramAudit;
 use xmip_core_runtime::fixture::{Authority, absent_node};
-use xmip_core_runtime::plane::{Board, Grants, Listener, Outcome, Role};
+use xmip_core_runtime::plane::{Board, Grants, Listener, Outcome, Remote, Role};
 
 /// The surface `remote` opens, listed under `role`.
 fn surface_as(role: Role) -> Grants {
@@ -94,6 +94,34 @@ fn a_surface_whose_certificate_the_node_does_not_trust_is_refused() {
     let stranger = remote(&theirs, &listener);
 
     let refused = stranger.publication().expect_err("refused");
+    assert!(refused.contains("unreachable"), "{refused}");
+}
+
+/// A node reached at its address and trusted by its name: its certificate
+/// names `localhost`, so it is reached at 127.0.0.1 as `localhost`, and
+/// refused as a name it does not carry — the System Tests on virtual
+/// machines, at the addresses their deployment recorded.
+#[test]
+fn a_node_is_reached_at_its_address_and_trusted_by_its_name() {
+    let authority = Authority::new();
+    let board = Arc::new(Board::default());
+    board.post("source = \"one\"\n".to_string());
+    let (listener, _) = node(&authority, &board, surface_as(Role::Observer));
+    let address = listener.address();
+    let at = |name: &str| {
+        Remote::retrying_named(
+            (name, &address),
+            &authority.identity("surface"),
+            vec![Duration::from_millis(50)],
+            Arc::new(xcore::SystemClock),
+        )
+        .expect("a remote")
+    };
+
+    let named = at("localhost");
+    assert!(named.wait(0, Duration::from_secs(5)).reachable);
+    assert!(named.publication().is_ok());
+    let refused = at("elsewhere.invalid").publication().expect_err("refused");
     assert!(refused.contains("unreachable"), "{refused}");
 }
 

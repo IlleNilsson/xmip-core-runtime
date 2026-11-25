@@ -26,13 +26,38 @@ pub(crate) type Ending = Box<dyn Fn() -> bool + Send>;
 
 /// How a surface reaches its node.
 pub(crate) enum Reach {
-    /// `host:port`, inside mutual TLS by this configuration.
+    /// `host:port`, inside mutual TLS by this configuration, the node's
+    /// certificate checked for `name`.
     Network {
         address: String,
+        name: String,
         config: Arc<tls::ClientConfig>,
     },
     /// The node's local endpoint at this path.
     Local(PathBuf),
+}
+
+impl Reach {
+    /// The node `name` at `address`, `host:port`, inside mutual TLS by
+    /// `config`, its certificate checked for `name`: the address's host
+    /// where the node is reached by its name, or the name of a node whose
+    /// machine is reached by its address.
+    ///
+    /// # Errors
+    ///
+    /// An address that is no operate address.
+    pub(crate) fn named(
+        address: &str,
+        name: &str,
+        config: Arc<tls::ClientConfig>,
+    ) -> Result<Self, String> {
+        host_of(address)?;
+        Ok(Self::Network {
+            address: address.to_string(),
+            name: name.to_string(),
+            config,
+        })
+    }
 }
 
 /// The connection under a line.
@@ -129,8 +154,12 @@ impl Line {
         clock: &Arc<dyn Clock>,
     ) -> Result<Self, String> {
         let (link, authority, scheme, ends) = match reach {
-            Reach::Network { address, config } => (
-                secured(address, config, patience)?,
+            Reach::Network {
+                address,
+                name,
+                config,
+            } => (
+                secured_as((address, name), config, patience)?,
                 address.clone(),
                 "https",
                 None,
@@ -207,20 +236,20 @@ fn nanos(silence: Duration) -> u64 {
     u64::try_from(silence.as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// TCP to `address` and Xmip's mutual TLS agreeing `h2`.
-fn secured(
-    address: &str,
+/// TCP to `address` and Xmip's mutual TLS agreeing `h2`, the node's
+/// certificate checked for `name`.
+fn secured_as(
+    (address, name): (&str, &str),
     config: &Arc<tls::ClientConfig>,
     patience: Duration,
 ) -> Result<Link, String> {
-    let host = host_of(address)?;
     let tcp = net::connect(address, Some(patience)).map_err(|failed| failed.message)?;
     tcp.set_nodelay(true)
         .and_then(|()| tcp.set_read_timeout(Some(patience)))
         .and_then(|()| tcp.set_write_timeout(Some(patience)))
         .map_err(|error| error.to_string())?;
     let mut guarded =
-        tls::client_with(host, tcp, Arc::clone(config)).map_err(|failed| failed.message)?;
+        tls::client_with(name, tcp, Arc::clone(config)).map_err(|failed| failed.message)?;
     let agreed = tls::alpn::agreed(&mut guarded).map_err(|failed| failed.message)?;
     if agreed.as_deref() != Some(b"h2") {
         return Err(format!("{address} did not agree h2: no operate listener"));

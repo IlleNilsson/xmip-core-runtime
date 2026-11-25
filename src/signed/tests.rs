@@ -373,15 +373,15 @@ fn a_slice_signed_by_a_kept_authority_is_named_for_the_environments_cluster() {
 #[test]
 fn a_cluster_with_no_folder_named_keeps_its_authority_in_this_accounts_own() {
     // Open problem 181: none is made beside the cluster's file any more.
-    let own = own_authority("CL1").expect("this account's own");
-    assert!(own.ends_with(Path::new(AUTHORITY).join("CL1")));
+    let test = configure::fixture::test_cluster();
+    let own = own_authority(&test.name).expect("this account's own");
+    assert!(own.ends_with(Path::new(AUTHORITY).join(&test.name)));
     let nameless = own_authority("").expect_err("no name");
     assert!(nameless.contains("names no cluster"), "{nameless}");
-    for name in ["../CL1", "a/b", ".."] {
+    for name in ["../up", "a/b", ".."] {
         let refused = own_authority(name).expect_err("no folder's name");
         assert!(refused.contains("is no folder's"), "{name}: {refused}");
     }
-    let test = configure::fixture::test_cluster();
     let node = &test.node(0).name;
     let cluster = format!("[service]\nname = \"n\"\n\n[nodes.{node}]\n");
     let refused = sliced_signed(&cluster, node, None, None).expect_err("no name, no folder");

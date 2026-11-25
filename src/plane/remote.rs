@@ -40,6 +40,7 @@ mod asking;
 mod cluster;
 #[cfg(feature = "node")]
 pub(crate) mod fresh;
+mod named;
 pub(crate) mod relayed;
 mod secret;
 mod wait;
@@ -155,15 +156,8 @@ impl Remote {
         retry: Vec<Duration>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, String> {
-        host_of(address)?;
-        let client = identity.client().map_err(|failed| failed.message)?;
-        let config = Arc::new(tls::alpn::offering(client, &[b"h2"]));
-        let reach = Reach::Network {
-            address: address.to_string(),
-            config,
-        };
-        let address = address.to_string();
-        Ok(Self::reaching(address, reach, PATIENCE, retry, clock))
+        let host = host_of(address)?;
+        Self::retrying_named((host, address), identity, retry, clock)
     }
 
     /// A surface over the node on this machine whose local endpoint is
