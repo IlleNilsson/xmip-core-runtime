@@ -71,6 +71,9 @@
 //! `work_turning.rs` the flows and units they record, hold or panic with,
 //! the node whose Work pool they count, and its step dispatching;
 //! `work_debatch.rs` its Debatch through the one splitting implementation;
+//! `work_instances.rs` an order delivered in parts looping back to its wait,
+//! its Instance's own values and history listed, a failed turn retried and
+//! dismissed, over `work_in_parts.rs`'s design and node;
 //! `work_panicked.rs` a turn that panics written Failed with what it said,
 //! its place and ownership given back on every path, the dispatching going
 //! on; `work_bounded.rs` turns admitted under a place in the Work pool, each
@@ -135,6 +138,8 @@ mod work_backlog;
 mod work_bounded;
 mod work_debatch;
 mod work_design;
+mod work_in_parts;
+mod work_instances;
 mod work_panicked;
 mod work_process;
 mod work_sequenced;

@@ -3,10 +3,12 @@
 //! Storage (`crate::act_watch`; ADR-0014, amendment 2026-11-13).
 //!
 //! The node is found by its scope among the nodes this process runs —
-//! their pickups and send steps as registered — and the act is that
-//! node's: a pause or resume of a Subscription and a Replay from its Dead
-//! Message Queue are its pickup's, a Retry or Dismiss of a Message its
-//! send step's; each records itself in the node's audit with who acted.
+//! their pickups, send steps and Work Process steps as registered — and
+//! the act is that node's: a pause or resume of a Subscription and a
+//! Replay from its Dead Message Queue are its pickup's, a Retry or Dismiss
+//! of a Message its Work Process step's where the Message failed at a Work
+//! Process it runs (ADR-0066, amendment 2026-11-25), else its send step's;
+//! each records itself in the node's audit with who acted.
 //! A node of this process keeps no Event subscription hub, so an act on
 //! an Event subscription is refused in words.
 
@@ -14,6 +16,7 @@ use observe::{Act, Noun, Order};
 
 use crate::pickup::Pickup;
 use crate::send_step::SendStep;
+use crate::work_step::WorkStep;
 
 /// What came of an act, with the sentence that says so.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,12 +82,20 @@ pub fn apply(order: &Order) -> Applied {
                 pickup.act(&order.target, order.act, &order.who)
             })
         }
-        Noun::Message => SendStep::registered()
-            .into_iter()
-            .find(|step| step.node() == node)
-            .map_or_else(absent, |step| {
-                Applied::of(step.act(&order.target, order.act, &order.who))
-            }),
+        Noun::Message => {
+            let working = WorkStep::registered()
+                .into_iter()
+                .find(|step| step.node() == node && step.holds(&order.target));
+            if let Some(step) = working {
+                return Applied::of(step.act(&order.target, order.act, &order.who));
+            }
+            SendStep::registered()
+                .into_iter()
+                .find(|step| step.node() == node)
+                .map_or_else(absent, |step| {
+                    Applied::of(step.act(&order.target, order.act, &order.who))
+                })
+        }
         Noun::EventSubscription => Applied::Refused(format!(
             "REFUSED: {node} keeps no Event subscription hub; the Event subscription '{}' is \
              another process's",

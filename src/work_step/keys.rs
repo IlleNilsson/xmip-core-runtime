@@ -87,6 +87,28 @@ impl ResolvedSet {
     }
 }
 
+/// The values a key [`ResolvedSet::text`] wrote, as a surface shows them:
+/// each in order, `, ` between; the text as it is where it is no such key.
+#[must_use]
+pub fn shown(text: &str) -> String {
+    let mut values = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let Some((length, after)) = rest.split_once(':') else {
+            return text.to_string();
+        };
+        let Some(value) = length.parse::<usize>().ok().and_then(|n| after.get(..n)) else {
+            return text.to_string();
+        };
+        let Some(next) = after[value.len()..].strip_prefix(';') else {
+            return text.to_string();
+        };
+        values.push(value);
+        rest = next;
+    }
+    values.join(", ")
+}
+
 /// The Journey Context value `value` of `journey`, where it carries one.
 fn journey_value(journey: &Journey, value: JourneyValue) -> Option<String> {
     match value {
@@ -156,6 +178,9 @@ mod tests {
             .text(&next, &Promoted::default(), "")
             .expect("every value");
         assert_eq!(text, "2:42;7:billing;1:7;");
+        assert_eq!(shown(&text), "42, billing, 7");
+        assert_eq!(shown("3:a;b;"), "a;b", "a value holding the separators");
+        assert_eq!(shown("not a key"), "not a key");
         let refused = set
             .text(&first, &Promoted::default(), "")
             .expect_err("the first Journey has no subscription");

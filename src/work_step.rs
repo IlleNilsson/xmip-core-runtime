@@ -49,11 +49,14 @@
 mod acts;
 mod admission;
 mod dispatch;
+mod instances;
 mod keys;
+mod message_act;
 #[cfg(feature = "dynamic-loading")]
 mod opened;
 mod quantum;
 mod reading;
+mod registered;
 mod running;
 mod turning;
 
@@ -73,7 +76,8 @@ use crate::sequence::Heads;
 use reading::Reading;
 
 pub use dispatch::{dispatch, turn_due};
-pub use keys::{KeyWord, ResolvedSet};
+pub use instances::{INSTANCE_PAGE, INSTANCE_WINDOW, described};
+pub use keys::{KeyWord, ResolvedSet, shown};
 #[cfg(feature = "dynamic-loading")]
 pub use opened::opened;
 pub use running::{NO_UNIT, NoUnits, Running, Thrown, WorkUnits};
@@ -111,6 +115,9 @@ pub struct WorkStep {
     /// by its place in `running`: locked apart from `state`, never while it
     /// is held, since a hand-over reads the heads (`crate::sequence::Heads`).
     heads: Vec<Mutex<Heads>>,
+    /// What it publishes of each Work Process's Instances, by its place in
+    /// `running`: locked apart from `state` (`instances`).
+    windows: Mutex<Vec<instances::Window>>,
     wake: Wake,
     /// Its watch on its queues, and on what a turn it gave back waits on,
     /// stopped as it closes (`crate::queue_watch`).
@@ -169,6 +176,12 @@ impl WorkStep {
             limits,
             audit,
             heads: running.iter().map(|_| Mutex::default()).collect(),
+            windows: Mutex::new(
+                running
+                    .iter()
+                    .map(|_| instances::Window::default())
+                    .collect(),
+            ),
             running,
             state: Mutex::new(state),
             wake: Wake::new(),

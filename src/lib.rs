@@ -51,6 +51,8 @@ pub mod held_work;
 #[cfg(feature = "node")]
 pub mod host;
 #[cfg(feature = "node")]
+mod journey_act;
+#[cfg(feature = "node")]
 mod kept;
 #[cfg(feature = "node")]
 pub mod ledger;
@@ -86,6 +88,8 @@ pub mod receive_certificate;
 pub mod receiving;
 #[cfg(feature = "node")]
 pub mod registration;
+#[cfg(feature = "node")]
+mod registry;
 #[cfg(feature = "node")]
 pub mod report;
 #[cfg(feature = "node")]

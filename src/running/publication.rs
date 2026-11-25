@@ -42,6 +42,13 @@
 //! since the node started, as history. The rest are read from Xmip Storage
 //! a page at a time (`xmip_failed_messages_v1`).
 //!
+//! **The Instances of each Work Process** the node runs are published beside
+//! them (`observe::WorkProcessInstances`; open problem 192): the newest it
+//! knows, each running, waiting, failed or completed, its values and its
+//! history, and the Messages that failed in its queue with why — Retry and
+//! Dismiss on each (`crate::work_step::WorkStep::published`). The rest are
+//! read from the Ledger (`xmip_instances_v1`).
+//!
 //! **The figures** are what [`crate::outcome::Tally`] counted, at the stage
 //! that counts each kind (`observe::Counted::at`): Streams received at
 //! `receive`, Journeys opened at `process`, Messages sent at `send`, and at
@@ -215,6 +222,11 @@ impl Running {
         }
         for failed in failed_messages(&node, &figures) {
             snapshot.record_failed_messages(failed);
+        }
+        // The Instances of each Work Process it runs, the newest it knows,
+        // and the Messages that failed in its queue (open problem 192).
+        for instances in self.work.published() {
+            snapshot.record_work_process_instances(instances);
         }
         self.count(&mut snapshot, &node, now);
         snapshot

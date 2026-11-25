@@ -26,19 +26,16 @@
 //! Who may act is the surface's to decide by role; the node applies what
 //! reaches it and audits it with who acted.
 
-use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use journey::{Attempts, Journey, JourneyEntry, JourneyState};
+use journey::{Journey, JourneyState};
 use observe::{Act, Noun};
 use persist::storage::HandOn;
 use route::Subscriber;
-use xcore::{
-    Clock, ExecutionId, ExecutionPhase, IdGenerator, JourneyId, MessageId, Severity, SystemClock,
-    UuidV7Generator,
-};
+use xcore::{IdGenerator, JourneyId, UuidV7Generator};
 
 use super::SendStep;
+use crate::journey_act::{Acting, acted};
 use crate::ledger::journey_record;
 
 impl SendStep {
@@ -54,7 +51,8 @@ impl SendStep {
         let act = Noun::Message.act(act.word())?;
         let id = JourneyId::from_str(journey)
             .map_err(|_| format!("REFUSED: '{journey}' names no Journey"))?;
-        let (seen, kept) = self.kept(act, id)?;
+        let acting = self.acting();
+        let (seen, kept) = acting.kept(act, id)?;
         if act == Act::Dismiss && kept.state == JourneyState::Dismissed {
             return Ok(format!(
                 "The Message of the Journey {id} was dismissed already"
@@ -70,11 +68,11 @@ impl SendStep {
                      act again once it is free"
                 ));
             }
-            Err(error) => return Err(self.not_done(act, id, &error.to_string())),
+            Err(error) => return Err(acting.not_done(act, id, &error.to_string())),
         };
         // What was read before the claim may be another writer's past: read
         // again under it, the one writer now, and act only on what it saw.
-        if let Err(refused) = self.unchanged(act, id, &seen) {
+        if let Err(refused) = acting.unchanged(act, id, &seen) {
             let _ = self.storage.release(&claim);
             return Err(refused);
         }
@@ -114,30 +112,26 @@ impl SendStep {
         match self.storage.hand_on(hand_on) {
             Ok((true, _)) => {}
             Ok((false, _)) => {
-                return Err(self.not_done(act, id, "its claim lapsed before it was written"));
+                return Err(acting.not_done(act, id, "its claim lapsed before it was written"));
             }
             Err(error) => {
                 let _ = self.storage.release(&claim);
-                return Err(self.not_done(act, id, &error.to_string()));
+                return Err(acting.not_done(act, id, &error.to_string()));
             }
         }
         self.acted_on(id, &port);
         self.ask(queue);
-        self.audited(act, id, (who, &port), &said);
+        acting.audited((act, id), (who, ("send_port", &port)), &said);
         Ok(said)
     }
 
-    /// The Journey `id` as the Ledger keeps it: its record's bytes, and it
-    /// read.
-    fn kept(&self, act: Act, id: JourneyId) -> Result<(Vec<u8>, Journey), String> {
-        match self.storage.read_journey(id) {
-            Ok(Some(record)) => {
-                let journey = Journey::from_record(&record.body)
-                    .map_err(|why| format!("REFUSED: the Journey {id} cannot be read: {why}"))?;
-                Ok((record.body, journey))
-            }
-            Ok(None) => Err(format!("REFUSED: no Journey {id} is in the Ledger")),
-            Err(error) => Err(self.not_done(act, id, &error.to_string())),
+    /// How this step takes an operator's act: its node, Xmip Storage and
+    /// audit.
+    fn acting(&self) -> Acting<'_> {
+        Acting {
+            node: &self.node,
+            storage: self.storage.as_ref(),
+            audit: self.audit.as_ref(),
         }
     }
 
@@ -166,22 +160,6 @@ impl SendStep {
         Ok((port, blocks))
     }
 
-    /// Whether the Journey `id`, read again under this node's claim, is
-    /// still what was `seen` before it: refused in words where another
-    /// writer — another operator's act, a node that sent it — moved it
-    /// meanwhile, so an act never writes back a state the Journey has left.
-    fn unchanged(&self, act: Act, id: JourneyId, seen: &[u8]) -> Result<(), String> {
-        let (now, journey) = self.kept(act, id)?;
-        if now == seen {
-            return Ok(());
-        }
-        Err(format!(
-            "REFUSED: the Journey {id} changed while it was acted on and is {:?} now; \
-             nothing was written, look again",
-            journey.state
-        ))
-    }
-
     /// An operator's act on `journey`, of `port`, written: it is read again
     /// at its place, and the Port's window on its failed Messages read
     /// again, without it.
@@ -192,74 +170,4 @@ impl SendStep {
         }
         self.read_failed((port, queue), true);
     }
-
-    fn audited(&self, act: Act, id: JourneyId, (who, port): (&str, &str), said: &str) {
-        let Some(audit) = &self.audit else {
-            return;
-        };
-        let properties = BTreeMap::from([
-            ("node".to_string(), self.node.clone()),
-            ("journey".to_string(), id.to_string()),
-            ("send_port".to_string(), port.to_string()),
-            ("by".to_string(), who.to_string()),
-        ]);
-        let action = Noun::Message.action(act);
-        let phase = ExecutionPhase::Execute;
-        let _ = audit.record(
-            &action,
-            phase,
-            Severity::Information,
-            Some(said),
-            properties,
-        );
-    }
-
-    /// FAILED, said and audited: nothing of the act was written.
-    fn not_done(&self, act: Act, id: JourneyId, problem: &str) -> String {
-        let said = format!(
-            "FAILED: the Message of the Journey {id} is not {}: Xmip Storage did not take it: \
-             {problem}",
-            if act == Act::Retry {
-                "retried"
-            } else {
-                "dismissed"
-            }
-        );
-        if let Some(audit) = &self.audit {
-            let _ = audit.failed(
-                &Noun::Message.action(act),
-                &format!("{}: {said}", self.node),
-            );
-        }
-        said
-    }
-}
-
-/// `kept` as `act` leaves it: Active again with its tries begun anew, or
-/// Dismissed, the act appended to its history in words.
-fn acted(kept: Journey, act: Act, said: &str) -> Journey {
-    let message_id = kept
-        .messages()
-        .last()
-        .map(|held| held.message_id)
-        .unwrap_or(MessageId::new(0));
-    let state = if act == Act::Retry {
-        JourneyState::Active
-    } else {
-        JourneyState::Dismissed
-    };
-    let mut acted = kept.append(
-        JourneyEntry {
-            execution_id: ExecutionId::new(UuidV7Generator.next_u128()),
-            message_id,
-            action: act.word().to_string(),
-            outcome: said.to_string(),
-            timestamp_unix_nanos: SystemClock.unix_timestamp_nanos(),
-        },
-        state,
-    );
-    if act == Act::Retry {
-        acted.attempts = Attempts::default();
-    }
-    acted
 }

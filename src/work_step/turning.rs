@@ -11,15 +11,24 @@
 //! the catch, never while unwinding. However a turn fails, its place in its
 //! Work Process's sequence is let go of where the Correlation skips a
 //! failure (`crate::sequence::let_go`).
+//!
+//! **An error no scope catches writes nothing its turn made** (ADR-0066,
+//! amendment 2026-11-25; open problem 193): the Instance is kept as it
+//! stood before that turn, failed with the code and why, holding its keys,
+//! and its Journey Failed for an operator. A Message of its key waits on it
+//! meanwhile; the failed Journey's own turn, once an operator retried it,
+//! alone takes it on from where it stood (`super::message_act`).
+//!
+//! **Each turn adds to the Instance's history** what it took, made and
+//! published, each Message with the Journey of the turn (open problem 192).
 
 use std::panic::{self, AssertUnwindSafe};
 
 use journey::JourneyState;
-use persist::storage::{Claim, Held, InstanceRecord, Position, Turn, Watched, named};
-use process::{Act, Event, Instance, Outcome, Refused, form};
+use persist::storage::{Claim, Held, InstanceRecord, Position, Turn, Watched};
+use process::{Act, Event, Handling, Instance, Outcome, Refused, form};
 
 use super::acts::{self, Made};
-use super::keys::promoted;
 use super::running::Running;
 use crate::generation::ReceivedWork;
 use crate::message_path::Runtime;
@@ -27,7 +36,7 @@ use crate::pickup::Pickup;
 use crate::send_step::{Found, read};
 use crate::sequence::{Placing, behind, waits_on};
 
-mod written;
+pub(super) mod written;
 
 /// The most acts one turn carries out: a flow that keeps asking for work
 /// without waiting is stopped, never run forever.
@@ -142,20 +151,22 @@ fn claimed(
         body: &held.hold.body,
         made: Made::default(),
         on: Vec::new(),
+        why: "no step of its Instance waits for it",
+        history: Vec::new(),
     };
     match taking.take(work) {
         Ok(Some(turn)) => match runtime.storage.turn(&turn) {
-            Ok(true) => Turned::Done,
+            Ok(true) => {
+                step.seen(running, &turn.instances);
+                Turned::Done
+            }
             Ok(false) => release(
                 "its Instance moved on since it was read, or another took its key".to_string(),
                 taking.on,
             ),
             Err(why) => Turned::Unwritten(why.to_string()),
         },
-        Ok(None) => release(
-            "no step of its Instance waits for it".to_string(),
-            taking.on,
-        ),
+        Ok(None) => release(taking.why.to_string(), taking.on),
         Err((work, why)) => taking.fail(work, &why),
     }
 }
@@ -172,6 +183,11 @@ struct Taking<'a> {
     /// finds the Instance moved: the Instance as it read it, and — where no
     /// key named one — each key it correlates by, held by no Instance.
     on: Vec<Position>,
+    /// Why its Instance did not take it, where it did not.
+    why: &'static str,
+    /// What the turn took, made and published, in order, each Message by
+    /// its identifier: the Instance's history it adds to.
+    history: Vec<(Handling, u128)>,
 }
 
 type Taken = Result<Option<Turn>, (Box<ReceivedWork>, String)>;
@@ -199,8 +215,19 @@ impl Taking<'_> {
             _ => Instance::new(),
         };
         let message = work.message.message_id().value();
+        if instance.ended.is_some() {
+            // Failed, kept for an operator: only the Journey that failed it,
+            // retried, takes it on from where it stood.
+            if instance.failed_by() != Some(work.journey.journey_id().value()) {
+                self.why = "its Instance failed and waits for an operator's Retry or Dismiss";
+                return Ok(None);
+            }
+            instance.ended = None;
+            self.history.push((Handling::Retried, message));
+        }
         self.made.messages.insert(message, work.message.clone());
         let event = if work.journey.state == JourneyState::Waiting {
+            self.history.push((Handling::Due, message));
             Event::Due
         } else {
             let mut arrival = match acts::arrival(self.running, message, &self.made) {
@@ -208,8 +235,16 @@ impl Taking<'_> {
                 Err(why) => return fail(&work, why),
             };
             arrival.keys = keys;
+            let started = instance.is_new() && instance.tokens.is_empty();
+            let what = if started {
+                Handling::Started
+            } else {
+                Handling::Arrived
+            };
+            self.history.push((what, message));
             Event::Arrived(arrival)
         };
+        let before = instance.clone();
         let now = self.runtime.clock.unix_timestamp_nanos();
         let ended = match self.advance(&work, &mut instance, event, now) {
             Ok(Some(ended)) => Some(ended),
@@ -221,7 +256,7 @@ impl Taking<'_> {
         Ok(Some(self.written(
             work,
             (instance_id, over),
-            instance,
+            (before, instance),
             ended,
             now,
         )))
@@ -230,28 +265,12 @@ impl Taking<'_> {
     /// `work`'s key in each set the Work Process follows that it has every
     /// key part of.
     fn keys(&self, work: &ReceivedWork) -> Result<Vec<(u32, String)>, String> {
-        let promoted = promoted(&self.running.gathering, &work.message)?;
-        let mut keys = Vec::new();
-        for (number, set) in self.running.sets.iter().enumerate() {
-            if let Ok(key) = set.text(&work.journey, &promoted, &self.running.name) {
-                keys.push((u32::try_from(number).unwrap_or(u32::MAX), key));
-            }
-        }
-        Ok(keys)
+        self.running.keys(&work.journey, &work.message)
     }
 
-    /// The correlation key `key` of the set numbered `set`: its identifier,
-    /// named from the Work Process, the set and the key's full values.
-    fn correlation(&self, (set, key): &(u32, String)) -> u128 {
-        let name = self
-            .running
-            .sets
-            .get(*set as usize)
-            .map_or("", |set| set.name.as_str());
-        named(&format!(
-            "{}/work-process/{}/correlation/{name}/{key}",
-            self.runtime.work.cluster, self.running.name
-        ))
+    /// The correlation key `key`'s identifier.
+    fn correlation(&self, key: &(u32, String)) -> u128 {
+        self.running.correlation(key)
     }
 
     /// What a turn of `work` over the Instance `instance`, read at the turn
@@ -284,23 +303,9 @@ impl Taking<'_> {
         work: &ReceivedWork,
         keys: &[(u32, String)],
     ) -> Result<(u128, Option<InstanceRecord>), String> {
-        let storage = self.runtime.storage;
-        for key in keys {
-            if let Some(instance) = storage
-                .read_instance_key(self.correlation(key))
-                .map_err(|why| why.to_string())?
-            {
-                let record = storage
-                    .read_instance(instance)
-                    .map_err(|why| why.to_string())?;
-                return Ok((instance, record));
-            }
-        }
-        let instance = work.journey.journey_id().value();
-        let record = storage
-            .read_instance(instance)
-            .map_err(|why| why.to_string())?;
-        Ok((instance, record))
+        let journey = work.journey.journey_id().value();
+        self.running
+            .instance(self.runtime.storage.as_ref(), journey, keys)
     }
 
     /// `instance` advanced on `event` and every act carried out, until no
@@ -345,6 +350,7 @@ impl Taking<'_> {
                         let from = (&work.journey, self.body);
                         acts::publish(self.runtime, self.pickup, &mut self.made, from, message)
                             .map_err(Refused::Unfit)?;
+                        self.history.push((Handling::Published, message));
                         continue;
                     }
                     Act::Ended(outcome) => {
@@ -352,7 +358,12 @@ impl Taking<'_> {
                         continue;
                     }
                 };
-                events.insert(0, next.map_err(Refused::Unfit)?);
+                let next = next.map_err(Refused::Unfit)?;
+                if let Event::Done { made, .. } = &next {
+                    let made = made.iter().map(|one| (Handling::Made, one.message));
+                    self.history.extend(made);
+                }
+                events.insert(0, next);
             }
         }
         Ok(ended)

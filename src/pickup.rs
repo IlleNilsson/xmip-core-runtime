@@ -39,7 +39,7 @@
 //! operate library lists and acts on it (`xmip_operate.h` section 14).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use xcore::lock::Locked;
 
@@ -81,7 +81,7 @@ pub struct Pickup {
 }
 
 /// Every node's pickup in this process.
-static REGISTERED: Mutex<Vec<Weak<Pickup>>> = Mutex::new(Vec::new());
+static REGISTERED: crate::registry::Registry<Pickup> = crate::registry::Registry::new();
 
 /// The URI naming the Subscription `name` on the node at `node`, whose
 /// name-based identifier its queue and its operator record are found by.
@@ -197,20 +197,14 @@ impl Pickup {
             wake: Wake::new(),
             clock,
         });
-        let mut registered = REGISTERED.locked();
-        registered.retain(|held| held.strong_count() > 0);
-        registered.push(Arc::downgrade(&pickup));
+        REGISTERED.register(&pickup);
         Ok(pickup)
     }
 
     /// Every node's pickup this process holds.
     #[must_use]
     pub fn registered() -> Vec<Arc<Self>> {
-        REGISTERED
-            .locked()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect()
+        REGISTERED.all()
     }
 
     /// The node whose Subscriptions these are.

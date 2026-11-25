@@ -10,12 +10,18 @@
 //! or failed where the Work Process's Correlation says `on_failure =
 //! "skip"`, so the next Message of its key is taken its turn; failed where
 //! it blocks, it keeps the place until an operator acts.
+//!
+//! **A flow's error no scope caught is written as the Instance stood before
+//! the turn** (ADR-0066, amendment 2026-11-25): failed with the code and
+//! why, holding the keys the turn took, its history saying which Journey
+//! failed it, and nothing the turn made, so an operator's Retry takes the
+//! turn again from there and no Message it published goes out twice.
 
 use journey::{Journey, JourneyState};
 use persist::storage::{
     Claim, Failure, HandOn, Held, InstanceKey, InstanceRecord, InstanceWrite, Turn, Wait,
 };
-use process::{Instance, Outcome, form};
+use process::{Handled, Handling, Instance, Outcome, form};
 
 use super::super::acts::Made;
 use super::super::running::Running;
@@ -28,19 +34,47 @@ use crate::sequence::let_go;
 impl Taking<'_> {
     /// The turn as one write: the Journey, what was made, the Instance and
     /// its correlations, and the Message kept with a due time where a timer
-    /// waits.
+    /// waits; the Instance `before` the turn where its flow's error failed
+    /// it, holding the keys the turn took, and nothing made.
     pub(super) fn written(
         &mut self,
         work: ReceivedWork,
         (instance_id, over): (u128, u64),
-        instance: Instance,
+        (before, after): (Instance, Instance),
         ended: Option<Outcome>,
         now: i128,
     ) -> Turn {
         let queue = self.running.queue;
         let mut journey: Journey = work.journey;
         journey.current_work_process = Some(self.running.name.clone());
-        let mut hand_on = hand_on(&self.claim, &journey, std::mem::take(&mut self.made));
+        let failed = matches!(ended, Some(Outcome::Failed { .. }));
+        let made = if failed {
+            Made::default()
+        } else {
+            std::mem::take(&mut self.made)
+        };
+        let mut hand_on = hand_on(&self.claim, &journey, made);
+        let mut instance = if failed {
+            Instance {
+                keys: after.keys.clone(),
+                ended: ended.clone(),
+                turns: after.turns,
+                ..before
+            }
+        } else {
+            after
+        };
+        let handled = journey.journey_id().value();
+        for (what, message) in std::mem::take(&mut self.history) {
+            let skipped = failed && matches!(what, Handling::Made | Handling::Published);
+            if !skipped {
+                instance.handled(entry(now, what, message, handled));
+            }
+        }
+        if failed {
+            let message = work.message.message_id().value();
+            instance.handled(entry(now, Handling::Failed, message, handled));
+        }
         let due = instance.next_due().filter(|_| ended.is_none());
         match (&ended, due) {
             (Some(Outcome::Failed { code, reason }), _) => {
@@ -70,7 +104,8 @@ impl Taking<'_> {
             .iter()
             .map(|key| self.correlation(key))
             .collect();
-        let finished = ended.is_some();
+        // Failed, it is kept for an operator, its keys held, never ended.
+        let finished = ended.is_some() && !failed;
         let owned: Vec<InstanceKey> = correlations
             .iter()
             .map(|key| InstanceKey {
@@ -87,6 +122,8 @@ impl Taking<'_> {
                     turns: instance.turns.max(over + 1),
                     ended: finished,
                     body: form::instance(&instance),
+                    // Xmip Storage's to set as it writes it.
+                    updated_unix_nanos: 0,
                 },
                 over,
             }],
@@ -103,8 +140,24 @@ impl Taking<'_> {
     }
 }
 
+/// One entry of an Instance's history: at `now`, `what` happened to the
+/// Message `message` on the Journey `journey`.
+pub(in crate::work_step) const fn entry(
+    now: i128,
+    what: Handling,
+    message: u128,
+    journey: u128,
+) -> Handled {
+    Handled {
+        at_unix_nanos: now,
+        what,
+        message,
+        journey,
+    }
+}
+
 /// The hand-on of `journey` under `claim`, with what the turn `made`.
-fn hand_on(claim: &Claim, journey: &Journey, made: Made) -> HandOn {
+pub(in crate::work_step) fn hand_on(claim: &Claim, journey: &Journey, made: Made) -> HandOn {
     HandOn {
         claim: claim.clone(),
         result: journey_record(journey),

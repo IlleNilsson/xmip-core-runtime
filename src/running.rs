@@ -110,6 +110,9 @@ pub struct Running {
     roles: Vec<node::NodeRole>,
     pickup: Arc<Pickup>,
     send: Arc<SendStep>,
+    /// Its Work Process step: what its publication says of the Instances of
+    /// each Work Process it runs (open problem 192).
+    work: Arc<crate::work_step::WorkStep>,
     data: PathBuf,
     /// Which start of the node this is: the process its membership row is
     /// keyed by, drawn as it starts (`crate::membership::process`), and the

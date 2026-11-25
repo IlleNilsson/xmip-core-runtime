@@ -172,6 +172,7 @@ impl Running {
             tally,
             pickup,
             send,
+            work,
             data,
             process,
             numbered: None,
@@ -311,7 +312,9 @@ fn steps(
         linked.audit.clone(),
         running,
     );
-    (send, Arc::new(work.timed_by(Arc::clone(clock))))
+    let work = Arc::new(work.timed_by(Arc::clone(clock)));
+    WorkStep::register(&work);
+    (send, work)
 }
 
 /// Whether the node routes: a Receive Location starts, whose receive cycle
