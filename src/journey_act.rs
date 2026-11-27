@@ -112,6 +112,37 @@ impl Acting<'_> {
     }
 }
 
+/// Whether `kept`, the Journey `id`, failed: only a Message that failed is
+/// retried or dismissed.
+///
+/// # Errors
+/// REFUSED, in words, where it has not failed.
+pub(crate) fn failed(id: JourneyId, kept: &Journey) -> Result<(), String> {
+    if kept.state == JourneyState::Failed {
+        return Ok(());
+    }
+    Err(format!(
+        "REFUSED: the Journey {id} is {:?}, not Failed; only a Message that failed \
+         is retried or dismissed",
+        kept.state
+    ))
+}
+
+/// REFUSED, in words: another holds the claim on the Message of the Journey
+/// `id`.
+pub(crate) fn claimed_by_another(id: JourneyId) -> String {
+    format!(
+        "REFUSED: the Message of the Journey {id} is claimed by another; act again once it is \
+         free"
+    )
+}
+
+/// What a dismissal by `who` of the Message of the Journey `id` says once
+/// written.
+pub(crate) fn dismissed(id: JourneyId, who: &str) -> String {
+    format!("The Message of the Journey {id} dismissed by {who}; its history is kept")
+}
+
 /// `kept` as `act` leaves it: Active again with its tries begun anew, or
 /// Dismissed, the act appended to its history in words.
 pub(crate) fn acted(kept: Journey, act: Act, said: &str) -> Journey {

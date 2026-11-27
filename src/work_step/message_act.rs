@@ -35,7 +35,7 @@ use super::WorkStep;
 use super::acts::Made;
 use super::running::Running;
 use super::turning::written::{entry, hand_on};
-use crate::journey_act::{Acting, acted};
+use crate::journey_act::{self, Acting, acted, claimed_by_another, dismissed};
 
 /// The Instance a Journey's turn failed: its identifier, its record and its
 /// state.
@@ -85,12 +85,7 @@ impl WorkStep {
         let token = UuidV7Generator.next_u128();
         let claim = match self.storage.claim(id, &self.node, token, self.lease) {
             Ok(Some(claim)) => claim,
-            Ok(None) => {
-                return Err(format!(
-                    "REFUSED: the Message of the Journey {id} is claimed by another; \
-                     act again once it is free"
-                ));
-            }
+            Ok(None) => return Err(claimed_by_another(id)),
             Err(error) => return Err(acting.not_done(act, id, &error.to_string())),
         };
         let released = |said: String| {
@@ -117,8 +112,7 @@ impl WorkStep {
         Ok(said)
     }
 
-    /// How this step takes an operator's act: its node, Xmip Storage and
-    /// audit.
+    /// This step's [`Acting`].
     fn acting(&self) -> Acting<'_> {
         Acting {
             node: &self.node,
@@ -131,13 +125,7 @@ impl WorkStep {
     /// at: refused, in words, where it has not failed or this node runs no
     /// such Work Process.
     fn failed_here(&self, id: JourneyId, kept: &Journey) -> Result<&Running, String> {
-        if kept.state != JourneyState::Failed {
-            return Err(format!(
-                "REFUSED: the Journey {id} is {:?}, not Failed; only a Message that failed \
-                 is retried or dismissed",
-                kept.state
-            ));
-        }
+        journey_act::failed(id, kept)?;
         let Some(name) = kept.current_work_process.as_deref() else {
             return Err(format!(
                 "REFUSED: the Message of the Journey {id} failed at no Work Process"
@@ -283,12 +271,7 @@ fn said(act: Act, (id, who): (JourneyId, &str), running: &Running, instance: boo
             "The Message of the Journey {id} retried by {who}; turned again from {}'s queue",
             running.name
         ),
-        (_, true) => format!(
-            "The Message of the Journey {id} dismissed by {who}; its history is kept, and the \
-             Instance it failed ended"
-        ),
-        (_, false) => {
-            format!("The Message of the Journey {id} dismissed by {who}; its history is kept")
-        }
+        (_, true) => format!("{}, and the Instance it failed ended", dismissed(id, who)),
+        (_, false) => dismissed(id, who),
     }
 }

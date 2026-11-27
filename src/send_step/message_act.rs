@@ -35,7 +35,7 @@ use route::Subscriber;
 use xcore::{IdGenerator, JourneyId, UuidV7Generator};
 
 use super::SendStep;
-use crate::journey_act::{Acting, acted};
+use crate::journey_act::{Acting, acted, claimed_by_another, dismissed, failed};
 use crate::ledger::journey_record;
 
 impl SendStep {
@@ -62,12 +62,7 @@ impl SendStep {
         let token = UuidV7Generator.next_u128();
         let claim = match self.storage.claim(id, &self.node, token, self.lease) {
             Ok(Some(claim)) => claim,
-            Ok(None) => {
-                return Err(format!(
-                    "REFUSED: the Message of the Journey {id} is claimed by another; \
-                     act again once it is free"
-                ));
-            }
+            Ok(None) => return Err(claimed_by_another(id)),
             Err(error) => return Err(acting.not_done(act, id, &error.to_string())),
         };
         // What was read before the claim may be another writer's past: read
@@ -81,7 +76,7 @@ impl SendStep {
             Act::Retry => format!(
                 "The Message of the Journey {id} retried by {who}; sent again from {port}'s queue"
             ),
-            _ => format!("The Message of the Journey {id} dismissed by {who}; its history is kept"),
+            _ => dismissed(id, who),
         };
         let retry = act == Act::Retry;
         let after = acted(kept, act, &said);
@@ -125,8 +120,7 @@ impl SendStep {
         Ok(said)
     }
 
-    /// How this step takes an operator's act: its node, Xmip Storage and
-    /// audit.
+    /// This step's [`Acting`].
     fn acting(&self) -> Acting<'_> {
         Acting {
             node: &self.node,
@@ -139,13 +133,7 @@ impl SendStep {
     /// of it that failed blocks its sequence: refused, in words, where `kept` has not
     /// failed or this node does not send its Port.
     fn taken_by(&self, id: JourneyId, kept: &Journey) -> Result<(String, bool), String> {
-        if kept.state != JourneyState::Failed {
-            return Err(format!(
-                "REFUSED: the Journey {id} is {:?}, not Failed; only a Message that failed \
-                 is retried or dismissed",
-                kept.state
-            ));
-        }
+        failed(id, kept)?;
         let Some(port) = kept.send_port.clone() else {
             return Err(format!(
                 "REFUSED: the Message of the Journey {id} leads to no Send Port"
