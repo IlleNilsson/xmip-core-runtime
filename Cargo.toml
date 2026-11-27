@@ -1,8 +1,8 @@
 [package]
 name = "xmip-core-runtime"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/IlleNilsson/xmip-core-runtime"
 description = "The Xmip runtime: a node started from its configuration and the technologies its program links, the message path it runs, and the operate plane's two ends."
 
