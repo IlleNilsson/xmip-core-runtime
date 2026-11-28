@@ -99,7 +99,7 @@ impl Placed {
 
 #[cfg(test)]
 mod tests {
-    use path::expression::Expression;
+    use expression::Expression;
     use route::{Promoted, Subscriber, Subscription, publish};
 
     use super::*;

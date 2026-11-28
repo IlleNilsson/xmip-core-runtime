@@ -9,8 +9,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use expression::Expression;
 use message::Message;
-use path::expression::Expression;
 use persist::storage::XmipStorage;
 use process::program::Call;
 use receive::ReceivedStream;

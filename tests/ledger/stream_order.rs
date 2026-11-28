@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use configure::OnFailure;
-use path::expression::Expression;
+use expression::Expression;
 use process::{Compiled, DesignFormat, NoResources};
 use process_bpmn::Bpmn;
 use receive::ReceivedStream;

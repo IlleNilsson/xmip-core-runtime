@@ -387,10 +387,10 @@ mod tests {
     use authenticate::{Acceptance, Authenticator, Refusal};
     use authorize::Authorizer;
     use context::{Minimum, Required, Verified};
+    use expression::Expression;
     use identify::{MessageIdentifier, TransportIdentifier};
     use message::MessageTreatment;
     use party::{Identity, Party, PartyKind};
-    use path::expression::Expression;
     use route::{Gathering, Subscriber, Subscription};
     use send::{SendChain, SendLevel};
     use std::sync::atomic::{AtomicU64, Ordering};

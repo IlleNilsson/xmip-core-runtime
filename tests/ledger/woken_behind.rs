@@ -19,8 +19,8 @@
 
 use std::sync::Arc;
 
+use expression::Expression;
 use journey::JourneyState;
-use path::expression::Expression;
 use persist::storage::{Position, Watched, XmipStorage};
 use route::{Subscriber, Subscription};
 use xmip_core_runtime::fixture::FarEnd;

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use configure::SendPortGroup;
-use path::expression::Expression;
+use expression::Expression;
 use persist::storage::XmipStorage;
 use receive::ReceivedStream;
 use route::{Subscriber, Subscription};

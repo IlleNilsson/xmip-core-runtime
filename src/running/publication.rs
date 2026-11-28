@@ -263,7 +263,9 @@ impl Running {
         };
         let mut topology = drawn(&self.cluster, &self.node, &snapshot, seen);
         window.state(&mut topology, &snapshot);
-        Publication::whole(source, &self.location(), &snapshot).with_topology(Some(topology))
+        Publication::whole(source, &self.location(), &snapshot)
+            .with_topology(Some(topology))
+            .with_naming(Some(self.naming()))
     }
 
     /// What [`counts`] says the node counted, recorded at `now`.

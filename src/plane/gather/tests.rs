@@ -99,6 +99,7 @@ fn published(place: usize, role: NodeRole, (storage, wrote): (usize, u64)) -> Sa
     Said::Published {
         snapshot: Box::new(snapshot),
         drawing: Some(drawing),
+        naming: None,
     }
 }
 

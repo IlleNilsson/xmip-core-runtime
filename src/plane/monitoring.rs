@@ -216,5 +216,6 @@ fn posted(shared: &Shared) {
 pub fn written(view: &Gathered) -> String {
     Publication::whole(&view.topology.source, &view.root, &view.snapshot)
         .with_topology(Some(view.topology.clone()))
+        .with_naming(view.naming.clone())
         .to_toml()
 }

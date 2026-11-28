@@ -84,6 +84,8 @@ impl fmt::Display for Refusal {
 /// until it is dropped.
 pub struct Running {
     cluster: String,
+    /// Its cluster's short name, as its slice gives it.
+    short_name: Option<configure::ShortName>,
     node: String,
     /// Its Node capabilities, as its configuration declares them and its
     /// start read them: `online` among them where it may reach the internet
@@ -167,6 +169,21 @@ impl Running {
     #[must_use]
     pub fn cluster(&self) -> &str {
         &self.cluster
+    }
+
+    /// How the node's cluster is named for a person: the short name its
+    /// slice gives; the file it was sliced from a node does not know
+    /// (ADR-0028, amendment 2026-11-28).
+    #[must_use]
+    pub fn naming(&self) -> observe::Naming {
+        observe::Naming {
+            short_name: self
+                .short_name
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            ..observe::Naming::default()
+        }
     }
 
     /// The node's name, `service.node_name`.

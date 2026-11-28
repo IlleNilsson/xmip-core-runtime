@@ -158,6 +158,7 @@ impl Running {
 
         Ok(Self {
             node_capabilities,
+            short_name: tree.service.short_name,
             cluster: tree.service.cluster_name,
             node: tree.service.node_name,
             bound,

@@ -8,7 +8,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use path::expression::Expression;
+use expression::Expression;
 use persist::storage::XmipStorage;
 use process::{Compiled, DesignFormat, Flow, NoResources};
 use process_bpmn::Bpmn;

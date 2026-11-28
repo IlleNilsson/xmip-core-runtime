@@ -49,7 +49,9 @@ pub fn stopped(cluster: &str, node: &str, last: &Publication, said: &str) -> Pub
         });
     }
     let topology = drawn(cluster, node, &snapshot, Seen::default());
-    Publication::whole(&last.source, &last.node, &snapshot).with_topology(Some(topology))
+    Publication::whole(&last.source, &last.node, &snapshot)
+        .with_topology(Some(topology))
+        .with_naming(last.naming.clone())
 }
 
 #[cfg(test)]

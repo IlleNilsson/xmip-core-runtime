@@ -12,17 +12,19 @@ use std::sync::Arc;
 
 use observe::topology::window::Window;
 use observe::topology::{draw, relate};
-use observe::{Snapshot, Topology};
+use observe::{Naming, Snapshot, Topology};
 
 use super::reached::reached;
 
 /// What a member said when it was last heard.
 #[derive(Clone, Debug)]
 pub enum Said {
-    /// Its publication: its snapshot, and what it drew of itself.
+    /// Its publication: its snapshot, what it drew of itself, and how it
+    /// names its cluster.
     Published {
         snapshot: Box<Snapshot>,
         drawing: Option<Topology>,
+        naming: Option<Naming>,
     },
     /// Nothing: why it did not answer, in its surface's words.
     Nothing(String),
@@ -59,6 +61,9 @@ pub struct Gathered {
     pub snapshot: Snapshot,
     /// The cluster drawn from it.
     pub topology: Topology,
+    /// How the cluster is named, as the first member that says it names it:
+    /// every member's slice carries the one its cluster's file declares.
+    pub naming: Option<Naming>,
 }
 
 impl Gathered {
@@ -99,12 +104,17 @@ impl Gathered {
         };
         topology.merge_each(drawings);
         window.state(&mut topology, &snapshot);
+        let naming = heard.iter().find_map(|one| match &one.said {
+            Said::Published { naming, .. } => naming.clone(),
+            _ => None,
+        });
         Self {
             root: root.to_string(),
             revision,
             heard,
             snapshot,
             topology,
+            naming,
         }
     }
 

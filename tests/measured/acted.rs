@@ -32,9 +32,9 @@ use std::time::{Duration, Instant};
 
 use audit_file::FileSink;
 use authenticate::x509::Chain;
+use expression::Expression;
 use node::{Capability, NodeRole};
 use observe::{Act, Noun, Order};
-use path::expression::Expression;
 use persist::fixture::Memory;
 use persist::storage::{ActOutcome, ActRecord, Embedded, Position, Waiter, Watched, XmipStorage};
 use route::Subscriber;

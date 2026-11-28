@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use xcore::lock::Locked;
 
 use configure::{Retry, SendPortGroup};
+use expression::Expression;
 use journey::JourneyState;
-use path::expression::Expression;
 use route::{Subscriber, Subscription};
 use transport::TransportError;
 use xmip_core_runtime::fixture::FarEnd;

@@ -63,6 +63,7 @@ fn read(through: &dyn Follow) -> Said {
         Ok(publication) => Said::Published {
             snapshot: Box::new(publication.snapshot()),
             drawing: publication.topology,
+            naming: publication.naming,
         },
         Err(why) => Said::Nothing(why),
     }

@@ -2,8 +2,8 @@
 //! and the Subscription it is matched to: the pickup's tests and the
 //! subscriptions export's tests in xmip-core-operate take both from here.
 
+use expression::Expression;
 use journey::{Journey, JourneyMessageRef};
-use path::expression::Expression;
 use persist::storage::{
     AuditEntry, AuditFacts, MessageFacts, MessageRecord, Publication, XmipStorage,
 };

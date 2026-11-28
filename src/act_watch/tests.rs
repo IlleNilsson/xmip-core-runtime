@@ -7,10 +7,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use audit_file::FileSink;
+use expression::Expression;
 use file::temporary::Folder;
 use node::{Capability, NodeRole};
 use observe::{Act, Noun, Order};
-use path::expression::Expression;
 use persist::storage::{ActOutcome, ActRecord, Position, Waiter, Watched, XmipStorage};
 use route::Subscriber;
 use xaudit::program_audit::ProgramAudit;
