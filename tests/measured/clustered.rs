@@ -3,7 +3,7 @@
 //! each view its gatherer assembles, once, as the text a publication file
 //! holds (`plane::monitoring::written`), so answering a surface reads that
 //! text and writes it, as answering the node's own publication does. Held
-//! over loopback TLS, a cluster of nine members, each round beside a plain
+//! over loopback TLS, the test cluster's members, each round beside a plain
 //! wake (`xcore::latency::Rounds`): from the call to the answer read is under the
 //! millisecond plus three plain wakes, and the process's processor time
 //! across it under the millisecond plus a plain wake's. The node's own
@@ -45,10 +45,10 @@ const LOCATIONS: [&str; 4] = [
     "send/Invoices",
 ];
 
-/// The test cluster's nine members as a monitoring node gathers them: each
+/// The test cluster's members as a monitoring node gathers them: each
 /// its capability and a record beneath each of its Locations, assembled by
 /// the gatherer's one assembly.
-fn nine() -> Gathered {
+fn every_member() -> Gathered {
     let cluster = test_cluster();
     let root = cluster.scope();
     let mut drawn = Vec::new();
@@ -93,8 +93,11 @@ fn nine() -> Gathered {
 
 #[test]
 fn a_monitoring_node_answers_the_cluster_from_its_gathered_view_within_the_millisecond() {
-    let text = written(&nine());
-    println!("the view of nine members: {} bytes", text.len());
+    let text = written(&every_member());
+    println!(
+        "the view of the test cluster's members: {} bytes",
+        text.len()
+    );
 
     let authority = Authority::new();
     let own = Arc::new(Board::default());
@@ -128,7 +131,7 @@ fn a_monitoring_node_answers_the_cluster_from_its_gathered_view_within_the_milli
             "{answered:?}"
         );
     }
-    rounds.hold("Cluster answered from the gathered view of nine members");
+    rounds.hold("Cluster answered from the gathered view of the test cluster's members");
 }
 
 /// Writing a view, by the millisecond rule: what each assembly pays once,
@@ -136,8 +139,8 @@ fn a_monitoring_node_answers_the_cluster_from_its_gathered_view_within_the_milli
 /// under the millisecond; each step printed beside it — the publication's
 /// records gathered and ordered, the drawing taken, and the text written.
 #[test]
-fn a_view_of_nine_members_is_written_within_the_millisecond() {
-    let view = nine();
+fn a_view_of_the_test_clusters_members_is_written_within_the_millisecond() {
+    let view = every_member();
     let (mut whole, mut drawn, mut text, mut all) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for _ in 0..100 {
@@ -158,7 +161,7 @@ fn a_view_of_nine_members_is_written_within_the_millisecond() {
     let _ = spread("the records gathered and ordered", whole);
     let _ = spread("the drawing taken", drawn);
     let _ = spread("the text written", text);
-    let all = spread("a view of nine members written", all);
+    let all = spread("a view of the test cluster's members written", all);
     assert!(
         all.fastest_of_five < BOUND,
         "a view written in {:?} of processor time, the fastest of five",

@@ -16,7 +16,7 @@
 //! - `gathered.rs`: a gatherer's view of a cluster drawing 176 things,
 //!   related by role, assembled within a millisecond;
 //! - `clustered.rs`: `Cluster` answered from a monitoring node's gathered
-//!   view of nine members within a millisecond over loopback TLS, and that
+//!   view of the test cluster's members within a millisecond over loopback TLS, and that
 //!   view written, once an assembly, within a millisecond of processor time;
 //! - `acted.rs`: an operator's act asked at a node's door, written to Xmip
 //!   Storage, taken by its node's act watch and answered within a

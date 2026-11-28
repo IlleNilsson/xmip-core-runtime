@@ -86,9 +86,10 @@ fn writes(from: String, to: String, volume: u64) -> TopologyLink {
 }
 
 /// The member at `place`, called after the test cluster's node of that
-/// place among nine.
+/// place among its nodes.
 fn named(place: usize, roles: &[NodeRole], storage_place: Option<u32>) -> Drawn {
-    let name = format!("{}-{place}", test_cluster().node(place % 9).name);
+    let cluster = test_cluster();
+    let name = format!("{}-{place}", cluster.node(place % cluster.nodes.len()).name);
     Drawn::new(&name, roles, storage_place)
 }
 
